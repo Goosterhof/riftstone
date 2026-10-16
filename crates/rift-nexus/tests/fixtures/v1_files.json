@@ -1,0 +1,56 @@
+{
+  "files": [
+    {
+      "id": [802, 6234],
+      "uid": 26787533127442,
+      "file_id": 802,
+      "name": "Vernworth Cloaks Collection",
+      "version": "8",
+      "category_id": 1,
+      "category_name": "MAIN",
+      "is_primary": true,
+      "size": 29984,
+      "file_name": "Vernworth Cloaks Collection-5150-8-1791987810.zip",
+      "uploaded_timestamp": 1791987810,
+      "uploaded_time": "2026-10-14T14:23:30.000+00:00",
+      "mod_version": "1",
+      "external_virus_scan_url": null,
+      "description": "The full wardrobe.",
+      "size_kb": 29984,
+      "size_in_bytes": 30703184,
+      "changelog_html": null,
+      "content_preview_link": "https://file-metadata.nexusmods.com/file/invented.json"
+    },
+    {
+      "id": [801, 6234],
+      "uid": 26787533127441,
+      "file_id": 801,
+      "name": "Vernworth Cloaks Collection",
+      "version": "7",
+      "category_id": 7,
+      "category_name": "ARCHIVED",
+      "is_primary": false,
+      "size": 27982,
+      "file_name": "Vernworth Cloaks Collection-5150-7-1790767476.zip",
+      "uploaded_timestamp": 1790767476,
+      "uploaded_time": "2026-09-30T10:44:36.000+00:00",
+      "mod_version": "1",
+      "external_virus_scan_url": null,
+      "description": null,
+      "size_kb": 27982,
+      "size_in_bytes": null,
+      "changelog_html": null,
+      "content_preview_link": null
+    }
+  ],
+  "file_updates": [
+    {
+      "old_file_id": 801,
+      "new_file_id": 802,
+      "old_file_name": "Vernworth Cloaks Collection-5150-7-1790767476.zip",
+      "new_file_name": "Vernworth Cloaks Collection-5150-8-1791987810.zip",
+      "uploaded_timestamp": 1791987810,
+      "uploaded_time": "2026-10-14T14:23:30.000+00:00"
+    }
+  ]
+}

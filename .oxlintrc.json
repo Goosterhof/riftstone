@@ -1,0 +1,207 @@
+{
+    "$schema": "./node_modules/oxlint/configuration_schema.json",
+    // War-room canonical, Tauri v2 variant — mirrors gadgets/horadric-cube/.oxlintrc.json.
+    // Deviations documented per the 2026-05-08 lab-gadgets dispatch:
+    //   - jsx-a11y plugin DROPPED — Tauri Vue UI ships .vue SFCs only, no JSX surface.
+    //   - vitest plugin KEPT (unlike the Cube) — the Ledger gates its six voiced
+    //     states in a Vitest suite from day one.
+    //   - Tauri ignore patterns added: src-tauri/target/**, src-tauri/gen/**.
+    //   - no-restricted-globals points at Tauri managed state — the Ledger has no
+    //     persistent frontend store; state lives in the Rust spine.
+    "plugins": ["typescript", "import", "unicorn", "promise", "vue", "vitest"],
+    "categories": {
+        "correctness": "error"
+    },
+    "env": {
+        "builtin": true,
+        "browser": true,
+        "es2024": true
+    },
+    "ignorePatterns": [
+        "dist/**",
+        "scripts/**",
+        "coverage/**",
+        "node_modules/**",
+        "src-tauri/target/**",
+        "src-tauri/gen/**",
+        "vite.config.ts",
+        "vitest.config.ts"
+    ],
+    "rules": {
+        // Core rules
+        "no-console": "warn",
+        "prefer-const": "error",
+        "eqeqeq": "error",
+        "no-var": "error",
+        "no-undef": "off", // handled by TypeScript
+        "no-unused-vars": "off", // handled by @typescript-eslint/no-unused-vars
+        "no-debugger": "error",
+        "no-empty": "error",
+        "no-duplicate-imports": "off", // import/no-duplicates handles this better with type imports
+        "no-self-compare": "error",
+        "no-template-curly-in-string": "error",
+        "no-unreachable": "error",
+        "no-throw-literal": "error",
+        "no-unneeded-ternary": "warn",
+        "prefer-template": "warn",
+        "radix": "error",
+
+        // Graduated since the config was snapshotted (war-room canonical refresh, General review 2026-08-16)
+        "getter-return": "error", // 1.61 — graduated nursery → correctness
+        "no-implied-eval": "error", // 1.66 — security-relevant
+        "prefer-regex-literals": "error", // 1.64 — new RegExp("foo") → /foo/
+        "no-useless-assignment": "warn", // 1.59 — assignments whose value is never read
+
+        // Complexity limits — canonical war-room defaults
+        "complexity": ["error", 10],
+        "max-params": ["error", 4],
+        "max-depth": ["warn", 4],
+        "max-nested-callbacks": ["warn", 3],
+        "max-lines-per-function": ["warn", {"max": 80, "skipBlankLines": true, "skipComments": true}],
+
+        // Restricted globals — the hoard's state lives in the Rust spine's managed state
+        "no-restricted-globals": [
+            "error",
+            {"name": "localStorage", "message": "The Ledger's state lives in the Rust spine (Tauri managed state), not web storage."},
+            {"name": "sessionStorage", "message": "The Ledger's state lives in the Rust spine (Tauri managed state), not web storage."}
+        ],
+
+        // TypeScript rules (non-type-aware)
+        "@typescript-eslint/no-non-null-assertion": "error",
+        "@typescript-eslint/no-explicit-any": "error",
+        "@typescript-eslint/no-unused-vars": ["error", {"argsIgnorePattern": "^_"}],
+        "@typescript-eslint/no-empty-interface": "off", // superseded by typescript/no-empty-object-type
+        "@typescript-eslint/prefer-as-const": "error",
+        "@typescript-eslint/ban-ts-comment": "error",
+        "@typescript-eslint/no-duplicate-enum-values": "error",
+
+        // Type-aware rules — require oxlint --type-aware at invocation
+        "typescript/no-floating-promises": "error",
+        "typescript/no-misused-promises": "error",
+        "typescript/await-thenable": "error",
+        "typescript/no-for-in-array": "error",
+        "typescript/only-throw-error": "error",
+        "typescript/no-unsafe-argument": "error",
+        "typescript/no-unsafe-assignment": "error",
+        "typescript/no-unsafe-call": "error",
+        "typescript/no-unsafe-member-access": "error",
+        "typescript/no-unsafe-return": "error",
+        "typescript/no-unnecessary-type-assertion": "error",
+        "typescript/no-redundant-type-constituents": "error",
+        "typescript/prefer-optional-chain": "warn",
+        "typescript/prefer-nullish-coalescing": "warn",
+        "typescript/switch-exhaustiveness-check": "error",
+        "typescript/consistent-type-imports": "error",
+        "typescript/no-import-type-side-effects": "error",
+        "typescript/require-await": "warn",
+        "typescript/return-await": "error",
+        "typescript/consistent-type-exports": "error",
+        "typescript/no-empty-object-type": "error",
+        "typescript/no-confusing-non-null-assertion": "error",
+        "typescript/no-deprecated": "warn",
+        "typescript/no-unnecessary-condition": "error",
+        "typescript/no-unnecessary-template-expression": "warn",
+        "typescript/no-unnecessary-type-constraint": "warn",
+        "typescript/no-unnecessary-type-arguments": "warn",
+        "typescript/strict-boolean-expressions": "off",
+
+        // Import rules
+        "import/no-duplicates": "error",
+        "import/first": "error",
+        "import/no-self-import": "error",
+        "import/no-cycle": "error",
+        "import/no-mutable-exports": "error",
+        "import/no-named-default": "error",
+        "import/no-default-export": "off", // Vue components use default exports — *.ts files override below
+        "import/no-named-as-default": "warn",
+        "import/no-empty-named-blocks": "error",
+
+        // Unicorn — modern JS best practices
+        "unicorn/no-array-for-each": "error",
+        "unicorn/prefer-array-some": "warn",
+        "unicorn/prefer-includes": "warn",
+        "unicorn/prefer-string-starts-ends-with": "warn",
+        "unicorn/no-null": "off",
+        "unicorn/prefer-array-flat": "warn",
+        "unicorn/prefer-array-flat-map": "warn",
+        "unicorn/prefer-number-properties": "warn",
+        "unicorn/prefer-optional-catch-binding": "warn",
+        "unicorn/throw-new-error": "error",
+        "unicorn/no-useless-spread": "error",
+        "unicorn/no-nested-ternary": "error",
+        "unicorn/prefer-node-protocol": "warn",
+        "unicorn/prefer-ternary": "off",
+        "unicorn/prefer-spread": "warn",
+        "unicorn/no-lonely-if": "warn",
+        "unicorn/no-abusive-eslint-disable": "error",
+        "unicorn/prefer-event-target": "warn",
+        "unicorn/prefer-string-replace-all": "off", // type-aware → no-unsafe-call cascades
+        "unicorn/prefer-structured-clone": "warn",
+        "unicorn/error-message": "error",
+        "unicorn/no-negation-in-equality-check": "error",
+        "unicorn/no-useless-promise-resolve-reject": "warn",
+        "unicorn/consistent-function-scoping": "warn",
+        "unicorn/prefer-at": "error",
+
+        // Promise rules
+        "promise/no-return-wrap": "error",
+        "promise/catch-or-return": "error",
+        "promise/no-nesting": "error",
+        "promise/param-names": "error",
+        "promise/no-multiple-resolved": "error",
+
+        // Vue rules
+        "vue/no-arrow-functions-in-watch": "error",
+        "vue/no-deprecated-destroyed-lifecycle": "error",
+        "vue/no-export-in-script-setup": "error",
+        "vue/no-lifecycle-after-await": "error",
+        "vue/prefer-import-from-vue": "error",
+        "vue/no-required-prop-with-default": "error",
+        "vue/require-typed-ref": "error",
+        "vue/define-emits-declaration": "error",
+        "vue/define-props-declaration": "error",
+        "vue/define-props-destructuring": "error",
+        "vue/no-import-compiler-macros": "error"
+        // Not implemented in oxlint (need Vue template/options-API parsing) — do NOT add:
+        //   vue/no-ref-as-operand, vue/no-dupe-keys, vue/no-template-shadow
+    },
+    "overrides": [
+        {"files": ["*.vue"], "rules": {"no-undef": "off"}},
+        {"files": ["src/**/*.ts"], "rules": {"import/no-default-export": "off"}},
+        // The mock backend is dev/test tooling (the window outside Tauri, the
+        // headless render harness, vitest): one long factory over fixture data.
+        // It ships as a lazily-loaded chunk the real spine never calls.
+        {
+            "files": ["src/services/mock/**"],
+            "rules": {
+                "complexity": "off",
+                "max-lines-per-function": "off",
+                "max-depth": "off",
+                "unicorn/consistent-function-scoping": "off"
+            }
+        },
+        {
+            "files": ["tests/**", "**/*.spec.ts", "**/*.test.ts"],
+            "rules": {
+                "no-restricted-imports": "off",
+                "no-restricted-globals": "off",
+                "max-lines-per-function": "off",
+                "max-nested-callbacks": "off",
+                "complexity": "off",
+                "vitest/no-disabled-tests": "error",
+                "vitest/no-focused-tests": "error",
+                "vitest/no-identical-title": "error",
+                "vitest/prefer-strict-equal": "error",
+                "vitest/prefer-to-be": "error",
+                "vitest/prefer-to-contain": "error",
+                "vitest/valid-expect": "error",
+                "vitest/expect-expect": "error",
+                "vitest/no-conditional-expect": "error",
+                "vitest/valid-describe-callback": "error",
+                "vitest/no-commented-out-tests": "error",
+                "vitest/valid-expect-in-promise": "error",
+                "vitest/prefer-strict-boolean-matchers": "warn"
+            }
+        }
+    ]
+}

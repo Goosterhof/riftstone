@@ -1,0 +1,20 @@
+[package]
+name = "rift-nexus"
+description = "The Riftstone's line to Nexus Mods: link packages to mod pages, look up files by MD5, check for updates."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rift-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+thiserror.workspace = true
+reqwest.workspace = true
+md-5.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

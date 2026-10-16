@@ -1,0 +1,10 @@
+{
+  "errors": [
+    {
+      "message": "Mod not available",
+      "path": ["m666"],
+      "extensions": { "code": "MOD_UNAVAILABLE" }
+    }
+  ],
+  "data": null
+}

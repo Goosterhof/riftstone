@@ -1,0 +1,365 @@
+//! Your world: plan, install, uninstall, the load order, Fluffy's installs,
+//! REFramework's switches, the game folder.
+//!
+//! Every write goes through rift-deploy's engine under the write-ahead
+//! journal; the spine only picks the option, opens the package, and tells
+//! the window what changed (`rift://install-progress`, `rift://game-changed`).
+
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+use rift_core::{lower_key, ExtractProgress, OptionId, RiftError};
+
+use crate::commands::{blocking, not_found, Spine};
+use crate::dto::{
+    path_text, AdoptResultView, BuildChanged, FluffyModView, GameSummary, InstallPlanView,
+    InstallProgressEvent, InstallResultView, InstalledRow, InstalledView, MissingFile,
+    PakLoadReport, PakView, StrayFile, SwitchKey, UninstallPlanView, UninstallResultView,
+};
+use crate::events;
+use crate::library::match_fluffy;
+use crate::state::{read, AppState, JournalSlot};
+
+/// Install progress reaches the window at most this often (and always at the end).
+const PROGRESS_EVERY: Duration = Duration::from_millis(40);
+
+/// A plan the engine cannot make (no game, a damaged journal) is still a
+/// plan: refused, with the sentence that says why.
+fn refusal(err: &RiftError) -> Option<String> {
+    match err {
+        RiftError::GameNotFound => Some(
+            "Dragon's Dogma 2 has not been found yet. Point the Riftstone at the game folder first."
+                .into(),
+        ),
+        RiftError::Journal { detail } => Some(format!(
+            "The install journal could not be read, so nothing can be installed or uninstalled until it can: {detail}"
+        )),
+        _ => None,
+    }
+}
+
+pub fn plan_install_impl(state: &AppState, option_id: &str) -> Result<InstallPlanView, RiftError> {
+    let shelf = state.shelf();
+    let (package, option) = shelf
+        .option(&OptionId(option_id.to_string()))
+        .ok_or_else(|| not_found(option_id))?;
+    match state.plan(|ctx, journal| rift_deploy::plan_install(ctx, journal, package, option)) {
+        Ok(plan) => Ok((&plan).into()),
+        Err(err) => match refusal(&err) {
+            Some(sentence) => Ok(InstallPlanView {
+                option_id: option.id.0.clone(),
+                name: option.name.clone(),
+                writes: Vec::new(),
+                total_bytes: 0,
+                warnings: Vec::new(),
+                refused: Some(sentence),
+            }),
+            None => Err(err),
+        },
+    }
+}
+
+pub fn install_impl(state: &AppState, option_id: &str) -> Result<InstallResultView, RiftError> {
+    let shelf = state.shelf();
+    let (package, option) = shelf
+        .option(&OptionId(option_id.to_string()))
+        .ok_or_else(|| not_found(option_id))?;
+    let events = &state.events;
+    let mut last_sent: Option<Instant> = None;
+    let mut progress = |p: ExtractProgress| {
+        let finished = p.files_done >= p.files_total;
+        if !finished && last_sent.is_some_and(|at| at.elapsed() < PROGRESS_EVERY) {
+            return;
+        }
+        last_sent = Some(Instant::now());
+        events.emit(
+            events::INSTALL_PROGRESS,
+            &InstallProgressEvent {
+                option_id: option.id.0.clone(),
+                files_done: p.files_done,
+                files_total: p.files_total,
+                bytes_done: p.bytes_done,
+                bytes_total: p.bytes_total,
+            },
+        );
+    };
+    let report = state.deploy(|ctx, journal| {
+        let mut source = rift_archive::open(&package.path)?;
+        rift_deploy::install(
+            ctx,
+            journal,
+            package,
+            option,
+            source.as_mut(),
+            &mut progress,
+        )
+    })?;
+    state.events.changed(events::GAME_CHANGED);
+    Ok((&report).into())
+}
+
+pub fn plan_uninstall_impl(
+    state: &AppState,
+    option_id: &str,
+) -> Result<UninstallPlanView, RiftError> {
+    let id = OptionId(option_id.to_string());
+    match state.plan(|ctx, journal| rift_deploy::plan_uninstall(ctx, journal, &id)) {
+        Ok(plan) => Ok((&plan).into()),
+        Err(err) => match refusal(&err) {
+            Some(sentence) => Ok(UninstallPlanView {
+                option_id: option_id.to_string(),
+                name: state
+                    .shelf()
+                    .option(&id)
+                    .map_or_else(|| option_id.to_string(), |(_, o)| o.name.clone()),
+                removals: Vec::new(),
+                refused: Some(sentence),
+            }),
+            None => Err(err),
+        },
+    }
+}
+
+pub fn uninstall_impl(state: &AppState, option_id: &str) -> Result<UninstallResultView, RiftError> {
+    let id = OptionId(option_id.to_string());
+    let report = state.deploy(|ctx, journal| rift_deploy::uninstall(ctx, journal, &id))?;
+    state.events.changed(events::GAME_CHANGED);
+    Ok((&report).into())
+}
+
+/// What is in the game now: the installs, the pak load order, who overrides
+/// whom, strays, missing files, Fluffy's un-adopted installs, and what
+/// REFramework's log says it loaded.
+pub fn get_installed_impl(state: &AppState) -> Result<InstalledView, RiftError> {
+    let snapshot = state.refresh_snapshot();
+    match &read(&state.world).journal {
+        JournalSlot::Ready(_) => {}
+        JournalSlot::Damaged(err) => return Err(err.clone()),
+        JournalSlot::NoGame => return Err(RiftError::GameNotFound),
+    }
+    let game_state = snapshot
+        .game_state
+        .as_ref()
+        .ok_or(RiftError::GameNotFound)?;
+    let shelf = state.shelf();
+    let installs = game_state
+        .installs
+        .iter()
+        .map(|install| {
+            let package = shelf.package(&install.option_id.package());
+            InstalledRow {
+                option_id: install.option_id.0.clone(),
+                name: install.name.clone(),
+                package_name: package.map_or_else(
+                    || stem(&install.package_file).unwrap_or_else(|| install.name.clone()),
+                    |p| p.display_name.clone(),
+                ),
+                package_missing: package.is_none(),
+                version: install.version.clone(),
+                installed_at: install.installed_at.clone(),
+                game_build: install.game_build.clone(),
+                origin: (&install.origin).into(),
+                kinds: install.kinds.into(),
+                file_count: install.file_count,
+                paks: install.paks.iter().map(PakView::from).collect(),
+            }
+        })
+        .collect();
+    Ok(InstalledView {
+        installs,
+        pak_order: game_state.pak_order.iter().map(|id| id.0.clone()).collect(),
+        conflicts: snapshot.conflicts.clone(),
+        strays: game_state.strays.iter().map(StrayFile::from).collect(),
+        missing: game_state.missing.iter().map(MissingFile::from).collect(),
+        fluffy_unadopted: game_state
+            .fluffy_unadopted
+            .iter()
+            .map(|fluffy_mod| FluffyModView {
+                section: fluffy_mod.section.clone(),
+                name: fluffy_mod.name.clone(),
+                file_count: fluffy_mod.file_count,
+                matched_option_id: snapshot
+                    .fluffy_matches
+                    .get(&lower_key(&fluffy_mod.section))
+                    .map(|id| id.0.clone()),
+            })
+            .collect(),
+        pak_load: game_state.pak_load.as_ref().map(PakLoadReport::from),
+        pak_count_warning: game_state.pak_count_warning,
+    })
+}
+
+/// The file name without its extension (`Lantern Glow.zip` → `Lantern Glow`).
+fn stem(file_name: &str) -> Option<String> {
+    let name = file_name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(
+        Path::new(name)
+            .file_stem()
+            .map_or_else(|| name.to_string(), |s| s.to_string_lossy().into_owned()),
+    )
+}
+
+pub fn reorder_paks_impl(state: &AppState, order: &[String]) -> Result<(), RiftError> {
+    let ids: Vec<OptionId> = order.iter().map(|id| OptionId(id.clone())).collect();
+    state.deploy(|ctx, journal| rift_deploy::reorder_paks(ctx, journal, &ids))?;
+    state.events.changed(events::GAME_CHANGED);
+    Ok(())
+}
+
+/// Take Fluffy's installs into the journal, each matched to its library
+/// option (by `ModName=`, else by its folder; ties → the newest package).
+pub fn adopt_fluffy_impl(state: &AppState) -> Result<AdoptResultView, RiftError> {
+    let shelf = state.shelf();
+    let report = state.deploy(|ctx, journal| {
+        let ledger = ctx.fluffy.ok_or_else(|| {
+            RiftError::refused(
+                "Fluffy Mod Manager was not found (or has installed nothing yet), so there is nothing to adopt.",
+            )
+        })?;
+        rift_deploy::adopt_fluffy(ctx, journal, ledger, &|fluffy_mod| {
+            match_fluffy(&shelf, fluffy_mod).map(|option| (option.id.clone(), option.name.clone()))
+        })
+    })?;
+    state.events.changed(events::GAME_CHANGED);
+    Ok((&report).into())
+}
+
+pub fn set_reframework_switch_impl(
+    state: &AppState,
+    switch: SwitchKey,
+    on: bool,
+) -> Result<(), RiftError> {
+    let game = read(&state.world)
+        .game
+        .clone()
+        .ok_or(RiftError::GameNotFound)?;
+    {
+        // One writer in the game folder at a time.
+        let _turn = crate::state::lock(&state.deploy_lock);
+        rift_deploy::set_switch(
+            &game.root,
+            switch.into(),
+            on,
+            rift_deploy::is_game_running(),
+        )?;
+    }
+    state.invalidate_snapshot();
+    state.events.changed(events::GAME_CHANGED);
+    Ok(())
+}
+
+/// Point the Riftstone at a game folder by hand. It must hold `DD2.exe`; its
+/// journal is loaded (and an interrupted change in it rolled back).
+pub fn set_game_root_impl(state: &AppState, path: &str) -> Result<GameSummary, RiftError> {
+    let game = rift_deploy::validate_game_root(Path::new(path.trim()))?;
+    state.switch_game(game.clone());
+    state.events.changed(events::GAME_CHANGED);
+    let snapshot = state.refresh_snapshot();
+    Ok(GameSummary {
+        root: path_text(&game.root),
+        build_id: game.build_id.clone(),
+        source: game.source.into(),
+        running: snapshot.running,
+        build_changed: snapshot
+            .game_state
+            .as_ref()
+            .and_then(|s| s.build_changed.as_ref())
+            .map(|change| BuildChanged {
+                recorded: change.recorded.clone(),
+                now: change.now.clone(),
+            }),
+    })
+}
+
+// -- wrappers ----------------------------------------------------------------
+
+#[tauri::command]
+pub async fn plan_install(
+    state: Spine<'_>,
+    option_id: String,
+) -> Result<InstallPlanView, RiftError> {
+    blocking(&state, move |state| plan_install_impl(state, &option_id)).await
+}
+
+#[tauri::command]
+pub async fn install(state: Spine<'_>, option_id: String) -> Result<InstallResultView, RiftError> {
+    blocking(&state, move |state| install_impl(state, &option_id)).await
+}
+
+#[tauri::command]
+pub async fn plan_uninstall(
+    state: Spine<'_>,
+    option_id: String,
+) -> Result<UninstallPlanView, RiftError> {
+    blocking(&state, move |state| plan_uninstall_impl(state, &option_id)).await
+}
+
+#[tauri::command]
+pub async fn uninstall(
+    state: Spine<'_>,
+    option_id: String,
+) -> Result<UninstallResultView, RiftError> {
+    blocking(&state, move |state| uninstall_impl(state, &option_id)).await
+}
+
+#[tauri::command]
+pub async fn get_installed(state: Spine<'_>) -> Result<InstalledView, RiftError> {
+    blocking(&state, |state| get_installed_impl(state)).await
+}
+
+#[tauri::command]
+pub async fn reorder_paks(state: Spine<'_>, order: Vec<String>) -> Result<(), RiftError> {
+    blocking(&state, move |state| reorder_paks_impl(state, &order)).await
+}
+
+#[tauri::command]
+pub async fn adopt_fluffy(state: Spine<'_>) -> Result<AdoptResultView, RiftError> {
+    blocking(&state, |state| adopt_fluffy_impl(state)).await
+}
+
+#[tauri::command]
+pub async fn set_reframework_switch(
+    state: Spine<'_>,
+    switch: SwitchKey,
+    on: bool,
+) -> Result<(), RiftError> {
+    blocking(&state, move |state| {
+        set_reframework_switch_impl(state, switch, on)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_game_root(state: Spine<'_>, path: String) -> Result<GameSummary, RiftError> {
+    blocking(&state, move |state| set_game_root_impl(state, &path)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plans_that_cannot_be_made_are_refused_with_a_sentence() {
+        assert!(refusal(&RiftError::GameNotFound)
+            .unwrap()
+            .contains("game folder"));
+        assert!(refusal(&RiftError::Journal {
+            detail: "journal-x.json is damaged".into()
+        })
+        .unwrap()
+        .contains("journal-x.json is damaged"));
+        assert!(refusal(&RiftError::refused("no")).is_none());
+    }
+
+    #[test]
+    fn package_names_fall_back_to_the_file_stem() {
+        assert_eq!(
+            stem("Lantern Glow Recolor.zip").as_deref(),
+            Some("Lantern Glow Recolor")
+        );
+        assert_eq!(stem("  "), None);
+    }
+}

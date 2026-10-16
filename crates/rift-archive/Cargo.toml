@@ -1,0 +1,26 @@
+[package]
+name = "rift-archive"
+description = "Reads a Riftstone package: zip, 7z, rar or a plain folder."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rift-core.workspace = true
+log.workspace = true
+zip.workspace = true
+sevenz-rust2.workspace = true
+walkdir.workspace = true
+# RAR5 header checksums in src/rar_frame.rs (already in the tree via zip/7z).
+crc32fast = "1.5"
+# The official UnRAR C++ sources, compiled by `cc` (the engine underneath the
+# `unrar` crate). rift-archive calls it through its own packed mirrors of
+# dll.hpp instead of the `unrar` crate's safe wrapper, which cannot cancel a
+# read mid-entry and whose struct mirrors drift from dll.hpp's
+# `#pragma pack(1)` layout after `FileAttr` on 64-bit targets.
+# See src/unrar_dll.rs.
+unrar_sys = "0.5.8"
+
+[dev-dependencies]
+tempfile.workspace = true

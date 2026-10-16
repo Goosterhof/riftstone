@@ -1,0 +1,8 @@
+{
+  "errors": [
+    {
+      "message": "not-a-hash should be a valid md5 and match /^[a-f0-9]{32}$/i but does not.",
+      "extensions": { "parameter": "not-a-hash", "code": "MD5_INVALID" }
+    }
+  ]
+}

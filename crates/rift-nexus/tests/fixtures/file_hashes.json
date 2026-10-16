@@ -1,0 +1,95 @@
+{
+  "data": {
+    "fileHashes": [
+      {
+        "md5": "9e107d9d372bb6826bd81d3542a419d6",
+        "fileName": "Lantern Glow Recolor-4242-2-1-1789000000.zip",
+        "fileSize": "1048576",
+        "gameId": 6234,
+        "modFileId": 901,
+        "createdAt": "2026-09-09T12:26:40Z",
+        "modFile": {
+          "modId": 4242,
+          "fileId": 901,
+          "groupId": 88001,
+          "sqid": "vW1xY3zA5",
+          "name": "Lantern Glow Recolor",
+          "version": "2.1",
+          "category": "MAIN",
+          "date": 1789000000,
+          "primary": 1,
+          "sizeInBytes": "1048576"
+        }
+      },
+      {
+        "md5": "9e107d9d372bb6826bd81d3542a419d6",
+        "fileName": "lantern-for-another-game.zip",
+        "fileSize": "1048576",
+        "gameId": 110,
+        "modFileId": 12,
+        "createdAt": "2016-11-15T19:55:58Z",
+        "modFile": {
+          "modId": 3,
+          "fileId": 12,
+          "groupId": 5,
+          "sqid": "zZ9yX8wV7",
+          "name": "Another Game Lantern",
+          "version": "1",
+          "category": "MAIN",
+          "date": 1479239758,
+          "primary": 1,
+          "sizeInBytes": "1048576"
+        }
+      },
+      {
+        "md5": "e4d909c290d0fb1ca068ffaddf22cbd0",
+        "fileName": "Vernworth Cloaks Collection-5150-8-1700000000.zip",
+        "fileSize": "30703184",
+        "gameId": 6234,
+        "modFileId": 790,
+        "createdAt": "2023-11-14T22:13:20Z",
+        "modFile": {
+          "modId": 5150,
+          "fileId": 790,
+          "groupId": 77001,
+          "sqid": "oLd0nE123",
+          "name": "Vernworth Cloaks Collection",
+          "version": "8",
+          "category": "REMOVED",
+          "date": 1700000000,
+          "primary": 0,
+          "sizeInBytes": null
+        }
+      },
+      {
+        "md5": "e4d909c290d0fb1ca068ffaddf22cbd0",
+        "fileName": "Vernworth Cloaks Collection 5150 8 2026-10-14T14-23Z hJ8kL0mN2.zip",
+        "fileSize": "30703184",
+        "gameId": 6234,
+        "modFileId": 802,
+        "createdAt": "2026-10-14T14:23:30Z",
+        "modFile": {
+          "modId": 5150,
+          "fileId": 802,
+          "groupId": 77001,
+          "sqid": "hJ8kL0mN2",
+          "name": "Vernworth Cloaks Collection",
+          "version": "8",
+          "category": "MAIN",
+          "date": 1791987810,
+          "primary": 1,
+          "sizeInBytes": "30703184"
+        }
+      },
+      {
+        "md5": "e4d909c290d0fb1ca068ffaddf22cbd0",
+        "fileName": "orphaned-upload.zip",
+        "fileSize": "30703184",
+        "gameId": 6234,
+        "modFileId": 555,
+        "createdAt": "2024-01-01T00:00:00Z",
+        "modFile": null
+      }
+    ]
+  }
+}

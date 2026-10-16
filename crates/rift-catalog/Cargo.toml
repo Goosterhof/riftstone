@@ -1,0 +1,25 @@
+[package]
+name = "rift-catalog"
+description = "The Riftstone's library: modinfo.ini, option discovery, the addon tree, search and conflicts."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rift-core.workspace = true
+rift-archive.workspace = true
+rift-pak.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+encoding_rs.workspace = true
+rayon.workspace = true
+# A folder package's cache key walks it (size = sum of files, time = newest).
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+zip.workspace = true
+# A solid 7z fixture proves every modinfo.ini of a package comes out of ONE pass.
+sevenz-rust2.workspace = true

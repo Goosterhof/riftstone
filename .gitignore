@@ -1,0 +1,12 @@
+# Node
+node_modules/
+dist/
+
+# Rust / Tauri
+target/
+src-tauri/gen/schemas/
+
+# Editor litter
+*.log
+.DS_Store
+scratchpad/

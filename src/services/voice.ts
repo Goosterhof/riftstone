@@ -1,0 +1,345 @@
+// The Error Manifesto, as one module. Every RiftFailure the window shows
+// passes through `voice()`: kind + detail in, three parts out —
+//   voice    what happened, in the Rift's register (an inscription + a line),
+//   empathy  that we understand what you tried, and what did NOT change,
+//   recovery the action(s) that get you moving again (always at least one).
+// Components never compose failure copy themselves.
+
+import {
+  FLUFFY_STAND_IN_PREFIX,
+  type InstalledRow,
+  type PackageSummary,
+  type Problem,
+  type ProblemKind,
+  type RiftError,
+} from "@/types/rift";
+import type { RiftFailure } from "./rift";
+
+/** What the user was doing when the failure struck. */
+export type VoiceContext =
+  | "install"
+  | "uninstall"
+  | "scan"
+  | "package"
+  | "search"
+  | "reorder"
+  | "adopt"
+  | "switch"
+  | "roots"
+  | "game"
+  | "nexusCheck"
+  | "nexusKey"
+  | "nexusLink"
+  | "settings";
+
+export type RecoveryKind =
+  | "retry"
+  | "copyDetails"
+  | "pickGameFolder"
+  | "rescan"
+  | "showInFolder"
+  | "replaceKey"
+  | "openPreflight"
+  | "dismiss";
+
+export interface Recovery {
+  kind: RecoveryKind;
+  label: string;
+}
+
+export interface Voiced {
+  kind: RiftError["kind"];
+  /** Cinzel inscription, or null when the line stands alone (§9 rows with "—"). */
+  inscription: string | null;
+  /** What happened. */
+  voice: string;
+  /** We understand what you tried; what is still safe. */
+  empathy: string;
+  /** Always ≥ 1. */
+  recovery: Recovery[];
+}
+
+type Detail = Record<string, string>;
+
+const RETRY: Recovery = { kind: "retry", label: "Try again" };
+const COPY: Recovery = { kind: "copyDetails", label: "Copy details" };
+const RESCAN: Recovery = { kind: "rescan", label: "Rescan" };
+const SHOW: Recovery = { kind: "showInFolder", label: "Show in folder" };
+const DISMISS: Recovery = { kind: "dismiss", label: "Dismiss" };
+
+/** The first non-empty detail value among `keys`. */
+export function pick(detail: Detail, ...keys: string[]): string | null {
+  const entries = new Map(Object.entries(detail));
+  for (const key of keys) {
+    const value = entries.get(key);
+    if (value?.trim()) return value.trim();
+  }
+  return null;
+}
+
+const pathOf = (d: Detail) => pick(d, "path", "file", "gamePath", "package", "entry") ?? "that file";
+const reasonOf = (d: Detail, fallback: string) => pick(d, "reason", "detail", "message", "error") ?? fallback;
+const stripStop = (s: string) => s.replace(/[.\s]+$/, "");
+
+const CROSSING_INSCRIPTION: Partial<Record<VoiceContext, string>> = {
+  install: "THE CROSSING FAILED",
+  uninstall: "THE RETURN FAILED",
+  reorder: "THE ORDER HELD",
+  adopt: "THE ADOPTION FAILED",
+};
+
+/** "we put back the 4 files already placed" — only when the spine says so. */
+function rollbackSentence(d: Detail, context: VoiceContext): string {
+  const undone = pick(d, "rolledBack", "restored", "placed", "filesRolledBack");
+  const count = Number(undone);
+  if (context === "install" && Number.isFinite(count) && count > 0) {
+    return `Your game folder is exactly as it was: we put back the ${count} ${count === 1 ? "file" : "files"} already placed.`;
+  }
+  return "Your game folder is exactly as it was.";
+}
+
+function writeFailure(d: Detail, context: VoiceContext): Voiced {
+  const verb = context === "uninstall" ? "remove" : "write";
+  return {
+    kind: "io",
+    inscription: CROSSING_INSCRIPTION[context] ?? null,
+    voice: `Couldn't ${verb} \`${pathOf(d)}\`: ${stripStop(reasonOf(d, "Windows refused the write"))}.`,
+    empathy: `${rollbackSentence(d, context)} Close the game if it's running.`,
+    recovery: [RETRY, COPY],
+  };
+}
+
+function ioFailure(d: Detail, context: VoiceContext): Voiced {
+  if (CROSSING_INSCRIPTION[context]) return writeFailure(d, context);
+  return {
+    kind: "io",
+    inscription: null,
+    voice: `The stone couldn't read or write a file: ${stripStop(reasonOf(d, "the disk refused"))}.`,
+    empathy: "Nothing in your game folder or your library was changed.",
+    recovery: [RETRY, COPY],
+  };
+}
+
+function archiveFailure(kind: RiftError["kind"], d: Detail): Voiced {
+  const name = pathOf(d).split(/[\\/]/).at(-1) ?? pathOf(d);
+  const why: Partial<Record<RiftError["kind"], string>> = {
+    corruptArchive: "the archive ends early (truncated download?)",
+    unreadable: stripStop(reasonOf(d, "Windows would not let us read it")),
+    unsupportedFormat: "it isn't a zip, 7z, rar or folder the stone can read",
+    encrypted: "it is password-protected, so the stone can't look inside",
+  };
+  return {
+    kind,
+    inscription: null,
+    voice: `We couldn't open \`${name}\`: ${why[kind] ?? "it would not open"}.`,
+    empathy: "The rest of your library is fine, and nothing was written.",
+    recovery: [SHOW, RESCAN],
+  };
+}
+
+function unsafePath(d: Detail): Voiced {
+  return {
+    kind: "unsafeEntryPath",
+    inscription: null,
+    voice: `\`${pathOf(d)}\` tries to place a file outside the game folder, so the stone refused it.`,
+    empathy: "Nothing was written. The archive itself is untouched.",
+    recovery: [SHOW, COPY],
+  };
+}
+
+function goneFromLibrary(): Voiced {
+  return {
+    kind: "entryNotFound",
+    inscription: null,
+    voice: "That mod has left the library since the last scan.",
+    empathy: "Nothing was written. A rescan brings the list up to date.",
+    recovery: [RESCAN],
+  };
+}
+
+function noGame(): Voiced {
+  return {
+    kind: "gameNotFound",
+    inscription: "NO WORLD ANSWERS",
+    voice: "We searched every Steam library on this PC and found no Dragon's Dogma 2 install.",
+    empathy: "If it lives somewhere unusual, point the stone at it.",
+    recovery: [{ kind: "pickGameFolder", label: "Choose game folder…" }, RETRY],
+  };
+}
+
+function refused(d: Detail, context: VoiceContext): Voiced {
+  const reason = reasonOf(d, "the game is running");
+  const running = /running|in use|open/i.test(reason);
+  return {
+    kind: "refused",
+    inscription: running ? "THE WORLD IS AWAKE" : null,
+    voice: `The stone held back: ${stripStop(reason)}.`,
+    empathy:
+      context === "reorder" || context === "switch"
+        ? "Nothing was changed. Close Dragon's Dogma 2, then try again."
+        : "Nothing was written. Close Dragon's Dogma 2 if it's running, then try again.",
+    recovery: [RETRY],
+  };
+}
+
+function journalFailure(d: Detail, context: VoiceContext): Voiced {
+  return {
+    kind: "journal",
+    inscription: CROSSING_INSCRIPTION[context] ?? "THE LEDGER WON'T OPEN",
+    voice: `The stone couldn't write its install journal: ${stripStop(reasonOf(d, "the app data folder refused"))}.`,
+    empathy: "No game file was touched: the journal is written before the first byte moves.",
+    recovery: [RETRY, COPY],
+  };
+}
+
+const NEXUS_REFUSED = /\b(401|403)\b|reject|invalid key|unauthori[sz]ed|forbidden/i;
+const NEXUS_QUOTA = /\b429\b|quota|rate limit/i;
+
+function nexusRefused(): Voiced {
+  return {
+    kind: "nexus",
+    inscription: "THE FAR WORLD REFUSES",
+    voice: "Nexus didn't accept that key: it may have been regenerated.",
+    empathy: "Nothing else changed.",
+    recovery: [{ kind: "replaceKey", label: "Replace key…" }],
+  };
+}
+
+function nexusQuota(d: Detail): Voiced {
+  return {
+    kind: "nexus",
+    inscription: null,
+    voice: `Nexus has rationed the stone for now: ${stripStop(reasonOf(d, "the hourly request quota is spent"))}.`,
+    empathy: "Update status below is from the last check. Nothing was lost.",
+    recovery: [RETRY],
+  };
+}
+
+function nexusOffline(): Voiced {
+  return {
+    kind: "nexus",
+    inscription: "THE FAR WORLD IS OUT OF REACH",
+    voice: "We can't reach Nexus right now.",
+    empathy: "Update status below is from the last check. Everything else works offline.",
+    recovery: [RETRY],
+  };
+}
+
+function nexusLink(d: Detail): Voiced {
+  return {
+    kind: "nexus",
+    inscription: null,
+    voice: `That link didn't lead to a Dragon's Dogma 2 mod: ${stripStop(reasonOf(d, "no mod id in it"))}.`,
+    empathy: "The package stays as it was. Paste a nexusmods.com/dragonsdogma2/mods/… link or a bare mod id.",
+    recovery: [RETRY],
+  };
+}
+
+function nexusFailure(d: Detail, context: VoiceContext): Voiced {
+  const raw = Object.values(d).join(" ");
+  if (NEXUS_REFUSED.test(raw)) return nexusRefused();
+  if (NEXUS_QUOTA.test(raw)) return nexusQuota(d);
+  if (context === "nexusLink") return nexusLink(d);
+  return nexusOffline();
+}
+
+type Handler = (detail: Detail, context: VoiceContext) => Voiced;
+
+const HANDLERS: Record<RiftError["kind"], Handler> = {
+  unreadable: (d) => archiveFailure("unreadable", d),
+  unsupportedFormat: (d) => archiveFailure("unsupportedFormat", d),
+  encrypted: (d) => archiveFailure("encrypted", d),
+  corruptArchive: (d) => archiveFailure("corruptArchive", d),
+  unsafeEntryPath: (d) => unsafePath(d),
+  entryNotFound: () => goneFromLibrary(),
+  gameNotFound: () => noGame(),
+  refused,
+  journal: journalFailure,
+  nexus: nexusFailure,
+  io: ioFailure,
+};
+
+/** Give a failure its voice. */
+export function voice(failure: Pick<RiftFailure, "kind" | "detail">, context: VoiceContext): Voiced {
+  const voiced = HANDLERS[failure.kind](failure.detail, context);
+  return voiced.recovery.length ? voiced : { ...voiced, recovery: [DISMISS] };
+}
+
+/** One line for a toast or an inline notice: "voice empathy". */
+export function voicedLine(voiced: Voiced): string {
+  return `${voiced.voice} ${voiced.empathy}`;
+}
+
+/** The text "Copy details" puts on the clipboard. */
+export function failureDetails(failure: Pick<RiftFailure, "kind" | "detail">, context: VoiceContext): string {
+  const lines = [`Riftstone failure — ${failure.kind} during ${context}`];
+  for (const [key, value] of Object.entries(failure.detail)) lines.push(`${key}: ${value}`);
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// §9 trouble cards — the packages get_troubled_packages returns
+// ---------------------------------------------------------------------------
+
+/** The problems that put a package on the trouble list, in the spine's order
+ * (WINDOW-CONTRACT get_troubled_packages). A card speaks for the first. */
+export const TROUBLE_KINDS: readonly ProblemKind[] = [
+  "unreadable",
+  "nothingToInstall",
+  "outdatedFormats",
+  "filesSkipped",
+];
+
+export interface TroubleLine {
+  kind: ProblemKind | null;
+  /** Unreadable packages carry the ember rail; the rest are warnings. */
+  ember: boolean;
+  line: string;
+}
+
+/** The problem a trouble card speaks for: the first of TROUBLE_KINDS the
+ * package carries, else its first problem at all. */
+export function leadProblem(pkg: Pick<PackageSummary, "problems">): Problem | null {
+  for (const kind of TROUBLE_KINDS) {
+    const found = pkg.problems.find((problem) => problem.kind === kind);
+    if (found) return found;
+  }
+  return pkg.problems.at(0) ?? null;
+}
+
+const lowerFirst = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
+
+function unreadableLine(name: string, message: string, otherPackages: number): string {
+  const why = stripStop(message) || "the archive ends early (truncated download?)";
+  const others = otherPackages === 1 ? "The other package is fine." : `The other ${otherPackages} packages are fine.`;
+  return `We couldn't open ${name}: ${lowerFirst(why)}. ${others}`;
+}
+
+/** Packages that open, worded by the trouble that put them on the list. */
+const OPENS_WITH: Partial<Record<ProblemKind, string>> = {
+  outdatedFormats: "opens, but part of it won't load",
+  filesSkipped: "opens, but some of its files stay out",
+};
+
+/** One card's line, worded for the problem that put the package on the list. */
+export function troubleLine(pkg: Pick<PackageSummary, "fileName" | "problems">, otherPackages: number): TroubleLine {
+  const problem = leadProblem(pkg);
+  const name = `\`${pkg.fileName}\``;
+  if (!problem) return { kind: null, ember: false, line: `${name} opened, but holds nothing the game loads.` };
+  const message = problem.message.trim();
+  if (problem.kind === "unreadable") {
+    return { kind: problem.kind, ember: true, line: unreadableLine(name, message, otherPackages) };
+  }
+  const opens = OPENS_WITH[problem.kind];
+  const line = opens
+    ? `${name} ${opens}: ${message}`
+    : `${name} opened, but holds nothing the game loads: ${message || "no mod files inside."}`;
+  return { kind: problem.kind, ember: false, line };
+}
+
+/** Why an installed row has no package, worded for the two ways that happens. */
+export function missingPackageTitle(row: Pick<InstalledRow, "optionId">): string {
+  return row.optionId.startsWith(FLUFFY_STAND_IN_PREFIX)
+    ? "Adopted from Fluffy: no package in your library matches it"
+    : "The package is no longer in your library";
+}

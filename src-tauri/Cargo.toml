@@ -1,0 +1,52 @@
+[package]
+name = "riftstone"
+description = "The Riftstone — a Dragon's Dogma 2 mod manager that can see inside every archive."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "riftstone_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+rift-core.workspace = true
+rift-archive.workspace = true
+rift-pak.workspace = true
+rift-catalog.workspace = true
+rift-deploy.workspace = true
+rift-nexus.workspace = true
+
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-log = "2"
+
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+thiserror.workspace = true
+base64.workspace = true
+image.workspace = true
+notify.workspace = true
+dirs.workspace = true
+chrono.workspace = true
+# The optional Nexus API key lives in the OS credential store (Windows
+# Credential Manager on the investor's machine; the Secret Service on the
+# Linux bench) — never in a file, never in the webview (RS-6).
+keyring.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# Tauri's mock runtime: the IPC test invokes every command the way the window
+# does (exact invoke names, camelCase argument keys) with no window at all.
+tauri = { version = "2", features = ["test"] }
+# The command-layer test builds its library collection as a real zip at run time.
+zip.workspace = true
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

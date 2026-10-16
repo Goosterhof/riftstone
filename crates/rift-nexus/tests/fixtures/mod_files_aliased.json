@@ -1,0 +1,53 @@
+{
+  "data": {
+    "m5150": [
+      {
+        "fileId": 801,
+        "groupId": 77001,
+        "sqid": "aB3dE5fG7",
+        "name": "Vernworth Cloaks Collection",
+        "version": "7",
+        "category": "ARCHIVED",
+        "date": 1790767476,
+        "primary": 0,
+        "sizeInBytes": "28653782"
+      },
+      {
+        "fileId": 802,
+        "groupId": 77001,
+        "sqid": "hJ8kL0mN2",
+        "name": "Vernworth Cloaks Collection",
+        "version": "8",
+        "category": "MAIN",
+        "date": 1791987810,
+        "primary": 1,
+        "sizeInBytes": "30703184"
+      },
+      {
+        "fileId": 803,
+        "groupId": 77002,
+        "sqid": "pQ4rS6tU8",
+        "name": "Cloak Dyes",
+        "version": "",
+        "category": "OPTIONAL",
+        "date": 1791000000,
+        "primary": 0,
+        "sizeInBytes": null
+      }
+    ],
+    "m4242": [
+      {
+        "fileId": 901,
+        "groupId": 88001,
+        "sqid": "vW1xY3zA5",
+        "name": "Lantern Glow Recolor",
+        "version": "2.1",
+        "category": "MAIN",
+        "date": 1789000000,
+        "primary": 1,
+        "sizeInBytes": "1048576"
+      }
+    ],
+    "m7777": []
+  }
+}

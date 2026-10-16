@@ -1,0 +1,11 @@
+{
+  "user_id": 1234567,
+  "key": "invented-key-the-server-echoes-back",
+  "name": "LanternKeeper",
+  "is_premium?": false,
+  "is_supporter?": false,
+  "email": "lantern-keeper@example.invalid",
+  "profile_url": "https://www.nexusmods.com/users/1234567",
+  "is_supporter": false,
+  "is_premium": true
+}

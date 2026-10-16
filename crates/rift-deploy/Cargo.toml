@@ -1,0 +1,32 @@
+[package]
+name = "rift-deploy"
+description = "The Riftstone's hands in the game folder: discovery, preflight, the Fluffy ledger, install and uninstall under a write-ahead journal."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rift-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+encoding_rs.workspace = true
+sha2.workspace = true
+walkdir.workspace = true
+
+# The registry holds Steam's install path; the process list says whether
+# DD2.exe runs. Both exist only on Windows — everything else in this crate
+# builds and tests on the Linux bench.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp"] }
+
+[dev-dependencies]
+# rift-archive only for the one round trip through a real zip; the engine
+# itself reads any `PackageSource`.
+rift-archive.workspace = true
+tempfile.workspace = true
+zip.workspace = true

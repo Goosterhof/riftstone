@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities for the Riftstone's main window: the folder picker (add a library root, point at the game by hand), opening a mod page or a folder in the user's own apps, event listening for scan/install progress, and logging. Nexus requests are made Rust-side, never from the webview.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:event:default",
+    "opener:default",
+    "dialog:default",
+    "log:default"
+  ]
+}
