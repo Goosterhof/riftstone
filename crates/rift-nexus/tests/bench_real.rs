@@ -1,6 +1,7 @@
-//! Bench: one live look at Nexus Mods. Never part of the default test run —
-//! `#[ignore]`d AND gated on `RIFT_BENCH_NEXUS_MOD` naming the Dragon's Dogma 2
-//! mod to ask about (the id a download of yours carries):
+//! Bench: live looks at Nexus Mods. Never part of the default test run. The
+//! lookup is `#[ignore]`d AND gated on `RIFT_BENCH_NEXUS_MOD` naming the
+//! Dragon's Dogma 2 mod to ask about (the id a download of yours carries); the
+//! name search has its own gate (see `live_find_by_an_invented_phrase_and_a_generic_word`):
 //!
 //! ```sh
 //! RIFT_BENCH_NEXUS_MOD=<mod id> RIFT_BENCH_NEXUS_SQID=<sqid, optional> \
@@ -14,7 +15,47 @@
 //! counts and states only — no mod name, no file name, no version.
 
 use rift_core::{LinkSource, NexusLink};
-use rift_nexus::{pin_link, update_state, NexusClient, UpdateState};
+use rift_nexus::{pin_link, update_state, NexusClient, UpdateState, CANDIDATES_PER_FIND};
+
+/// One live look at the name search (v0.2, Find on Nexus): the measured
+/// `mods(filter, sort, count)` shape still answers. `#[ignore]`d AND gated on
+/// `RIFT_BENCH_NEXUS_FIND=1`:
+///
+/// ```sh
+/// RIFT_BENCH_NEXUS_FIND=1 cargo test -p rift-nexus --test bench_real -- --ignored --nocapture
+/// ```
+///
+/// The phrases are fixed HERE, never read from the environment: an invented
+/// one (`lantern glow`) and a generic word (`armor`), so no name from a
+/// player's library can reach Nexus through this bench. At most four
+/// anonymous requests. Counts only.
+#[test]
+#[ignore = "talks to the live Nexus Mods API; run with RIFT_BENCH_NEXUS_FIND=1 and --ignored"]
+fn live_find_by_an_invented_phrase_and_a_generic_word() {
+    if std::env::var("RIFT_BENCH_NEXUS_FIND").ok().as_deref() != Some("1") {
+        eprintln!("RIFT_BENCH_NEXUS_FIND is not 1 — the live find bench stays quiet.");
+        return;
+    }
+    let client = NexusClient::new(env!("CARGO_PKG_VERSION"));
+    for phrase in ["lantern glow", "armor"] {
+        let found = client
+            .find_mods(phrase)
+            .unwrap_or_else(|err| panic!("the name search for {phrase:?} answered: {err}"));
+        println!(
+            "live find {phrase:?}: {} candidate(s); {} with an author, {} with a category, \
+             {} with a summary, {} with an update time, {} with downloads, {} adult",
+            found.len(),
+            found.iter().filter(|c| c.author.is_some()).count(),
+            found.iter().filter(|c| c.category.is_some()).count(),
+            found.iter().filter(|c| c.summary.is_some()).count(),
+            found.iter().filter(|c| c.updated_ms.is_some()).count(),
+            found.iter().filter(|c| c.downloads.is_some()).count(),
+            found.iter().filter(|c| c.adult).count(),
+        );
+        assert!(found.len() <= CANDIDATES_PER_FIND);
+        assert!(found.iter().all(|c| c.mod_id > 0 && !c.name.is_empty()));
+    }
+}
 
 #[test]
 #[ignore = "talks to the live Nexus Mods API; run with RIFT_BENCH_NEXUS_MOD=<id> and --ignored"]

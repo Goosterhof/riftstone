@@ -157,7 +157,9 @@ const progressLine = computed(() => {
     <template v-if="unlabeled > 0">
       <p v-if="labels.exhausted.value && !busy" class="flab__quiet flab__spent">
         Nexus knows none of the rest by their bytes.
-        <button type="button" class="flab__clear" @click="nav.go('nexus')">Link them on the NEXUS page ▸</button>
+        <button type="button" class="flab__clear" @click="nav.go('nexus')">
+          Find them by name on the NEXUS page ▸
+        </button>
       </p>
       <RiftButton
         v-else

@@ -15,8 +15,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::NexusError;
 use crate::hash::is_md5;
-use crate::types::{Md5Hit, ModFilesReport, NexusAccount, NexusFile, NexusMod, V1FileList};
-use crate::wire;
+use crate::types::{
+    Md5Hit, ModCandidate, ModFilesReport, NexusAccount, NexusFile, NexusMod, V1FileList,
+};
+use crate::wire::{self, NameMatch};
 use crate::{
     APP_NAME, DEFAULT_GRAPHQL_URL, DEFAULT_V1_BASE, GAME_DOMAIN, MD5S_PER_REQUEST,
     MODS_PER_REQUEST, MOD_FILES_PER_REQUEST,
@@ -317,6 +319,40 @@ impl NexusClient {
         });
         hits.dedup_by(|a, b| a.md5 == b.md5 && a.mod_id == b.mod_id && a.file_id == b.file_id);
         Ok(hits)
+    }
+
+    /// Search Dragon's Dogma 2's mods by name (v0.2, Find on Nexus): the mods
+    /// whose name holds every one of `terms` (any order, stems match), most
+    /// relevant first, at most [`crate::CANDIDATES_PER_FIND`]. Build the terms
+    /// with [`crate::search_terms`].
+    ///
+    /// One POST of `mods(filter: { gameDomainName, nameStemmed MATCHES },
+    /// sort: relevance)`, the terms as a GraphQL variable (never query text).
+    /// No candidate → exactly one more POST, the same terms with `WILDCARD`;
+    /// so at most two. Blank terms send nothing and find nothing.
+    ///
+    /// A node is no candidate when its mod id is outside 1..=`i32::MAX` (no
+    /// link could be made from it), it has no name, or it names another game;
+    /// a repeated mod id counts once. An answer whose nodes are all skipped
+    /// is no hit, so the `WILDCARD` retry still runs.
+    ///
+    /// The update check's manners and refusals: the identifying headers, the
+    /// shared back-off after a 429, and an answer that carries any GraphQL
+    /// error is refused whole ([`NexusError::BadResponse`]), the retry's too:
+    /// a search that failed never reads as "Nexus has no such mod".
+    pub fn find_mods(&self, terms: &str) -> Result<Vec<ModCandidate>, NexusError> {
+        let terms = terms.trim();
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+        for mode in [NameMatch::Matches, NameMatch::Wildcard] {
+            let data: wire::FindData = self.graphql(&wire::find_body(terms, mode))?.into_data()?;
+            let found = wire::read_candidates(data);
+            if !found.is_empty() {
+                return Ok(found);
+            }
+        }
+        Ok(Vec::new())
     }
 
     /// Check the personal API key (v1 `users/validate.json`, which does not

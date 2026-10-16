@@ -1,12 +1,16 @@
 //! rift-nexus — the Riftstone's line to Nexus Mods.
 //!
-//! Three jobs, all optional (RS-6: everything else works offline):
+//! Four jobs, all optional (RS-6: everything else works offline):
 //!
 //! 1. **Look mods up** — names, statuses and every file on a mod page, from
 //!    Nexus's public GraphQL v2 API. Anonymous: no account, no API key.
 //! 2. **Identify a package** — the MD5 of an archive finds the exact Nexus file
 //!    it was downloaded as ([`md5_file`], [`NexusClient::files_by_md5`]).
-//! 3. **Decide whether an update exists** — [`pin_link`] ties a package to its
+//! 3. **Find a package by name** (v0.2) — for what MD5 cannot identify (an
+//!    unpacked folder, a repack): [`search_terms`] turns its name into words,
+//!    [`NexusClient::find_mods`] offers the mods that match. A find links
+//!    nothing; the player picks.
+//! 4. **Decide whether an update exists** — [`pin_link`] ties a package to its
 //!    exact file on the mod page, [`update_state`] compares it with the files
 //!    the page lists now.
 //!
@@ -42,6 +46,17 @@
 //!   hashes are validated before they are sent. One hash can match hundreds of
 //!   uploads across games (the empty file matches ~500); hits are filtered to
 //!   game 6234.
+//! - (v0.2, measured on the anonymous API) `mods(filter: ModsFilter, sort:
+//!   [ModsSort!], count: Int) -> ModPage` searches by name.
+//!   `ModsFilter.gameDomainName` and `.nameStemmed` are `[BaseFilterValue!]`
+//!   (`{ value, op }`): `op: MATCHES` wants every term in any order, stems
+//!   matching; `op: WILDCARD` wants every term with leading and trailing
+//!   wildcards. `ModsSort { relevance: { direction: DESC } }` puts the best
+//!   first. A node answers `modId` (Int), `name`, `version`, `author`,
+//!   `uploader { name }`, `category`, `modCategory { name }`, `adultContent`,
+//!   `downloads`, `endorsements`, `summary`, `updatedAt` (ISO-8601,
+//!   `2024-05-04T01:30:45Z`) and `game { domainName }`. A phrase no mod holds
+//!   answers `totalCount: 0, nodes: []`, not an error.
 //! - Every request carries `Application-Name`, `Application-Version` and a
 //!   descriptive `User-Agent` (Nexus's acceptable-use policy). v2 anonymous has no
 //!   documented rate limit and sends no quota headers; the client still batches,
@@ -57,7 +72,8 @@
 //!   reads exactly like an empty one. A lookup that failed must never read as
 //!   "nothing found" (nor a label that failed as "no label": an `adultContent`
 //!   whose resolver failed comes back null, and the window's veil must never
-//!   take that for "not adult"). So [`NexusClient::mods`] refuses any answer with an error,
+//!   take that for "not adult"). So [`NexusClient::mods`] and
+//!   [`NexusClient::find_mods`] refuse any answer with an error,
 //!   [`NexusClient::files_by_md5`] tolerates only errors inside another game's
 //!   upload, and [`NexusClient::mod_files_report`] leaves unchecked exactly the
 //!   mods an error's path names. Each case returns [`NexusError::BadResponse`] or
@@ -80,6 +96,7 @@ mod error;
 mod hash;
 mod page_url;
 mod pin;
+mod terms;
 mod types;
 mod wire;
 
@@ -88,8 +105,10 @@ pub use error::NexusError;
 pub use hash::{is_md5, md5_file};
 pub use page_url::{file_page_url, mod_page_url, parse_mod_url};
 pub use pin::{pin_link, update_state, UpdateState, STATUS_NOT_FOUND};
+pub use terms::search_terms;
 pub use types::{
-    FileCategory, FileUpdate, Md5Hit, ModFilesReport, NexusAccount, NexusFile, NexusMod, V1FileList,
+    FileCategory, FileUpdate, Md5Hit, ModCandidate, ModFilesReport, NexusAccount, NexusFile,
+    NexusMod, V1FileList,
 };
 
 /// Dragon's Dogma 2 on Nexus Mods (re-exported from [`rift_core::dd2`]).
@@ -110,3 +129,5 @@ pub const MODS_PER_REQUEST: usize = 200;
 pub const MOD_FILES_PER_REQUEST: usize = 20;
 /// Hashes per `fileHashes` POST.
 pub const MD5S_PER_REQUEST: usize = 100;
+/// Candidates a name search asks for and keeps (v0.2, Find on Nexus).
+pub const CANDIDATES_PER_FIND: usize = 5;

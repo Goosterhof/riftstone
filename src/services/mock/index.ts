@@ -66,6 +66,7 @@ import type { NexusQuota, PendingBackend } from "../pending";
 import { TROUBLE_KINDS } from "../voice";
 import {
   MOCK_DAY,
+  MOCK_FINDS,
   MOCK_LABELS,
   MOCK_MD5_MATCH,
   MOCK_NOW,
@@ -233,6 +234,10 @@ export function createMockBackend(): RiftBackend {
   }
   const conflicted = (optionId: string) => conflicts().some((c) => c.layers.some((l) => l.optionId === optionId));
 
+  /** Links made since the last SUCCESSFUL check: no check has judged them yet,
+   *  so they read notChecked (a failed check judges none). */
+  const unjudged = new Set<string>();
+
   function updateRow(pkg: MockPackage): UpdateRow | null {
     const link = pkg.summary.nexus;
     if (!link) return null;
@@ -249,7 +254,12 @@ export function createMockBackend(): RiftBackend {
     // `offline` changes nothing here: a failed check leaves the cache alone
     // (get_updates is cached state), so the rows keep the last good verdict
     // the page's offline notice dates.
-    if (lastCheckMs === null) return { ...base, state: { kind: "notChecked" } };
+    if (lastCheckMs === null || unjudged.has(pkg.summary.id)) return { ...base, state: { kind: "notChecked" } };
+    // the spine's pin_link: a link naming no file id, sqid, upload stamp or
+    // version (a link by bare mod id) has nothing to pin by, so it stays unpinned
+    if (link.fileId === null && link.sqid === null && link.uploadedMs === null && link.version === null) {
+      return { ...base, state: { kind: "unpinned" } };
+    }
     if (link.modId === 412) {
       return {
         ...base,
@@ -270,6 +280,8 @@ export function createMockBackend(): RiftBackend {
   /** What Nexus said about the package's mod at the last check; null before one. */
   function labelsOf(pkg: MockPackage): NexusLabels | null {
     const link = pkg.summary.nexus;
+    // a mod an earlier check heard of brings its labels at once (the spine's
+    // relabel on link_package); MOCK_LABELS stands for what the checks heard
     if (!link || lastCheckMs === null) return null;
     return MOCK_LABELS[link.modId] ?? null;
   }
@@ -1093,6 +1105,7 @@ export function createMockBackend(): RiftBackend {
       }
       if (scene.has("offline")) throw nexusFailure("Nexus Mods could not be reached (connection refused).");
       lastCheckMs = Date.now();
+      unjudged.clear();
       emit(EVENTS.updatesChanged, {});
       return updatesView();
     },
@@ -1117,6 +1130,30 @@ export function createMockBackend(): RiftBackend {
         return { packageId, matched: true, link: pkg.summary.nexus };
       });
     },
+    async findOnNexus(packageId) {
+      // MOCK_FINDS by display name; REFramework (and any name absent there)
+      // answers none. The terms are the name lower-cased, as the spine's
+      // search_terms leaves a plain name. Offline it fails like the spine.
+      await wait(200);
+      const pkg = packages.find((p) => p.summary.id === packageId);
+      if (!pkg) throw notFound(packageId);
+      const terms = pkg.summary.displayName
+        .replace(/[_.+-]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+      if (!terms) return { packageId, terms: "", candidates: [] };
+      if (scene.has("offline")) throw nexusFailure("Nexus Mods could not be reached (connection refused).");
+      const candidates = (MOCK_FINDS[pkg.summary.displayName] ?? []).slice(0, 5).map((c) => ({
+        ...c,
+        pageUrl: `https://www.nexusmods.com/dragonsdogma2/mods/${c.modId}`,
+        linkedPackages:
+          c.linkedPackages +
+          // the spine counts every linked package (for an unlinked row, the same as "others")
+          packages.filter((p) => p.summary.nexus?.modId === c.modId).length,
+      }));
+      return { packageId, terms, candidates };
+    },
     async linkPackage(packageId, urlOrId) {
       await wait(120);
       const pkg = packages.find((p) => p.summary.id === packageId);
@@ -1125,15 +1162,18 @@ export function createMockBackend(): RiftBackend {
       const text = urlOrId.trim();
       const id = Number(/\/mods\/(\d+)/.exec(text)?.[1] ?? /^\d+$/.exec(text)?.[0] ?? Number.NaN);
       if (!Number.isFinite(id)) throw nexusFailure("That is not a Dragon's Dogma 2 mod link or id.");
+      // a files-tab URL names the file (page_url.rs): that one link pins at once
+      const fileId = Number(/[?&]file_id=(\d+)/i.exec(text)?.[1] ?? Number.NaN);
       pkg.summary.nexus = {
         modId: id,
-        fileId: null,
+        fileId: Number.isFinite(fileId) ? fileId : null,
         groupId: null,
         sqid: null,
         version: null,
         uploadedMs: null,
         source: "manual",
       };
+      unjudged.add(packageId);
       emit(EVENTS.updatesChanged, {});
       return updateRow(pkg) as UpdateRow;
     },
@@ -1141,6 +1181,7 @@ export function createMockBackend(): RiftBackend {
       await wait(60);
       const pkg = packages.find((p) => p.summary.id === packageId);
       if (pkg) pkg.summary.nexus = null;
+      unjudged.delete(packageId);
       emit(EVENTS.updatesChanged, {});
     },
     async setNexusKey(key) {

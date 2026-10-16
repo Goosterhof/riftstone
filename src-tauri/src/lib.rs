@@ -124,6 +124,7 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         commands::nexus::get_updates,
         commands::nexus::check_updates,
         commands::nexus::identify_packages,
+        commands::nexus::find_on_nexus,
         commands::nexus::link_package,
         commands::nexus::unlink_package,
         commands::nexus::set_nexus_key,

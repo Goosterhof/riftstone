@@ -15,7 +15,7 @@ import { useFarWorld } from "@/composables/useFarWorld";
 import { useLabels } from "@/composables/useLabels";
 import { useNavigation } from "@/composables/useNavigation";
 import { useToasts } from "@/composables/useToasts";
-import { button, hasButton, sleep, spine, text, textOf, until, wakeOn } from "./harness";
+import { button, hasButton, sleep, spine, text, textOf, until, wakeOn, idle } from "./harness";
 
 /** A press runs ~2 s on the mock's timers (hashing 400 ms, 260 ms per linked mod). */
 const ASKING_MS = 8_000;
@@ -66,7 +66,7 @@ const chipNames = (): string[] =>
   [...document.querySelectorAll("#nexus-labels .lchip__name")].map((n) => textOf(n).trim());
 
 async function askOnce(toastStart: string): Promise<void> {
-  await until(() => hasButton("Identify & check") && !button("Identify & check").disabled, "Identify & check");
+  await until(() => hasButton("Identify & check") && idle(button("Identify & check")), "Identify & check");
   button("Identify & check").click();
   await until(() => toastLines().some((l) => l.startsWith(toastStart)), `the toast "${toastStart}…"`, ASKING_MS);
   await until(() => !useLabels().asking.value, "the press done");
@@ -91,7 +91,7 @@ describe("Identify & check", () => {
       expect(identify.mock.invocationCallOrder[0]).toBeLessThan(check.mock.invocationCallOrder[0]);
       expect(lastToast()).toStrictEqual({
         tone: "rift",
-        line: "Nexus named 1 more package. 4 packages Nexus doesn't know stay unlabeled: link them by URL on the NEXUS page.",
+        line: "Nexus named 1 more package. 4 packages Nexus doesn't know stay unlabeled: find them by name on the NEXUS page.",
       });
       expect(useLabels().facets.value?.unlabeledPackages).toBe(4);
       await until(() => quietLine().startsWith("4 packages"), "the quiet line counting four");
@@ -115,7 +115,7 @@ describe("Identify & check", () => {
       await askOnce("Nexus named");
       expect(lastToast()).toStrictEqual({
         tone: "rift",
-        line: "Nexus named 5 packages. 4 packages Nexus doesn't know stay unlabeled: link them by URL on the NEXUS page.",
+        line: "Nexus named 5 packages. 4 packages Nexus doesn't know stay unlabeled: find them by name on the NEXUS page.",
       });
       expect(chipNames()).toContain("Armour");
     },
@@ -136,13 +136,13 @@ describe("Identify & check", () => {
       expect(check).toHaveBeenCalledTimes(2);
       expect(lastToast()).toStrictEqual({
         tone: "rift",
-        line: "Nexus didn't recognise any of the 4 packages by MD5 — they may be repacks or come from elsewhere. Link them by URL on the NEXUS page and their labels follow.",
+        line: "Nexus didn't recognise any of the 4 packages by MD5 — they may be repacks or come from elsewhere. Find them by name on the NEXUS page and their labels follow.",
       });
       expect(useLabels().exhausted.value).toBe(true);
       expect(hasButton("Identify & check")).toBe(false);
       expect(text()).toContain("Nexus knows none of the rest by their bytes.");
 
-      button("Link them on the NEXUS page ▸").click();
+      button("Find them by name on the NEXUS page ▸").click();
       expect(useNavigation().page.value).toBe("nexus");
     },
     SLOW_TEST_MS,
@@ -162,7 +162,7 @@ describe("Identify & check", () => {
       expect(useLabels().exhausted.value).toBe(false);
 
       // offline is not a miss: the next press hashes all five again
-      await until(() => !button("Identify & check").disabled, "the button back");
+      await until(() => idle(button("Identify & check")), "the button back");
       button("Identify & check").click();
       await until(() => identify.mock.calls.length === 2, "the second identify");
       expect([...identify.mock.calls[1][0]].sort()).toStrictEqual(UNLINKED.map(idOf).sort());
@@ -178,21 +178,21 @@ describe("askNexusToast()", () => {
   it("should count what a press learned, said for a library that had labels and for one that had none", () => {
     expect(askNexusToast({ before: 5, after: 4, hadLabels: true, failure: null })).toStrictEqual({
       tone: "rift",
-      line: "Nexus named 1 more package. 4 packages Nexus doesn't know stay unlabeled: link them by URL on the NEXUS page.",
+      line: "Nexus named 1 more package. 4 packages Nexus doesn't know stay unlabeled: find them by name on the NEXUS page.",
       learned: 1,
     });
     expect(askNexusToast({ before: 9, after: 1, hadLabels: false, failure: null }).line).toBe(
-      "Nexus named 8 packages. 1 package Nexus doesn't know stays unlabeled: link it by URL on the NEXUS page.",
+      "Nexus named 8 packages. 1 package Nexus doesn't know stays unlabeled: find it by name on the NEXUS page.",
     );
     expect(askNexusToast({ before: 2, after: 0, hadLabels: true, failure: null }).line).toBe(
       "Nexus named 2 more packages. Every package carries its labels now.",
     );
   });
 
-  it("should say plainly when Nexus recognised nothing, and point at linking by URL", () => {
+  it("should say plainly when Nexus recognised nothing, and point at finding them by name", () => {
     expect(askNexusToast({ before: 4, after: 4, hadLabels: true, failure: null })).toStrictEqual({
       tone: "rift",
-      line: "Nexus didn't recognise any of the 4 packages by MD5 — they may be repacks or come from elsewhere. Link them by URL on the NEXUS page and their labels follow.",
+      line: "Nexus didn't recognise any of the 4 packages by MD5 — they may be repacks or come from elsewhere. Find them by name on the NEXUS page and their labels follow.",
       learned: 0,
     });
   });

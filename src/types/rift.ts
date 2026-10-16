@@ -325,6 +325,43 @@ export interface LabelFacets {
 }
 
 // ---------------------------------------------------------------------------
+// v0.2 — Find on Nexus by name (find_on_nexus)
+// ---------------------------------------------------------------------------
+
+/** A Nexus mod that may be where a package came from. A find never links:
+ *  the player picks one, and the window links it with `link_package`. */
+export interface NexusCandidate {
+  modId: number;
+  name: string;
+  /** The author Nexus shows, else the uploader's name. */
+  author: string | null;
+  version: string | null;
+  category: string | null;
+  adult: boolean;
+  downloads: number | null;
+  endorsements: number | null;
+  /** Nexus's summary, whitespace-collapsed, at most 200 characters. */
+  summary: string | null;
+  /** The mod's last update on Nexus, ms since the epoch. */
+  updatedMs: number | null;
+  /** https://www.nexusmods.com/dragonsdogma2/mods/<modId> */
+  pageUrl: string;
+  /** Packages in the library already linked to this mod. */
+  linkedPackages: number;
+}
+
+export interface NexusFindings {
+  packageId: string;
+  /** The words sent to Nexus (the set answered last): from the package's
+   *  display name, or, when that finds nothing or holds nothing searchable,
+   *  from its first option's bundle or name. "" when none of those held
+   *  anything to search for: then nothing was sent and `candidates` is empty. */
+  terms: string;
+  /** Nexus's relevance order, at most 5. */
+  candidates: NexusCandidate[];
+}
+
+// ---------------------------------------------------------------------------
 // get_option / get_package
 // ---------------------------------------------------------------------------
 

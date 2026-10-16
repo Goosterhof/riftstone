@@ -4,7 +4,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { useNavigation } from "@/composables/useNavigation";
-import { button, hasButton, press, sleep, textOf, until, wakeOn } from "./harness";
+import { button, hasButton, press, sleep, textOf, until, wakeOn, idle } from "./harness";
 
 afterEach(() => sleep());
 
@@ -33,7 +33,7 @@ describe("the load order", () => {
     if (!winnerRow) throw new Error(`No load-order row for ${first}`);
     winnerRow.focus();
     press("ArrowUp", { altKey: true }, winnerRow);
-    await until(() => hasButton("Apply order") && !button("Apply order").disabled, "a dirty order");
+    await until(() => hasButton("Apply order") && idle(button("Apply order")), "a dirty order");
     // Nothing is written until Apply: the map still names the old winner.
     expect(winners()).toStrictEqual([first]);
 

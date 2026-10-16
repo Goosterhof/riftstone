@@ -17,13 +17,14 @@ use tauri::Manager;
 
 use riftstone_lib::dto::{
     AdoptResultView, CheckAction, GameSummary, InstallPlanView, InstallResultView, InstalledView,
-    LabelFacets, LibraryRoot, Md5Result, NexusSummary, OptionDetail, Overview, OwnerKind,
-    PackageDetail, PackageSummary, ParkedRestoreReport, SearchResult, Settings, UninstallPlanView,
-    UninstallResultView, UpdateRow, UpdatesView, VeilMode,
+    LabelFacets, LibraryRoot, Md5Result, NexusFindings, NexusSummary, OptionDetail, Overview,
+    OwnerKind, PackageDetail, PackageSummary, ParkedRestoreReport, SearchResult, Settings,
+    UninstallPlanView, UninstallResultView, UpdateRow, UpdatesView, VeilMode,
 };
 use riftstone_lib::events::{GAME_CHANGED, LIBRARY_CHANGED};
 use riftstone_lib::persist::DataDirs;
-use support::{Bench, ERMINE_MESH};
+use riftstone_lib::state::AppState;
+use support::{Answer, Bench, StandIn, ERMINE_MESH};
 
 /// The window's own origin: what Tauri serves the bundled frontend from, and
 /// the only origin the default capability lets call app commands. Windows
@@ -68,21 +69,28 @@ impl Window {
     }
 }
 
+/// The mock app with every command registered and the spine managed, and its
+/// window. Keep the app alive as long as the window is used.
+fn mock_window(state: &Arc<AppState>) -> (tauri::App<tauri::test::MockRuntime>, Window) {
+    let app = riftstone_lib::with_commands(mock_builder())
+        .build(mock_context(noop_assets()))
+        .expect("the mock app builds");
+    app.manage(Arc::clone(state));
+    let window = Window {
+        webview: tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap(),
+    };
+    (app, window)
+}
+
 #[test]
 fn every_command_answers_the_window_by_its_invoke_name_and_argument_keys() {
     let bench = Bench::new();
     let (state, events) = bench.open(bench.config(DataDirs::under(&bench.data_home())));
     assert!(state.scan_blocking());
 
-    let app = riftstone_lib::with_commands(mock_builder())
-        .build(mock_context(noop_assets()))
-        .expect("the mock app builds");
-    app.manage(Arc::clone(&state));
-    let window = Window {
-        webview: tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
-            .build()
-            .unwrap(),
-    };
+    let (_app, window) = mock_window(&state);
 
     // -- the home frame --------------------------------------------------------
     let home: Overview = window.call("get_overview", json!({}));
@@ -309,6 +317,11 @@ fn every_command_answers_the_window_by_its_invoke_name_and_argument_keys() {
         json!({ "packageIds": ["0000000000000000"] }),
     );
     assert!(!unknown[0].matched);
+    // v0.2 Find: the package's name goes out on this call, and nothing listens.
+    let unreachable = window
+        .invoke("find_on_nexus", json!({ "packageId": package_id }))
+        .unwrap_err();
+    assert_eq!(unreachable["kind"], "nexus", "{unreachable}");
     let row: UpdateRow = window.call(
         "link_package",
         json!({ "packageId": package_id, "urlOrId": "https://www.nexusmods.com/dragonsdogma2/mods/5150" }),
@@ -327,4 +340,114 @@ fn every_command_answers_the_window_by_its_invoke_name_and_argument_keys() {
         labels.unlabeled_packages, 3,
         "no check has heard any labels: every package is unlabeled"
     );
+}
+
+/// The keys of a JSON object, sorted.
+fn keys(value: &Value) -> Vec<String> {
+    let mut keys: Vec<String> = value
+        .as_object()
+        .unwrap_or_else(|| panic!("expected an object, got {value}"))
+        .keys()
+        .cloned()
+        .collect();
+    keys.sort();
+    keys
+}
+
+fn sorted(expected: &[&str]) -> Vec<String> {
+    let mut keys: Vec<String> = expected.iter().map(|k| (*k).to_string()).collect();
+    keys.sort();
+    keys
+}
+
+#[test]
+fn find_on_nexus_answers_the_window_by_its_invoke_name_and_argument_key() {
+    let stand_in = StandIn::start(|request| {
+        if request.body.contains("RiftstoneFindMods") {
+            return Answer::json(json!({ "data": { "mods": { "totalCount": 1, "nodes": [{
+                "modId": 2207, "name": "Lantern Glow Recolor", "version": "2.1",
+                "author": null, "uploader": { "name": "Vern" },
+                "category": "Visuals", "modCategory": { "name": "Visuals" },
+                "adultContent": false, "downloads": 1520, "endorsements": 88,
+                "summary": "Warmer lanterns.", "updatedAt": "2024-05-04T01:30:45Z",
+                "game": { "domainName": "dragonsdogma2" }
+            }] } } }));
+        }
+        Answer {
+            status: 500,
+            headers: Vec::new(),
+            body: json!({}),
+        }
+    });
+    let bench = Bench::new();
+    let mut config = bench.config(DataDirs::under(&bench.data_home()));
+    config.nexus_endpoints = Some((stand_in.graphql_url(), stand_in.v1_base()));
+    let (state, _) = bench.open(config);
+    assert!(state.scan_blocking());
+    let (_app, window) = mock_window(&state);
+    let lantern = state
+        .shelf()
+        .packages()
+        .iter()
+        .find(|p| p.file_name == "Lantern Glow Recolor.zip")
+        .unwrap()
+        .id
+        .0
+        .clone();
+
+    let findings: NexusFindings = window.call("find_on_nexus", json!({ "packageId": lantern }));
+    assert_eq!(findings.package_id, lantern);
+    assert_eq!(findings.terms, "Lantern Glow Recolor");
+    assert_eq!(findings.candidates.len(), 1);
+    let candidate = &findings.candidates[0];
+    assert_eq!(
+        (
+            candidate.mod_id,
+            candidate.author.as_deref(),
+            candidate.linked_packages
+        ),
+        (2207, Some("Vern"), 0)
+    );
+    assert_eq!(
+        candidate.page_url,
+        "https://www.nexusmods.com/dragonsdogma2/mods/2207"
+    );
+    assert_eq!(candidate.updated_ms, Some(1_714_786_245_000));
+
+    // Exactly the keys of src/types/rift.ts cross the bridge.
+    let raw = window
+        .invoke("find_on_nexus", json!({ "packageId": lantern }))
+        .unwrap();
+    assert_eq!(keys(&raw), sorted(&["packageId", "terms", "candidates"]));
+    assert_eq!(
+        keys(&raw["candidates"][0]),
+        sorted(&[
+            "modId",
+            "name",
+            "author",
+            "version",
+            "category",
+            "adult",
+            "downloads",
+            "endorsements",
+            "summary",
+            "updatedMs",
+            "pageUrl",
+            "linkedPackages",
+        ])
+    );
+
+    // The window's camelCase key is the only one that maps; an unknown
+    // package is entryNotFound, and asks Nexus nothing.
+    let asked = stand_in.seen().len();
+    assert!(window
+        .invoke("find_on_nexus", json!({ "package_id": lantern }))
+        .is_err());
+    assert_eq!(
+        window
+            .invoke("find_on_nexus", json!({ "packageId": "0000000000000000" }))
+            .unwrap_err(),
+        json!({ "kind": "entryNotFound", "detail": { "entry": "0000000000000000" } })
+    );
+    assert_eq!(stand_in.seen().len(), asked);
 }

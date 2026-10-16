@@ -30,6 +30,9 @@ export type VoiceContext =
   | "nexusCheck"
   | "nexusKey"
   | "nexusLink"
+  /** v0.2: Find on Nexus by name. Nothing is linked by a find, so a failure
+   *  leaves the package exactly as it was. */
+  | "nexusFind"
   | "settings"
   /** v0.2: Put back / Discard on a PARKED file. The caller adds `gamePath`
    *  and `act` ("putBack" | "discard") to the detail. */
@@ -291,8 +294,61 @@ function nexusLink(d: Detail): Voiced {
   };
 }
 
+/** Find on Nexus could not ask. Offline is the far world's absence, not the
+ *  player's mistake: the package stays as it was, and a URL still links it.
+ *  The find is anonymous (it sends no key), so a 401/403 is the search turned
+ *  away, never a key; and an answer the spine could not use means Nexus WAS
+ *  reached, so it is not voiced as offline. */
+const FIND_UNREADABLE = /could not use|not graphql|unexpected shape|HTTP status \d{3}/i;
+const UNCHANGED = "Nothing was linked; the package stays as it was.";
+
+function findQuota(d: Detail): Voiced {
+  // the spine's detail is "rate limit: <its own sentence>"; its retry hint stands as the voice
+  const reason = stripStop(reasonOf(d, "")).replace(/^rate limit:\s*/i, "");
+  const wait = /try again in ([^.;]+)/i.exec(reason)?.[1]?.trim();
+  return {
+    kind: "nexus",
+    inscription: null,
+    voice: wait
+      ? `Nexus asked the stone to slow down: try again in ${wait}.`
+      : "Nexus asked the stone to slow down for now.",
+    empathy: `${UNCHANGED} Find again after that, or paste its Nexus page.`,
+    recovery: [RETRY],
+  };
+}
+
+function nexusFind(d: Detail, raw: string): Voiced {
+  if (NEXUS_QUOTA.test(raw)) return findQuota(d);
+  if (NEXUS_REFUSED.test(raw)) {
+    return {
+      kind: "nexus",
+      inscription: "THE FAR WORLD REFUSES",
+      voice: "Nexus turned the search away, so it could not be asked about this package.",
+      empathy: `The search sends no key, so no key of yours was refused. ${UNCHANGED} Try again later, or paste its Nexus page.`,
+      recovery: [RETRY],
+    };
+  }
+  if (FIND_UNREADABLE.test(raw)) {
+    return {
+      kind: "nexus",
+      inscription: null,
+      voice: "Nexus answered, but the stone could not read its answer.",
+      empathy: `${UNCHANGED} Try again later; its Nexus page's URL still links it.`,
+      recovery: [RETRY],
+    };
+  }
+  return {
+    kind: "nexus",
+    inscription: "THE FAR WORLD IS OUT OF REACH",
+    voice: "We can't reach Nexus right now, so it could not be asked about this package.",
+    empathy: `${UNCHANGED} Find again when you're online, or paste its Nexus page.`,
+    recovery: [RETRY],
+  };
+}
+
 function nexusFailure(d: Detail, context: VoiceContext): Voiced {
   const raw = Object.values(d).join(" ");
+  if (context === "nexusFind") return nexusFind(d, raw);
   if (NEXUS_REFUSED.test(raw)) return nexusRefused();
   if (NEXUS_QUOTA.test(raw)) return nexusQuota(d);
   if (context === "nexusLink") return nexusLink(d);

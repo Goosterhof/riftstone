@@ -58,6 +58,34 @@ impl NexusMod {
     }
 }
 
+/// A Nexus mod a package may have come from (v0.2, Find on Nexus): one node of
+/// the name search [`crate::NexusClient::find_mods`] makes. A candidate links
+/// nothing: the player picks one, and a link by its mod id follows.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModCandidate {
+    /// Always in 1..=`i32::MAX`: an id a link can be made from.
+    pub mod_id: u64,
+    /// Nexus's name for the mod, trimmed; never empty.
+    pub name: String,
+    /// The author Nexus shows (`author`), else the uploader's name.
+    pub author: Option<String>,
+    /// The MOD-level version, as Nexus writes it (shown, never compared).
+    pub version: Option<String>,
+    /// `category`, else `modCategory.name`.
+    pub category: Option<String>,
+    /// Nexus flags the mod as adult content. A null flag reads `false`; a
+    /// flag whose resolver FAILED comes with a GraphQL error, and the whole
+    /// answer is refused before it could read as "not adult".
+    pub adult: bool,
+    pub downloads: Option<u64>,
+    pub endorsements: Option<u64>,
+    /// Nexus's summary, whitespace-collapsed, at most 200 characters.
+    pub summary: Option<String>,
+    /// When the mod page last changed (`updatedAt`), ms since the epoch.
+    pub updated_ms: Option<i64>,
+}
+
 /// A file's category on its mod page (v2 `ModFileCategory`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -3,7 +3,7 @@
 // Your World gold and NOT INSTALLED becomes INSTALLED.
 
 import { afterEach, describe, expect, it } from "vitest";
-import { button, hasButton, sleep, text, textOf, typeQuery, until, wakeOn } from "./harness";
+import { button, hasButton, sleep, text, textOf, typeQuery, until, wakeOn, idle } from "./harness";
 
 afterEach(() => sleep());
 
@@ -19,7 +19,12 @@ describe("the crossing", () => {
   it("should carry a searched mod from the Rift into your world, and turn its card gold", async () => {
     await wakeOn();
     await typeQuery("lantern");
-    await until(() => card("Lantern Glow Recolor") !== null, "the Lantern Glow card");
+    // the card is on the shelf before the search answers: wait for its lit hit,
+    // or a loaded bench reads the card from the unsearched frame
+    await until(
+      () => Boolean(card("Lantern Glow Recolor")?.querySelector("mark.rs-hit")),
+      "the Lantern Glow card, answered",
+    );
 
     const before = card("Lantern Glow Recolor");
     expect(before?.classList.contains("rail-world")).toBe(false);
@@ -29,7 +34,7 @@ describe("the crossing", () => {
     before?.click();
     await until(() => hasButton("Install…"), "the option detail");
     button("Install…").click();
-    await until(() => hasButton("Install ▶") && !button("Install ▶").disabled, "the install plan");
+    await until(() => hasButton("Install ▶") && idle(button("Install ▶")), "the install plan");
     expect(text()).toContain("nothing is written until you press Install");
 
     button("Install ▶").click();

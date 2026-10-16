@@ -8,6 +8,8 @@
 //! `MD5_INVALID` error shape, and (v0.2) each mod's `category`, `tags { name }`
 //! (often `[]`) and nullable `adultContent`. `mods_page_without_labels.json` is
 //! the v0.1 answer shape, kept to prove an answer without labels still reads.
+//! `mods_found.json` is a name search's answer (v0.2, Find on Nexus) in the
+//! `mods(filter, sort, count)` shape measured on 2026-10-16.
 //! Names, ids, categories and tags are invented. Nothing here touches the
 //! network.
 
@@ -19,11 +21,13 @@ use std::time::Duration;
 
 use rift_core::{LinkSource, NexusLink};
 use rift_nexus::{
-    pin_link, update_state, FileCategory, NexusClient, NexusError, UpdateState, GAME_ID,
+    pin_link, search_terms, update_state, FileCategory, ModCandidate, NexusClient, NexusError,
+    UpdateState, GAME_ID,
 };
 use serde_json::{json, Value};
 use support::{dead_address, Recorded, Reply, TestServer};
 
+const MODS_FOUND: &str = include_str!("fixtures/mods_found.json");
 const MODS_PAGE: &str = include_str!("fixtures/mods_page.json");
 const MODS_PAGE_WITHOUT_LABELS: &str = include_str!("fixtures/mods_page_without_labels.json");
 const MOD_FILES: &str = include_str!("fixtures/mod_files_aliased.json");
@@ -896,6 +900,329 @@ fn a_maintenance_page_or_a_whole_request_error_costs_one_post() {
         ))
     );
     assert_eq!(complex.request_count(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Find on Nexus (v0.2): the name search
+// ---------------------------------------------------------------------------
+
+/// The `op` a find request asked `nameStemmed` to match with.
+fn find_op(request: &Recorded) -> String {
+    let query = request.query();
+    let marker = "nameStemmed: [{ value: $terms, op: ";
+    let start = query
+        .find(marker)
+        .unwrap_or_else(|| panic!("not a find query: {query}"))
+        + marker.len();
+    query[start..]
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// A find answer holding `nodes`.
+fn found(nodes: Value) -> Reply {
+    let total = nodes.as_array().map_or(0, Vec::len);
+    Reply::json(json!({ "data": { "mods": { "totalCount": total, "nodes": nodes } } }))
+}
+
+fn nothing_found() -> Reply {
+    found(json!([]))
+}
+
+#[test]
+fn a_find_sends_its_terms_as_a_variable_never_as_query_text() {
+    let server = TestServer::start(|_| Reply::fixture(MODS_FOUND));
+    let client = server
+        .client()
+        .with_api_key(Some("invented-personal-key".into()));
+    let terms = search_terms("LanternGlowRecolor_v2.1 (1).zip");
+    assert_eq!(terms, "Lantern Glow Recolor");
+    client.find_mods(&format!("  {terms}  ")).unwrap();
+
+    assert_eq!(
+        server.request_count(),
+        1,
+        "a hit on the first ask is one POST"
+    );
+    let request = &server.requests()[0];
+    assert_eq!(
+        (request.method.as_str(), request.path.as_str()),
+        ("POST", "/v2/graphql")
+    );
+    assert_eq!(
+        request.json()["variables"],
+        json!({ "terms": "Lantern Glow Recolor" }),
+        "trimmed, and the only variable"
+    );
+    let query = request.query();
+    assert!(
+        !query.contains("Lantern"),
+        "the terms are no query text: {query}"
+    );
+    assert!(query.contains("mods(filter: {"), "{query}");
+    assert!(
+        query.contains(r#"gameDomainName: [{ value: "dragonsdogma2", op: EQUALS }]"#),
+        "{query}"
+    );
+    assert!(
+        query.contains("sort: [{ relevance: { direction: DESC } }]"),
+        "{query}"
+    );
+    assert!(query.contains("count: 5"), "{query}");
+    assert_eq!(find_op(request), "MATCHES");
+    assert_eq!(
+        request.header("apikey"),
+        None,
+        "v2 is anonymous, a find too"
+    );
+
+    // A name that tries to break out of the variable stays inside it.
+    let hostile = r#"Lantern" } ] }) { __schema { types { name } } } #"#;
+    client.find_mods(hostile).unwrap();
+    let request = &server.requests()[1];
+    assert_eq!(request.json()["variables"]["terms"], hostile);
+    assert_eq!(
+        request.query(),
+        query,
+        "the same query text, whatever the terms"
+    );
+}
+
+#[test]
+fn a_find_maps_every_field_in_nexus_order() {
+    let server = TestServer::start(|_| Reply::fixture(MODS_FOUND));
+    let candidates = server.client().find_mods("lantern glow").unwrap();
+    assert_eq!(
+        candidates.iter().map(|c| c.mod_id).collect::<Vec<_>>(),
+        vec![2207, 5150, 6006],
+        "relevance order kept; another game's mod and a node without a mod id left out"
+    );
+    assert_eq!(
+        candidates[0],
+        ModCandidate {
+            mod_id: 2207,
+            name: "Lantern Glow Recolor".into(),
+            author: Some("Vern".into()),
+            version: Some("2.1".into()),
+            category: Some("Visuals".into()),
+            adult: false,
+            downloads: Some(15_230),
+            endorsements: Some(412),
+            summary: Some("Warmer lanterns for Vernworth's streets at night.".into()),
+            updated_ms: Some(1_714_786_245_000),
+        },
+        "the author before the uploader, the category before modCategory, the summary collapsed"
+    );
+    let ember = &candidates[1];
+    assert_eq!(
+        ember.author.as_deref(),
+        Some("EmberSmith"),
+        "author null: the uploader"
+    );
+    assert_eq!(
+        ember.category.as_deref(),
+        Some("Visuals"),
+        "category null: modCategory"
+    );
+    assert_eq!(
+        (ember.version.as_deref(), ember.summary.as_deref()),
+        (None, None)
+    );
+    assert!(!ember.adult, "adultContent null is not adult");
+    assert_eq!(ember.updated_ms, None, "an unparseable updatedAt is none");
+    assert_eq!((ember.downloads, ember.endorsements), (Some(310), Some(9)));
+    let night = &candidates[2];
+    assert!(night.adult);
+    assert_eq!((night.downloads, night.endorsements), (Some(0), Some(0)));
+    assert_eq!(night.updated_ms, Some(1_791_987_830_000));
+}
+
+#[test]
+fn no_candidate_asks_once_more_with_wildcard_and_then_stops() {
+    let server = TestServer::start(|_| nothing_found());
+    let candidates = server
+        .client()
+        .find_mods("Vernworth Cloaks Collection")
+        .unwrap();
+    assert!(candidates.is_empty());
+    let requests = server.requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "MATCHES, then WILDCARD, then nothing more"
+    );
+    assert_eq!(
+        requests.iter().map(find_op).collect::<Vec<_>>(),
+        vec!["MATCHES", "WILDCARD"]
+    );
+    for request in &requests {
+        assert_eq!(
+            request.json()["variables"],
+            json!({ "terms": "Vernworth Cloaks Collection" }),
+            "the same terms both times"
+        );
+    }
+}
+
+#[test]
+fn a_wildcard_hit_is_the_answer() {
+    let server = TestServer::start(|request| {
+        if find_op(request) == "WILDCARD" {
+            found(json!([{ "modId": 2207, "name": "Vernworth Cloaks Collection" }]))
+        } else {
+            nothing_found()
+        }
+    });
+    let candidates = server.client().find_mods("Vernworth Cloak").unwrap();
+    assert_eq!(
+        candidates.iter().map(|c| c.mod_id).collect::<Vec<_>>(),
+        vec![2207]
+    );
+    assert_eq!(server.request_count(), 2);
+}
+
+#[test]
+fn nodes_that_are_no_candidates_count_as_no_hit() {
+    // Another game's mod and a node without a name: MATCHES found nothing
+    // usable, so WILDCARD is asked.
+    let server = TestServer::start(|request| {
+        if find_op(request) == "WILDCARD" {
+            found(json!([{ "modId": 2207, "name": "Ermine Cape" }]))
+        } else {
+            found(json!([
+                { "modId": 4242, "name": "Ermine Cape", "game": { "domainName": "skyrimspecialedition" } },
+                { "modId": 5150, "name": "" }
+            ]))
+        }
+    });
+    let candidates = server.client().find_mods("Ermine Cape").unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].mod_id, 2207);
+    assert_eq!(server.request_count(), 2);
+}
+
+#[test]
+fn a_find_keeps_at_most_five_candidates() {
+    let server = TestServer::start(|_| {
+        found(Value::Array(
+            (1..=7)
+                .map(|id| json!({ "modId": id, "name": format!("Lantern Glow {id}") }))
+                .collect(),
+        ))
+    });
+    let candidates = server.client().find_mods("lantern glow").unwrap();
+    assert_eq!(
+        candidates.iter().map(|c| c.mod_id).collect::<Vec<_>>(),
+        vec![1, 2, 3, 4, 5]
+    );
+}
+
+#[test]
+fn blank_terms_send_nothing() {
+    let server = TestServer::start(|_| Reply::fixture(MODS_FOUND));
+    let client = server.client();
+    for blank in ["", "   ", "\t\n"] {
+        assert_eq!(client.find_mods(blank), Ok(vec![]), "{blank:?}");
+    }
+    assert_eq!(server.request_count(), 0);
+}
+
+#[test]
+fn a_find_that_failed_is_an_error_never_nothing_found() {
+    // An empty page that came with an error: the search failed, it did not
+    // come up empty. No WILDCARD retry either.
+    let refused = TestServer::start(|_| {
+        Reply::fixture(
+            r#"{"data":{"mods":{"totalCount":0,"nodes":[]}},"errors":[{"message":"Search backend unavailable"}]}"#,
+        )
+    });
+    assert_eq!(
+        refused.client().find_mods("lantern glow"),
+        Err(NexusError::BadResponse("Search backend unavailable".into()))
+    );
+    assert_eq!(refused.request_count(), 1);
+
+    // A node whose adultContent failed: refused, so it never reads as "not adult".
+    let flag_failed = TestServer::start(|_| {
+        Reply::fixture(
+            r#"{"data":{"mods":{"totalCount":1,"nodes":[{"modId":2207,"name":"Lantern Glow Recolor","adultContent":null}]}},
+                "errors":[{"message":"adultContent could not be resolved","path":["mods","nodes",0,"adultContent"]}]}"#,
+        )
+    });
+    assert_eq!(
+        flag_failed.client().find_mods("lantern glow"),
+        Err(NexusError::BadResponse(
+            "adultContent could not be resolved".into()
+        ))
+    );
+
+    // The retry's failure is a failure too.
+    let retry_failed = TestServer::start(|request| {
+        if find_op(request) == "WILDCARD" {
+            Reply::status(503)
+        } else {
+            nothing_found()
+        }
+    });
+    assert_eq!(
+        retry_failed.client().find_mods("lantern glow"),
+        Err(NexusError::Http(503))
+    );
+    assert_eq!(retry_failed.request_count(), 2);
+
+    // A changed schema answers 400 with a GraphQL error; a missing page is no page.
+    let schema = TestServer::start(|_| {
+        Reply::raw(
+            400,
+            r#"{"errors":[{"message":"Field 'nameStemmed' is not defined by type 'ModsFilter'.","extensions":{"code":"GRAPHQL_VALIDATION_FAILED"}}]}"#,
+        )
+    });
+    match schema.client().find_mods("lantern glow") {
+        Err(NexusError::BadResponse(reason)) => assert!(
+            reason.starts_with("HTTP 400:") && reason.contains("GRAPHQL_VALIDATION_FAILED"),
+            "{reason}"
+        ),
+        other => panic!("expected BadResponse, got {other:?}"),
+    }
+    let no_page = TestServer::start(|_| Reply::fixture(r#"{"data":{"mods":null}}"#));
+    assert!(matches!(
+        no_page.client().find_mods("lantern glow"),
+        Err(NexusError::BadResponse(_))
+    ));
+    assert_eq!(no_page.request_count(), 1);
+
+    // Offline.
+    let dead = dead_address();
+    let offline = NexusClient::new("0.1.0")
+        .with_endpoints(&format!("{dead}/v2/graphql"), &format!("{dead}/v1"));
+    assert!(matches!(
+        offline.find_mods("lantern glow"),
+        Err(NexusError::Offline(_))
+    ));
+}
+
+#[test]
+fn a_429_on_a_find_benches_every_graphql_call() {
+    let server = TestServer::start(|_| Reply::status(429).header("Retry-After", "9"));
+    let client = server.client();
+    assert_eq!(
+        client.find_mods("lantern glow"),
+        Err(NexusError::RateLimited {
+            retry_after_s: Some(9)
+        })
+    );
+    // The find, and the update check after it, sit out the same window.
+    assert!(matches!(
+        client.find_mods("ermine cape"),
+        Err(NexusError::RateLimited { .. })
+    ));
+    assert!(matches!(
+        client.clone().mods(&[2207]),
+        Err(NexusError::RateLimited { .. })
+    ));
+    assert_eq!(server.request_count(), 1);
 }
 
 // ---------------------------------------------------------------------------

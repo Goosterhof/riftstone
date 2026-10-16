@@ -4,11 +4,13 @@
 //! the API key is validated, stored in the (in-memory) credential store, and
 //! its quota surfaces; unlinking silences the catalog's guess. v0.2: the
 //! same check brings each mod's category, tags and adult flag, and they reach
-//! the library's search filters, its facets and its option details.
+//! the library's search filters, its facets and its option details; and Find
+//! on Nexus searches by a package's name for what MD5 cannot identify (an
+//! unpacked folder, a repack), so a pick can link it and a check label it.
 
 mod support;
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use riftstone_lib::commands::{library, nexus};
 use riftstone_lib::dto::{
@@ -18,7 +20,7 @@ use riftstone_lib::dto::{
 use riftstone_lib::events::{UPDATES_CHANGED, UPDATES_PROGRESS};
 use riftstone_lib::persist::DataDirs;
 use riftstone_lib::state::AppState;
-use support::{Answer, Bench, StandIn, BANTER_UPLOADED_S};
+use support::{Answer, Bench, Seen, StandIn, BANTER_UPLOADED_S};
 
 fn file(
     file_id: u64,
@@ -666,4 +668,418 @@ fn labels_outlive_a_check_made_while_their_package_was_out_of_the_library() {
     assert!(cold.scan_blocking());
     assert_eq!(nexus::get_labels_impl(&cold), labeled);
     assert_eq!(verdict(&cold), Some(UpdateStateView::Current));
+}
+
+// ---------------------------------------------------------------------------
+// Find on Nexus (v0.2): by name, for what MD5 cannot identify
+// ---------------------------------------------------------------------------
+
+/// The unpacked folder of the Find tests: no archive to hash, no Nexus file
+/// name, one option bundled under the collection it came from.
+const UNPACKED: &str = "VernworthCloaks_Unpacked_v3";
+const TRIM_MESH: &str = "natives/stm/appsystem/cloak/ermine_trim.mesh.260421070";
+
+fn unpack_folder(bench: &Bench, name: &str, modinfo: &str) {
+    let folder = bench.mods.join(name);
+    let mesh = folder.join(TRIM_MESH);
+    std::fs::create_dir_all(mesh.parent().unwrap()).unwrap();
+    std::fs::write(folder.join("modinfo.ini"), modinfo).unwrap();
+    std::fs::write(mesh, b"ermine trim mesh bytes").unwrap();
+}
+
+fn unpack_the_cloaks(bench: &Bench) {
+    unpack_folder(
+        bench,
+        UNPACKED,
+        "name=Ermine Trim\r\nNameAsBundle=Vernworth Cloaks Collection\r\nversion=3\r\n",
+    );
+}
+
+/// What a find request asked: its terms and its `nameStemmed` op. `None`
+/// for any other request.
+fn find_asked(request: &Seen) -> Option<(String, String)> {
+    if !request.body.contains("RiftstoneFindMods") {
+        return None;
+    }
+    let body: Value = serde_json::from_str(&request.body).unwrap();
+    let query = body["query"].as_str().unwrap();
+    for word in ["Vernworth", "Lantern", "Pawn"] {
+        assert!(
+            !query.contains(word),
+            "the terms are never query text: {query}"
+        );
+    }
+    let op = if query.contains("op: WILDCARD") {
+        "WILDCARD"
+    } else {
+        "MATCHES"
+    };
+    let terms = body["variables"]["terms"].as_str().unwrap().to_string();
+    Some((terms, op.to_string()))
+}
+
+/// Every find the stand-in heard, in order.
+fn finds(stand_in: &StandIn) -> Vec<(String, String)> {
+    stand_in.seen().iter().filter_map(find_asked).collect()
+}
+
+fn asked(terms: &str, op: &str) -> (String, String) {
+    (terms.to_string(), op.to_string())
+}
+
+/// A find answer holding these mods.
+fn found(mods: &[(u64, &str)]) -> Answer {
+    let nodes: Vec<Value> = mods
+        .iter()
+        .map(|(id, name)| {
+            json!({ "modId": id, "name": name, "version": "2", "author": "Vern",
+                    "uploader": { "name": "VernUploads" }, "category": "Armour",
+                    "modCategory": { "name": "Armour" }, "adultContent": false,
+                    "downloads": 640, "endorsements": 31,
+                    "summary": "Cloaks for the cold roads   north of Vernworth.",
+                    "updatedAt": "2026-10-14T14:23:50Z", "game": { "domainName": "dragonsdogma2" } })
+        })
+        .collect();
+    Answer::json(json!({ "data": { "mods": { "totalCount": nodes.len(), "nodes": nodes } } }))
+}
+
+fn not_there() -> Answer {
+    Answer {
+        status: 404,
+        headers: Vec::new(),
+        body: json!({}),
+    }
+}
+
+fn candidate_ids(findings: &riftstone_lib::dto::NexusFindings) -> Vec<u64> {
+    findings.candidates.iter().map(|c| c.mod_id).collect()
+}
+
+#[test]
+fn find_on_nexus_by_name_then_a_pick_links_and_a_check_labels_an_unpacked_folder() {
+    let stand_in = StandIn::start(|request| {
+        if let Some((terms, op)) = find_asked(request) {
+            return match (terms.as_str(), op.as_str()) {
+                ("Vernworth Cloaks Collection", "WILDCARD") => found(&[
+                    (5150, "Vernworth Cloaks Collection"),
+                    (6006, "Vernworth Cloaks Collection - Hoods"),
+                ]),
+                _ => found(&[]),
+            };
+        }
+        if request.body.contains("legacyModsByDomain") {
+            return Answer::json(json!({ "data": { "legacyModsByDomain": {
+                "totalCount": 2,
+                "nodes": [
+                    { "modId": 1234, "name": "Pawn Banter Plus", "version": "1",
+                      "updatedAt": "2026-10-15T09:00:00Z", "status": "published",
+                      "category": "Utilities", "tags": [{ "name": "Utilities for Players" }],
+                      "adultContent": false },
+                    { "modId": 5150, "name": "Vernworth Cloaks Collection", "version": "2",
+                      "updatedAt": "2026-10-15T09:00:00Z", "status": "published",
+                      "category": "Armour",
+                      "tags": [{ "name": "Cloaks" }, { "name": "Lore-Friendly" }],
+                      "adultContent": false }
+                ]
+            }}}));
+        }
+        if request.body.contains("modFiles") {
+            return Answer::json(json!({ "data": {
+                "m1234": [file(501, "Ab3dE5fG7", "1", "MAIN", BANTER_UPLOADED_S, 1)],
+                "m5150": [file(777, "Rk4vLmN2Q", "2", "MAIN", 1_789_500_000, 1)]
+            }}));
+        }
+        not_there()
+    });
+    let bench = Bench::new();
+    unpack_the_cloaks(&bench);
+    let mut config = bench.config(DataDirs::under(&bench.data_home()));
+    config.nexus_endpoints = Some((stand_in.graphql_url(), stand_in.v1_base()));
+    let (state, events) = bench.open(config);
+    assert!(state.scan_blocking());
+    let folder = package_id(&state, UNPACKED);
+
+    // What MD5 cannot identify: a folder has no archive to hash.
+    let md5 = nexus::identify_packages_impl(&state, std::slice::from_ref(&folder)).unwrap();
+    assert!(!md5[0].matched);
+    assert!(stand_in.seen().is_empty(), "nothing to hash, nothing asked");
+
+    let rows_before = nexus::get_updates_impl(&state);
+    let labels_before = nexus::get_labels_impl(&state);
+    assert_eq!(labels_before.unlabeled_packages, 4);
+    events.clear();
+
+    // -- Find: the folder's own name finds nothing, its bundle does ----------
+    let findings = nexus::find_on_nexus_impl(&state, &folder).unwrap();
+    assert_eq!(
+        finds(&stand_in),
+        vec![
+            asked("Vernworth Cloaks Unpacked", "MATCHES"),
+            asked("Vernworth Cloaks Unpacked", "WILDCARD"),
+            asked("Vernworth Cloaks Collection", "MATCHES"),
+            asked("Vernworth Cloaks Collection", "WILDCARD"),
+        ],
+        "the name, then the first option's bundle: four POSTs at most"
+    );
+    assert_eq!(findings.package_id, folder);
+    assert_eq!(
+        findings.terms, "Vernworth Cloaks Collection",
+        "the terms answered last"
+    );
+    assert_eq!(candidate_ids(&findings), vec![5150, 6006], "Nexus's order");
+    let cloaks = &findings.candidates[0];
+    assert_eq!(cloaks.name, "Vernworth Cloaks Collection");
+    assert_eq!(
+        cloaks.page_url,
+        "https://www.nexusmods.com/dragonsdogma2/mods/5150"
+    );
+    assert_eq!(cloaks.linked_packages, 0, "nothing links to it yet");
+    assert_eq!(
+        (cloaks.author.as_deref(), cloaks.category.as_deref()),
+        (Some("Vern"), Some("Armour"))
+    );
+    assert_eq!(
+        cloaks.summary.as_deref(),
+        Some("Cloaks for the cold roads north of Vernworth.")
+    );
+    assert_eq!(cloaks.updated_ms, Some(1_791_987_830_000));
+
+    // -- a find links nothing and tells the window nothing -------------------
+    assert_eq!(nexus::get_updates_impl(&state), rows_before);
+    assert_eq!(nexus::get_labels_impl(&state), labels_before);
+    assert!(events.named(UPDATES_CHANGED).is_empty());
+    assert!(
+        stand_in.seen().iter().all(|r| find_asked(r).is_some()),
+        "a find sends finds only"
+    );
+
+    // -- the player picks the cloaks: the window links by mod id and checks --
+    let row = nexus::link_package_impl(&state, &folder, &cloaks.mod_id.to_string()).unwrap();
+    let link = row.link.unwrap();
+    assert_eq!((link.mod_id, link.source), (5150, LinkSource::Manual));
+    nexus::check_updates_impl(&state).unwrap();
+
+    // The labels arrive in search and in get_labels.
+    assert_eq!(
+        names(&by_labels(&state, &["armour"], &[])),
+        vec!["Ermine Trim"]
+    );
+    let trim = by_labels(&state, &[], &["Cloaks", "Lore-Friendly"]);
+    assert_eq!(names(&trim), vec!["Ermine Trim"]);
+    assert_eq!(trim[0].nexus_category.as_deref(), Some("Armour"));
+    assert!(!trim[0].adult);
+    let facets = nexus::get_labels_impl(&state);
+    assert!(
+        facets.categories.contains(&count("Armour", 1)),
+        "{facets:?}"
+    );
+    assert!(facets.tags.contains(&count("Cloaks", 1)), "{facets:?}");
+    assert_eq!(
+        facets.unlabeled_packages, 2,
+        "the folder and the banter are labeled; the two zips are not"
+    );
+    // The check judged the new link. A link by mod id carries no file
+    // identity (no sqid, file id, upload time or version), so the check
+    // knows the mod and its labels, and cannot tell which file this is.
+    let verdict = nexus::get_updates_impl(&state)
+        .rows
+        .into_iter()
+        .find(|r| r.package_id == folder)
+        .unwrap();
+    assert!(verdict.checked_ms.is_some());
+    assert_eq!(
+        verdict.mod_name.as_deref(),
+        Some("Vernworth Cloaks Collection")
+    );
+    assert_eq!(verdict.state, UpdateStateView::Unpinned);
+
+    // -- a candidate counts the packages linked to its mod right now ---------
+    let zip = package_id(&state, "Vernworth Cloaks Collection.zip");
+    nexus::link_package_impl(
+        &state,
+        &zip,
+        "https://www.nexusmods.com/dragonsdogma2/mods/5150",
+    )
+    .unwrap();
+    let again = nexus::find_on_nexus_impl(&state, &folder).unwrap();
+    assert_eq!(
+        again
+            .candidates
+            .iter()
+            .map(|c| (c.mod_id, c.linked_packages))
+            .collect::<Vec<_>>(),
+        vec![(5150, 2), (6006, 0)]
+    );
+}
+
+#[test]
+fn a_repack_found_by_its_name_at_once_asks_nothing_more() {
+    let stand_in = StandIn::start(|request| {
+        if let Some((terms, op)) = find_asked(request) {
+            return if (terms.as_str(), op.as_str()) == ("Lantern Glow Recolor", "MATCHES") {
+                // More than a find keeps: Nexus's first five stand.
+                found(&[
+                    (2207, "Lantern Glow Recolor"),
+                    (4242, "Lantern Glow - Ember Red"),
+                    (11, "Lantern Glow 11"),
+                    (12, "Lantern Glow 12"),
+                    (13, "Lantern Glow 13"),
+                    (14, "Lantern Glow 14"),
+                    (15, "Lantern Glow 15"),
+                ])
+            } else {
+                found(&[])
+            };
+        }
+        if request.body.contains("fileHashes") {
+            // A repack: its bytes are new, Nexus knows no file with its MD5.
+            return Answer::json(json!({ "data": { "fileHashes": [] } }));
+        }
+        not_there()
+    });
+    let bench = Bench::new();
+    let mut config = bench.config(DataDirs::under(&bench.data_home()));
+    config.nexus_endpoints = Some((stand_in.graphql_url(), stand_in.v1_base()));
+    let (state, _) = bench.open(config);
+    assert!(state.scan_blocking());
+    let lantern = package_id(&state, "Lantern Glow Recolor.zip");
+    let md5 = nexus::identify_packages_impl(&state, std::slice::from_ref(&lantern)).unwrap();
+    assert!(!md5[0].matched, "MD5 cannot identify a repack");
+
+    let findings = nexus::find_on_nexus_impl(&state, &lantern).unwrap();
+    assert_eq!(findings.terms, "Lantern Glow Recolor");
+    assert_eq!(
+        finds(&stand_in),
+        vec![asked("Lantern Glow Recolor", "MATCHES")],
+        "a hit on the first ask is the only POST"
+    );
+    assert_eq!(
+        candidate_ids(&findings),
+        vec![2207, 4242, 11, 12, 13],
+        "at most five, in Nexus's order"
+    );
+}
+
+#[test]
+fn a_folder_named_like_nothing_asks_by_its_first_options_names() {
+    // `DD2_v1.2` holds nothing to search for, so the find asks with the
+    // folder's modinfo: its bundle first, then the option's own name.
+    let stand_in = StandIn::start(|request| {
+        if let Some((terms, op)) = find_asked(request) {
+            return if (terms.as_str(), op.as_str()) == ("Ember Red", "MATCHES") {
+                found(&[(4242, "Lantern Glow - Ember Red")])
+            } else {
+                found(&[])
+            };
+        }
+        not_there()
+    });
+    let bench = Bench::new();
+    unpack_folder(
+        &bench,
+        "DD2_v1.2",
+        "name=Ember Red\r\nNameAsBundle=Lantern Glow Recolor\r\n",
+    );
+    let mut config = bench.config(DataDirs::under(&bench.data_home()));
+    config.nexus_endpoints = Some((stand_in.graphql_url(), stand_in.v1_base()));
+    let (state, events) = bench.open(config);
+    assert!(state.scan_blocking());
+    let folder = package_id(&state, "DD2_v1.2");
+    events.clear();
+
+    let findings = nexus::find_on_nexus_impl(&state, &folder).unwrap();
+    assert_eq!(
+        finds(&stand_in),
+        vec![
+            asked("Lantern Glow Recolor", "MATCHES"),
+            asked("Lantern Glow Recolor", "WILDCARD"),
+            asked("Ember Red", "MATCHES"),
+        ],
+        "the bundle, then the option's name; never the folder's own name"
+    );
+    assert_eq!(findings.terms, "Ember Red", "the terms answered last");
+    assert_eq!(candidate_ids(&findings), vec![4242]);
+    assert!(events.named(UPDATES_CHANGED).is_empty(), "a find only asks");
+}
+
+#[test]
+fn a_find_says_when_it_could_not_search_or_could_not_hear() {
+    let stand_in = StandIn::start(|request| {
+        if let Some((terms, _)) = find_asked(request) {
+            return match terms.as_str() {
+                "Lantern Glow Recolor" => Answer::json(json!({
+                    "data": { "mods": { "totalCount": 0, "nodes": [] } },
+                    "errors": [{ "message": "Search backend unavailable" }]
+                })),
+                "Pawn Banter" => Answer {
+                    status: 429,
+                    headers: vec![("Retry-After".into(), "30".into())],
+                    body: json!({}),
+                },
+                _ => found(&[]),
+            };
+        }
+        not_there()
+    });
+    let bench = Bench::new();
+    unpack_the_cloaks(&bench);
+    // A folder whose name holds nothing to search for, nor its option's: a
+    // modinfo without a `name=` names the option after the folder.
+    unpack_folder(&bench, "DD2_v1.2", "version=1.2\r\n");
+    let mut config = bench.config(DataDirs::under(&bench.data_home()));
+    config.nexus_endpoints = Some((stand_in.graphql_url(), stand_in.v1_base()));
+    let (state, _) = bench.open(config);
+    assert!(state.scan_blocking());
+
+    // -- nothing searchable: an answer, and not a word sent -------------------
+    let silent = package_id(&state, "DD2_v1.2");
+    let nothing = nexus::find_on_nexus_impl(&state, &silent).unwrap();
+    assert_eq!(nothing.package_id, silent);
+    assert_eq!(nothing.terms, "");
+    assert!(nothing.candidates.is_empty());
+    assert!(stand_in.seen().is_empty(), "nothing was sent");
+
+    // -- an unknown package --------------------------------------------------
+    assert_eq!(
+        nexus::find_on_nexus_impl(&state, "0000000000000000").unwrap_err(),
+        rift_core::RiftError::EntryNotFound {
+            entry: "0000000000000000".into()
+        }
+    );
+    assert!(stand_in.seen().is_empty());
+
+    // -- both finds come up empty: the answer names the terms sent last ------
+    let folder = package_id(&state, UNPACKED);
+    let empty = nexus::find_on_nexus_impl(&state, &folder).unwrap();
+    assert_eq!(empty.terms, "Vernworth Cloaks Collection");
+    assert!(empty.candidates.is_empty());
+    assert_eq!(finds(&stand_in).len(), 4);
+
+    // -- a search that failed is an error, never "nothing found" -------------
+    let lantern = package_id(&state, "Lantern Glow Recolor.zip");
+    match nexus::find_on_nexus_impl(&state, &lantern) {
+        Err(rift_core::RiftError::Nexus { detail }) => {
+            assert!(detail.contains("Search backend unavailable"), "{detail}")
+        }
+        other => panic!("expected a Nexus error, got {other:?}"),
+    }
+    assert_eq!(finds(&stand_in).len(), 5, "no retry after a refusal");
+
+    // -- slowed down: the rate limit speaks, and the next find waits ---------
+    let banter = package_id(&state, support::BANTER_ZIP);
+    match nexus::find_on_nexus_impl(&state, &banter) {
+        Err(rift_core::RiftError::Nexus { detail }) => {
+            assert!(detail.starts_with("rate limit"), "{detail}")
+        }
+        other => panic!("expected the rate limit, got {other:?}"),
+    }
+    assert!(matches!(
+        nexus::find_on_nexus_impl(&state, &folder),
+        Err(rift_core::RiftError::Nexus { .. })
+    ));
+    assert_eq!(
+        finds(&stand_in).len(),
+        6,
+        "the back-off held the last find home"
+    );
 }

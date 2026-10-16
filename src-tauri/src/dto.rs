@@ -970,6 +970,68 @@ pub struct Md5Result {
 }
 
 // ---------------------------------------------------------------------------
+// v0.2 — Find on Nexus by name (find_on_nexus)
+// ---------------------------------------------------------------------------
+
+/// A Nexus mod that may be where a package came from. A find never links:
+/// the player picks one, and the window links it with `link_package`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NexusCandidate {
+    pub mod_id: u64,
+    pub name: String,
+    /// The author Nexus shows, else the uploader's name.
+    pub author: Option<String>,
+    pub version: Option<String>,
+    pub category: Option<String>,
+    pub adult: bool,
+    pub downloads: Option<u64>,
+    pub endorsements: Option<u64>,
+    /// Nexus's summary, whitespace-collapsed, at most 200 characters.
+    pub summary: Option<String>,
+    /// The mod's last update on Nexus, ms since the epoch.
+    pub updated_ms: Option<i64>,
+    /// `https://www.nexusmods.com/dragonsdogma2/mods/<modId>`
+    pub page_url: String,
+    /// Packages in the library already linked to this mod.
+    pub linked_packages: usize,
+}
+
+impl NexusCandidate {
+    /// rift-nexus's candidate as the window shows it, with how many of the
+    /// library's packages are linked to that mod right now.
+    pub fn of(candidate: &rift_nexus::ModCandidate, linked_packages: usize) -> Self {
+        NexusCandidate {
+            mod_id: candidate.mod_id,
+            name: candidate.name.clone(),
+            author: candidate.author.clone(),
+            version: candidate.version.clone(),
+            category: candidate.category.clone(),
+            adult: candidate.adult,
+            downloads: candidate.downloads,
+            endorsements: candidate.endorsements,
+            summary: candidate.summary.clone(),
+            updated_ms: candidate.updated_ms,
+            page_url: rift_nexus::mod_page_url(candidate.mod_id),
+            linked_packages,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NexusFindings {
+    pub package_id: String,
+    /// The words sent to Nexus (the set answered last): from the package's
+    /// display name, or, when it holds nothing searchable, from its first
+    /// option's bundle or name. `""` when none of those held anything to
+    /// search for: then nothing was sent and `candidates` is empty.
+    pub terms: String,
+    /// Nexus's relevance order, at most 5.
+    pub candidates: Vec<NexusCandidate>,
+}
+
+// ---------------------------------------------------------------------------
 // settings
 // ---------------------------------------------------------------------------
 
@@ -3147,6 +3209,123 @@ mod tests {
             &["phase", "done", "total"],
         );
         assert_eq!(serde_json::to_value(Nothing {}).unwrap(), json!({}));
+    }
+
+    const CANDIDATE_KEYS: [&str; 12] = [
+        "modId",
+        "name",
+        "author",
+        "version",
+        "category",
+        "adult",
+        "downloads",
+        "endorsements",
+        "summary",
+        "updatedMs",
+        "pageUrl",
+        "linkedPackages",
+    ];
+
+    fn candidate() -> NexusCandidate {
+        NexusCandidate {
+            mod_id: 2207,
+            name: "Lantern Glow Recolor".into(),
+            author: Some("Vern".into()),
+            version: Some("2.1".into()),
+            category: Some("Visuals".into()),
+            adult: false,
+            downloads: Some(15_230),
+            endorsements: Some(412),
+            summary: Some("Warmer lanterns for Vernworth's streets at night.".into()),
+            updated_ms: Some(1_714_786_245_000),
+            page_url: "https://www.nexusmods.com/dragonsdogma2/mods/2207".into(),
+            linked_packages: 1,
+        }
+    }
+
+    #[test]
+    fn find_shapes_carry_exactly_the_ts_keys() {
+        let findings = round_trip(
+            &NexusFindings {
+                package_id: "00000000000000aa".into(),
+                terms: "Lantern Glow Recolor".into(),
+                candidates: vec![candidate()],
+            },
+            &["packageId", "terms", "candidates"],
+        );
+        assert_eq!(keys(&findings["candidates"][0]), sorted(&CANDIDATE_KEYS));
+        round_trip(&candidate(), &CANDIDATE_KEYS);
+
+        // `T | null` is null, never absent.
+        let bare = serde_json::to_value(NexusCandidate {
+            author: None,
+            version: None,
+            category: None,
+            downloads: None,
+            endorsements: None,
+            summary: None,
+            updated_ms: None,
+            ..candidate()
+        })
+        .unwrap();
+        assert_eq!(keys(&bare), sorted(&CANDIDATE_KEYS));
+        for key in [
+            "author",
+            "version",
+            "category",
+            "downloads",
+            "endorsements",
+            "summary",
+            "updatedMs",
+        ] {
+            assert!(bare[key].is_null(), "{key} in {bare}");
+        }
+
+        // Nothing searchable: no words, no candidates.
+        let nothing = round_trip(
+            &NexusFindings {
+                package_id: "00000000000000aa".into(),
+                terms: String::new(),
+                candidates: vec![],
+            },
+            &["packageId", "terms", "candidates"],
+        );
+        assert_eq!(nothing["terms"], "");
+        assert_eq!(nothing["candidates"], json!([]));
+
+        // From rift-nexus, field for field; the page URL is built from the id.
+        let from_crate = NexusCandidate::of(
+            &rift_nexus::ModCandidate {
+                mod_id: 5150,
+                name: "Vernworth Cloaks Collection".into(),
+                author: None,
+                version: Some("2".into()),
+                category: Some("Armour".into()),
+                adult: true,
+                downloads: Some(9),
+                endorsements: None,
+                summary: Some("Cloaks for the cold roads.".into()),
+                updated_ms: Some(1_791_987_830_000),
+            },
+            3,
+        );
+        assert_eq!(
+            serde_json::to_value(from_crate).unwrap(),
+            json!({
+                "modId": 5150,
+                "name": "Vernworth Cloaks Collection",
+                "author": null,
+                "version": "2",
+                "category": "Armour",
+                "adult": true,
+                "downloads": 9,
+                "endorsements": null,
+                "summary": "Cloaks for the cold roads.",
+                "updatedMs": 1_791_987_830_000_i64,
+                "pageUrl": "https://www.nexusmods.com/dragonsdogma2/mods/5150",
+                "linkedPackages": 3
+            })
+        );
     }
 
     fn parked_backup(store: &str) -> rift_deploy::ParkedBackup {

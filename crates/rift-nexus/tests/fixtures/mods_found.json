@@ -1,0 +1,73 @@
+{
+  "data": {
+    "mods": {
+      "totalCount": 5,
+      "nodes": [
+        {
+          "modId": 2207,
+          "name": "Lantern Glow Recolor",
+          "version": "2.1",
+          "author": "Vern",
+          "uploader": { "name": "VernUploads" },
+          "category": "Visuals",
+          "modCategory": { "name": "Lighting" },
+          "adultContent": false,
+          "downloads": 15230,
+          "endorsements": 412,
+          "summary": "Warmer lanterns for Vernworth's\n\nstreets   at night.",
+          "updatedAt": "2024-05-04T01:30:45Z",
+          "game": { "domainName": "dragonsdogma2" }
+        },
+        {
+          "modId": 5150,
+          "name": "Lantern Glow - Ember Red",
+          "version": "",
+          "author": null,
+          "uploader": { "name": "EmberSmith" },
+          "category": null,
+          "modCategory": { "name": "Visuals" },
+          "adultContent": null,
+          "downloads": 310,
+          "endorsements": 9,
+          "summary": "",
+          "updatedAt": "not a date",
+          "game": { "domainName": "dragonsdogma2" }
+        },
+        {
+          "modId": 4242,
+          "name": "Lantern Glow Recolor",
+          "version": "1",
+          "author": "Vern",
+          "uploader": { "name": "VernUploads" },
+          "category": "Visuals",
+          "modCategory": { "name": "Visuals" },
+          "adultContent": false,
+          "downloads": 77,
+          "endorsements": 3,
+          "summary": "The same lanterns, for another game.",
+          "updatedAt": "2024-01-01T00:00:00Z",
+          "game": { "domainName": "skyrimspecialedition" }
+        },
+        {
+          "name": "Lantern Glow without a mod id",
+          "game": { "domainName": "dragonsdogma2" }
+        },
+        {
+          "modId": 6006,
+          "name": "Lantern Glow Night Market",
+          "version": "3",
+          "author": "Vern",
+          "uploader": { "name": "VernUploads" },
+          "category": "Visuals",
+          "modCategory": { "name": "Visuals" },
+          "adultContent": true,
+          "downloads": 0,
+          "endorsements": 0,
+          "summary": "Night stalls under red lanterns.",
+          "updatedAt": "2026-10-14T14:23:50Z",
+          "game": { "domainName": "dragonsdogma2" }
+        }
+      ]
+    }
+  }
+}
