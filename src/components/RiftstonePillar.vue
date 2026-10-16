@@ -12,6 +12,7 @@ import { useFarWorld } from "@/composables/useFarWorld";
 import RiftSearchWell from "./RiftSearchWell.vue";
 import FarWorldLabels from "./FarWorldLabels.vue";
 import { useLabels } from "@/composables/useLabels";
+import { seamReach } from "@/services/seam";
 
 const search = useSearch();
 const stone = useStone();
@@ -49,6 +50,14 @@ const NAV: { id: Page; label: string; key: string }[] = [
 ];
 
 const seamState = computed(() => (stone.scanning.value ? "scanning" : search.seam.value));
+
+/** §11.1 step 3 — the gauge: n of the library's N options answered, as a
+ *  length. 0 whenever the seam is not answered (rest, silent, scanning). */
+const reach = computed(() =>
+  seamState.value === "answered"
+    ? seamReach(search.results.value.length, stone.overview.value?.library.options ?? 0)
+    : 0,
+);
 
 /** Until the stone is awake (no game, first launch), the facets and the rooms
  *  are carved but dark: only the search well and the foot speak (§9 wake). */
@@ -97,7 +106,11 @@ defineExpose({ focusSearch: () => well.value?.focus() });
   <aside
     class="pillar"
     :data-seam="seamState"
-    :style="{ '--seam-top': `${seamTop}px`, '--seam-answer': seamState === 'answered' ? 1 : 0 }"
+    :style="{
+      '--seam-top': `${seamTop}px`,
+      '--seam-answer': seamState === 'answered' ? 1 : 0,
+      '--seam-reach': reach,
+    }"
     aria-label="The Riftstone"
   >
     <header class="pillar__mark">
@@ -438,16 +451,19 @@ defineExpose({ focusSearch: () => well.value?.focus() });
 .pillar[data-seam="silent"] .seam {
   opacity: 0.08;
 }
+/* The answered rest holds at the gauge length (§11.1 step 3); a facet SNAPS
+   it, so opacity is the only thing that ever transitions here. */
 .seam-answered {
   top: var(--seam-top);
-  bottom: 0;
+  height: calc((100% - var(--seam-top)) * var(--seam-reach));
   background: var(--rs-rift);
   opacity: calc(var(--seam-answer) * 0.6);
   transition: opacity var(--rs-dur-settle) var(--rs-ease-carve);
 }
+/* The flare's scaleY 0 → 1 grows to the gauge length, not to the foot. */
 .seam-flare {
   top: var(--seam-top);
-  bottom: 0;
+  height: calc((100% - var(--seam-top)) * var(--seam-reach));
   background: linear-gradient(var(--rs-rift), rgba(143, 227, 242, 0.85) 80%, rgba(143, 227, 242, 0));
   box-shadow: var(--rs-glow-rift);
   transform-origin: top;
