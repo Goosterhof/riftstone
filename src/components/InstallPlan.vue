@@ -13,6 +13,7 @@ import { useSearch } from "@/composables/useSearch";
 import { useToasts } from "@/composables/useToasts";
 import { formatBytes, plural } from "@/services/format";
 import { skippedRows } from "@/services/payloadTree";
+import { removalWords, returnedSummary, returnHeading } from "@/services/ledger";
 import type { RecoveryKind } from "@/services/voice";
 import FailureNotice from "./FailureNotice.vue";
 import RiftButton from "./RiftButton.vue";
@@ -41,13 +42,7 @@ function writeLine(w: PlannedWrite): Line {
 }
 
 function removalLine(r: PlannedRemoval): Line {
-  const base = { path: r.gamePath, size: null };
-  const a = r.action;
-  if (a.kind === "delete") return { ...base, glyph: "−", verb: "removed", tone: "gone" };
-  if (a.kind === "restoreBackup") return { ...base, glyph: "↩", verb: `restores ${a.owner}'s file`, tone: "back" };
-  if (a.kind === "handDown") return { ...base, glyph: "↘", verb: `handed down to ${a.toOptionName}`, tone: "back" };
-  if (a.kind === "keepChanged") return { ...base, glyph: "·", verb: "kept: changed since install", tone: "skip" };
-  return { ...base, glyph: "·", verb: "kept: the game's own file", tone: "skip" };
+  return { path: r.gamePath, size: null, ...removalWords(r.action) };
 }
 
 const returning = computed(
@@ -77,7 +72,7 @@ const fileCount = computed(() =>
 
 const heading = computed(() =>
   returning.value
-    ? `THE RETURN — ${plural(fileCount.value, "file")} leave your game`
+    ? `THE RETURN — ${returnHeading(world.returnPlan.value?.removals ?? [])}`
     : `THE CROSSING — ${plural(fileCount.value, "file")}`,
 );
 
@@ -234,6 +229,7 @@ async function copyDetails(): Promise<void> {
     </div>
     <p v-else-if="world.stage.value === 'returned'" class="plan__note" role="status">
       {{ world.returnPlan.value?.name }} has returned to the Rift.
+      <template v-if="world.returned.value"> {{ returnedSummary(world.returned.value) }}</template>
     </p>
 
     <FailureNotice

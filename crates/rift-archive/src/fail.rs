@@ -84,6 +84,20 @@ pub(crate) fn write(dest: &Path, entry: &str, err: &io::Error) -> RiftError {
     )
 }
 
+/// Something already sits at `dest` (a file, a folder, a link): extraction
+/// only ever creates new files, so it refuses rather than write over it or
+/// through it. It is a refusal, the kind the deploy engine gives when its
+/// own check finds the name taken: the same fact, caught at the last
+/// moment. The reason is a full sentence naming the destination.
+pub(crate) fn taken(dest: &Path, entry: &str) -> RiftError {
+    RiftError::refused(format!(
+        "\"{}\" already exists, so {entry} was not unpacked to it: unpacking only ever creates new \
+         files, and never writes over or through one it did not put there. Move it out of the \
+         way, then try again.",
+        dest.display()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,6 +158,18 @@ mod tests {
         );
         assert_eq!(entry_label("../evil.dll"), "../evil.dll");
         assert_eq!(entry_label("./"), "./");
+    }
+
+    #[test]
+    fn a_taken_destination_is_a_refusal_that_names_it() {
+        let dest = Path::new("/game/natives/stm/cape.mesh.riftstone-part");
+        let err = taken(dest, "Cloaks/Ermine Cape/natives/stm/cape.mesh");
+        assert!(
+            matches!(&err, RiftError::Refused { reason }
+                if reason.starts_with("\"/game/natives/stm/cape.mesh.riftstone-part\" already exists")
+                    && reason.contains("Cloaks/Ermine Cape/natives/stm/cape.mesh was not unpacked")),
+            "{err:?}"
+        );
     }
 
     #[test]

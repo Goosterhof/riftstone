@@ -6,10 +6,12 @@
 // tile so two capes can be compared at full size. Hover or focus a tile and
 // its description surfaces over the picture (the variant names alone rarely
 // say which cape is which).
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { usePackage, type LookbookTile } from "@/composables/usePackage";
 import { useNavigation } from "@/composables/useNavigation";
 import { useSettings } from "@/composables/useSettings";
+import { useLabels } from "@/composables/useLabels";
+import { adultnessOf, veils, type Adultness } from "@/services/ledger";
 import { useWorld } from "@/composables/useWorld";
 import { rift } from "@/services/rift";
 import RiftThumb from "./RiftThumb.vue";
@@ -20,6 +22,38 @@ const pkg = usePackage();
 const nav = useNavigation();
 const world = useWorld();
 const { settings } = useSettings();
+const labels = useLabels();
+/** Labels belong to the Nexus mod, so the veil is the package's (v0.2). It is
+ *  read from the package's own OptionDetail.labels — the source the detail
+ *  pane veils on — through the same rule as the card and the detail, and read
+ *  again whenever the labels change (updates-changed reloads the facets), so
+ *  it can never go stale. Until a package's labels arrive it is unknown, which
+ *  "adult" veils: an adult screenshot never flashes unveiled while it loads. */
+const packageAdultness = ref<Adultness>("unknown");
+const veiled = computed(() => veils(settings.value.veil, packageAdultness.value));
+
+async function readAdultness(optionId: string | undefined): Promise<void> {
+  if (!optionId) return;
+  const current = () => pkg.tiles.value[0]?.optionId === optionId;
+  try {
+    const backend = await rift();
+    const detail = await backend.getOption(optionId);
+    if (current()) packageAdultness.value = adultnessOf(detail.labels);
+  } catch {
+    // An option that cannot be read says nothing about its package: unknown.
+    if (current()) packageAdultness.value = "unknown";
+  }
+}
+
+watch(
+  [() => pkg.tiles.value[0]?.optionId, () => labels.facets.value],
+  ([first], previous) => {
+    // A new package starts unknown, never with the last package's verdict.
+    if (first !== previous[0]) packageAdultness.value = "unknown";
+    void readAdultness(first);
+  },
+  { immediate: true },
+);
 
 const grid = ref<HTMLElement | null>(null);
 const focusIndex = ref(0);
@@ -126,7 +160,7 @@ defineExpose({
     v-if="pkg.detail.value"
     ref="grid"
     class="lookbook"
-    :class="{ 'is-veiled-all': settings.veilThumbnails }"
+    :class="{ 'is-veiled-all': veiled }"
     role="grid"
     aria-label="Lookbook"
   >
@@ -139,7 +173,7 @@ defineExpose({
         class="tile"
         :class="{
           'is-installed': t.installed,
-          'is-veiled': settings.veilThumbnails,
+          'is-veiled': veiled,
           'is-sel': world.selectedId.value === t.optionId,
         }"
         :data-tile="indexOf(t)"

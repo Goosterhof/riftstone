@@ -21,7 +21,8 @@
 //!    first place that could read it, else at its first place. A broken copy
 //!    (an interrupted copy keeps the full length) never hides a readable one.
 //! 5. [`tree::resolve`] runs over all of them, then the [`SearchIndex`] is
-//!    built.
+//!    built — without Nexus labels: those come from the spine's update
+//!    checks, through [`Catalog::set_labels`], which never rebuilds it.
 //!
 //! A package that cannot be opened still appears — no options, one
 //! `Unreadable` problem — and is never cached: a file another program held
@@ -50,7 +51,7 @@ use rift_core::{
 
 use crate::classify;
 use crate::scan::{self, ScannedPackage, Stamp, StampError};
-use crate::search::{SearchHit, SearchIndex, SearchQuery};
+use crate::search::{LabelFacets, PackageLabels, SearchHit, SearchIndex, SearchQuery};
 use crate::tree;
 
 /// The most threads one scan opens packages on.
@@ -271,6 +272,25 @@ impl Catalog {
         is_installed: &dyn Fn(&OptionId) -> bool,
     ) -> Vec<SearchHit> {
         self.index.search(query, is_installed)
+    }
+
+    /// Give each package the labels of its Nexus mod (v0.2), replacing the
+    /// last call's; the index is not rebuilt ([`SearchIndex::set_labels`]). A
+    /// fresh catalog — [`Catalog::scan`] or [`Catalog::from_cache`] — has
+    /// none until this is called.
+    pub fn set_labels(&mut self, labels: HashMap<PackageId, PackageLabels>) {
+        self.index.set_labels(labels);
+    }
+
+    /// A package's labels as the last [`Catalog::set_labels`] gave them.
+    pub fn labels(&self, id: &PackageId) -> Option<&PackageLabels> {
+        self.index.labels(id)
+    }
+
+    /// The categories and tags with their installable-option counts, and the
+    /// packages a label filter hides ([`SearchIndex::label_facets`]).
+    pub fn label_facets(&self) -> LabelFacets {
+        self.index.label_facets()
     }
 
     /// Options whose display name equals `name` (case-insensitive, trimmed) —
@@ -649,7 +669,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::search::SearchQuery;
+    use crate::search::{LabelCount, SearchFilters, SearchQuery};
     use crate::test_support::{folder_at, modinfo, root, touch_later, wreck_keeping_stamp, zip_at};
 
     const MESH: &[u8] = b"mesh bytes";
@@ -1264,6 +1284,61 @@ mod tests {
         ));
         let (catalog, cache) = Catalog::scan(&[], None, &mut quiet());
         assert!(catalog.packages().is_empty() && cache.packages.is_empty());
+    }
+
+    #[test]
+    fn nexus_labels_reach_the_catalog_search_without_a_rescan() {
+        let library = library();
+        let (mut catalog, _) = Catalog::scan(&library.roots, None, &mut quiet());
+        let cape = option_named(&catalog, "Ermine Cape").clone();
+        let trim = option_named(&catalog, "Ermine Trim").package_id.clone();
+        let armour = |tags: &[&str]| PackageLabels {
+            category: Some("Armour".to_string()),
+            tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
+            adult: false,
+        };
+        catalog.set_labels(HashMap::from([
+            (cape.package_id.clone(), armour(&["Lore Friendly"])),
+            (trim.clone(), armour(&[])),
+        ]));
+
+        let query = SearchQuery {
+            filters: SearchFilters {
+                tags: vec!["lore friendly".to_string()],
+                ..SearchFilters::default()
+            },
+            ..SearchQuery::default()
+        };
+        let hits = catalog.search(&query, &|_| false);
+        assert_eq!(
+            hits.iter().map(|hit| &hit.option_id).collect::<Vec<_>>(),
+            [&cape.id],
+            "the collection's menu entry stays hidden; the trim lacks the tag"
+        );
+        assert_eq!(hits[0].labels, Some(armour(&["Lore Friendly"])));
+        assert_eq!(catalog.labels(&trim), Some(&armour(&[])));
+        assert_eq!(
+            catalog.label_facets(),
+            LabelFacets {
+                categories: vec![LabelCount {
+                    name: "Armour".to_string(),
+                    options: 2
+                }],
+                tags: vec![LabelCount {
+                    name: "Lore Friendly".to_string(),
+                    options: 1
+                }],
+                unlabeled_packages: 1,
+            },
+            "the folder pak mod is not linked"
+        );
+
+        let (rescanned, _) = Catalog::scan(&library.roots, None, &mut quiet());
+        assert_eq!(
+            rescanned.labels(&cape.package_id),
+            None,
+            "a fresh catalog has none until the spine sets them again"
+        );
     }
 
     #[test]

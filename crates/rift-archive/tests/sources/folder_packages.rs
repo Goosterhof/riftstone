@@ -4,7 +4,7 @@ use std::path::Path;
 use rift_archive::FolderSource;
 use rift_core::{PackageFormat, PackageSource, RiftError};
 
-use crate::fixtures::{extract_to, paths};
+use crate::fixtures::{assert_refused_at, extract_racing, extract_to, paths};
 
 fn write(root: &Path, relative: &str, bytes: &[u8]) {
     let path = root.join(relative);
@@ -61,6 +61,8 @@ fn extract_copies_and_leaves_the_library_untouched() {
     assert_eq!(fs::read(&dests[0]).unwrap(), b"cape");
     assert_eq!(fs::read(&dests[1]).unwrap(), b"name=Ermine Cape");
     assert_eq!(extracted.progress.len(), 2);
+    let items: Vec<usize> = extracted.progress.iter().map(|p| p.item).collect();
+    assert_eq!(items, [0, 1], "each report names the file it finished");
     assert_eq!(
         fs::read(root.join("Cloaks/Ermine Cape/natives/stm/cape.mesh")).unwrap(),
         b"cape",
@@ -107,4 +109,36 @@ fn a_file_is_not_a_folder_package() {
         FolderSource::open(&dir.path().join("missing")),
         Err(RiftError::Unreadable { .. })
     ));
+}
+
+#[test]
+fn a_destination_taken_mid_copy_stops_the_copy_and_is_left_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("Vernworth Cloaks Collection");
+    write(&root, "Cloaks/Ermine Cape/natives/stm/cape.mesh", b"cape");
+    write(&root, "Cloaks/Ermine Cape/modinfo.ini", b"name=Ermine Cape");
+    write(&root, "Cloaks/Ermine Cape/screenshot.png", b"\x89PNG");
+    let mut source = FolderSource::open(&root).unwrap();
+    let out = dir.path().join("game");
+    let (result, extracted, dests) = extract_racing(
+        &mut source,
+        &out,
+        &[
+            "Cloaks/Ermine Cape/natives/stm/cape.mesh",
+            "Cloaks/Ermine Cape/modinfo.ini",
+            "Cloaks/Ermine Cape/screenshot.png",
+        ],
+        1,
+        1,
+    );
+    assert_refused_at(&result, &dests[1]);
+    assert_eq!(fs::read(&dests[0]).unwrap(), b"cape");
+    assert!(!dests[2].exists(), "nothing after the refusal");
+    assert_eq!(extracted.progress.len(), 1);
+    assert_eq!(extracted.progress[0].item, 0, "the file it wrote, by name");
+    assert_eq!(
+        fs::read(root.join("Cloaks/Ermine Cape/modinfo.ini")).unwrap(),
+        b"name=Ermine Cape",
+        "the library is untouched (RS-2)"
+    );
 }

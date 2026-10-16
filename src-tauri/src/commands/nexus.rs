@@ -1,9 +1,13 @@
 //! Nexus Mods: the update rows, the check, MD5 identification, links, the
-//! optional API key and its quota.
+//! optional API key and its quota, and the labels (v0.2) the window filters by.
 //!
 //! Every network call here runs on a blocking thread (the commands' blocking
 //! pool or the wake-up thread): rift-nexus's client is `reqwest::blocking`,
 //! which must never be created, used or dropped on the async runtime.
+//!
+//! Whatever changes which mod a package is linked to, or what a check heard
+//! about a mod, relabels the library before `rift://updates-changed` goes out,
+//! so the window's refetch of `get_labels` and its searches see the new labels.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,8 +17,8 @@ use rift_nexus::{ModFilesReport, NexusMod};
 
 use crate::commands::{blocking, not_found, Spine};
 use crate::dto::{
-    self, Md5Result, NexusQuota, NexusSummary, UpdateRow, UpdateStateView, UpdatesPhase,
-    UpdatesProgressEvent, UpdatesView,
+    self, LabelFacets, Md5Result, NexusQuota, NexusSummary, UpdateRow, UpdateStateView,
+    UpdatesPhase, UpdatesProgressEvent, UpdatesView,
 };
 use crate::events;
 use crate::library::Shelf;
@@ -71,12 +75,17 @@ impl Drop for Checking<'_> {
 /// each package pinned to its exact file and judged within its file group.
 /// Every call asks Nexus — a link made a moment ago, or a row that could not
 /// be checked last time, is judged now; calls take turns, one check at a time.
+/// The mod lookup brings each mod's labels too (v0.2): the library is
+/// relabeled before the window hears the check ended.
 pub fn check_updates_impl(state: &AppState) -> Result<UpdatesView, RiftError> {
     let _one_at_a_time = lock(&state.nexus_check);
     state.nexus_checking.store(true, Ordering::SeqCst);
     let checking = Checking(&state.nexus_checking);
     let result = run_check(state);
     drop(checking);
+    if result.is_ok() {
+        state.relabel();
+    }
     state.events.changed(events::UPDATES_CHANGED);
     result.map(|()| get_updates_impl(state))
 }
@@ -135,6 +144,7 @@ fn run_check(state: &AppState) -> Result<(), RiftError> {
             let outcome = judge(link, &mods, &report);
             store.record_check(package, outcome, now);
         }
+        store.record_labels(&mod_ids, &mods);
         store.last_check_ms = Some(now);
     }
     state.save_nexus();
@@ -240,8 +250,11 @@ pub fn identify_packages_impl(
         }
     }
     drop(store);
+    // Let go of the shelf before relabeling it (see `AppState::relabel`).
+    drop(shelf);
     if matched_any {
         state.save_nexus();
+        state.relabel();
         state.events.changed(events::UPDATES_CHANGED);
     }
     Ok(results)
@@ -277,7 +290,10 @@ pub fn link_package_impl(
         );
         store.row(package)
     };
+    drop(shelf);
     state.save_nexus();
+    // A mod an earlier check heard of brings its labels at once.
+    state.relabel();
     state.events.changed(events::UPDATES_CHANGED);
     Ok(row)
 }
@@ -288,9 +304,19 @@ pub fn unlink_package_impl(state: &AppState, package_id: &str) -> Result<(), Rif
         .package(&PackageId(package_id.to_string()))
         .ok_or_else(|| not_found(package_id))?;
     lock(&state.nexus).unlink(package);
+    drop(shelf);
     state.save_nexus();
+    state.relabel();
     state.events.changed(events::UPDATES_CHANGED);
     Ok(())
+}
+
+/// The Nexus categories and tags the library's linked packages carry, each
+/// with the installable options under it (count descending, then name), and
+/// how many packages a label filter hides (v0.2). No network: the labels are
+/// those the latest check heard, kept in `nexus.json`.
+pub fn get_labels_impl(state: &AppState) -> LabelFacets {
+    LabelFacets::from(&state.shelf().label_facets())
 }
 
 /// Set (validated against v1 `users/validate.json` first) or clear the
@@ -382,4 +408,9 @@ pub async fn set_nexus_key(
 #[tauri::command]
 pub async fn get_nexus_quota(state: Spine<'_>) -> Result<Option<NexusQuota>, RiftError> {
     blocking(&state, |state| Ok(get_nexus_quota_impl(state))).await
+}
+
+#[tauri::command]
+pub async fn get_labels(state: Spine<'_>) -> Result<LabelFacets, RiftError> {
+    blocking(&state, |state| Ok(get_labels_impl(state))).await
 }

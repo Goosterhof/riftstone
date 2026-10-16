@@ -11,6 +11,7 @@ import { useSettings } from "@/composables/useSettings";
 import { usePackage } from "@/composables/usePackage";
 import { usePreflight } from "@/composables/usePreflight";
 import { formatBytes, plural } from "@/services/format";
+import { adultnessOf, veils } from "@/services/ledger";
 import OptionCard from "@/components/OptionCard.vue";
 import TroubledCard from "@/components/TroubledCard.vue";
 import RiftInscription from "@/components/RiftInscription.vue";
@@ -37,7 +38,19 @@ const library = computed(() => stone.overview.value?.library ?? null);
 const empty = computed(() => library.value !== null && library.value.packages === 0 && !stone.scanning.value);
 const rootLabels = computed(() => new Map((stone.overview.value?.roots ?? []).map((r) => [r.id, r.label])));
 const anyRootOff = computed(() => search.offRoots.value.length > 0);
-const showTroubled = computed(() => !query.value && stone.troubled.value.length > 0);
+/** Trouble cards carry no labels: under a label filter they would lead a
+ *  column they do not belong to. */
+const showTroubled = computed(() => !query.value && !search.labelFiltered.value && stone.troubled.value.length > 0);
+/** A label filter hid every answer: say which filter, and how to undo it. */
+const labelsHidAll = computed(() => search.labelFiltered.value && search.loaded.value && !search.results.value.length);
+const lowerFirst = (t: string) => t.charAt(0).toLowerCase() + t.slice(1);
+const labelsBody = computed(() => {
+  const n = search.beforeLabels.value;
+  const found = query.value
+    ? `The words found ${plural(n, "answer")}; the labels hid every one.`
+    : `None of the ${plural(n, "option")} in view ${n === 1 ? "carries" : "carry"} that.`;
+  return `${search.labelReading.value ?? ""}: ${lowerFirst(found)} Labels come from Nexus: an unlinked package carries none, so a label filter hides it too.`;
+});
 const lookbookMode = computed(() => nav.riftMode.value === "lookbook");
 
 const SORTS: { id: SortKey; label: string }[] = [
@@ -140,12 +153,23 @@ defineExpose({ focusCard });
         <template v-if="nav.riftMode.value === 'results'">
           <p class="rift__echo" aria-live="polite">
             <template v-if="query"
-              ><b>{{ search.results.value.length }}</b> answered “{{ query }}”</template
+              ><b>{{ search.results.value.length }}</b> answered “{{ query }}”<span
+                v-if="search.labelReading.value"
+                class="rift__dim"
+              >
+                · {{ search.labelReading.value }}</span
+              ></template
+            >
+            <!-- the space before each "·" lives inside its span: whitespace between
+                 two elements that carries a newline is dropped by Vue's compiler -->
+            <template v-else-if="search.labelReading.value"
+              ><b>{{ plural(search.results.value.length, "option") }}</b
+              ><span class="rift__dim"> · {{ search.labelReading.value }}</span></template
             >
             <template v-else
-              ><b>Library</b>
-              <span v-if="library" class="rift__dim"
-                >· {{ plural(library.packages, "package") }} · {{ plural(library.options, "option") }}</span
+              ><b>Library</b
+              ><span v-if="library" class="rift__dim">
+                · {{ plural(library.packages, "package") }} · {{ plural(library.options, "option") }}</span
               ></template
             >
           </p>
@@ -218,6 +242,11 @@ defineExpose({ focusCard });
           @recover="search.run()"
         />
 
+        <RiftInscription v-else-if="labelsHidAll" inscription="THE LABELS HIDE EVERY ANSWER" :body="labelsBody">
+          <RiftButton variant="primary" @click="search.clearLabels()">Clear labels</RiftButton>
+          <RiftButton v-if="query" @click="search.clearText()">Clear search</RiftButton>
+        </RiftInscription>
+
         <RiftInscription
           v-else-if="query && !search.results.value.length && search.loaded.value"
           :inscription="`NOTHING ANSWERS “${query}”`"
@@ -257,7 +286,7 @@ defineExpose({ focusCard });
                 :tokens="search.tokens.value"
                 :selected="world.selectedId.value === hit.optionId"
                 :active="search.activeIndex.value === search.results.value.indexOf(hit)"
-                :veiled="settings.veilThumbnails"
+                :veiled="veils(settings.veil, adultnessOf(hit))"
                 :root-label="rootLabels.get(hit.rootId) ?? ''"
                 @open="open(hit.optionId, search.results.value.indexOf(hit))"
                 @crumb="crumb"
@@ -274,7 +303,7 @@ defineExpose({ focusCard });
               :tokens="search.tokens.value"
               :selected="world.selectedId.value === hit.optionId"
               :active="search.activeIndex.value === i || (search.activeIndex.value < 0 && i === 0)"
-              :veiled="settings.veilThumbnails"
+              :veiled="veils(settings.veil, adultnessOf(hit))"
               :root-label="rootLabels.get(hit.rootId) ?? ''"
               @open="open(hit.optionId, i)"
               @crumb="crumb"

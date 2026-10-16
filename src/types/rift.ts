@@ -175,7 +175,9 @@ export type CheckAction =
   | { kind: "enableSwitch"; switch: "looseFileLoader" | "pakDirectory" }
   | { kind: "pickGameFolder" }
   | { kind: "openUrl"; url: string }
-  | { kind: "rescan" };
+  | { kind: "rescan" }
+  /** v0.2: open the parked-backup review (InstalledView.parked). */
+  | { kind: "reviewParked" };
 
 export interface Check {
   /** Stable id (WINDOW-CONTRACT § Check ids). PreflightPage draws `game`,
@@ -200,7 +202,7 @@ export interface NexusSummary {
 
 export interface RecoveryNote {
   optionName: string;
-  action: "install" | "uninstall" | "reorder";
+  action: "install" | "uninstall" | "reorder" | "restoreParked";
   filesRolledBack: number;
 }
 
@@ -229,12 +231,18 @@ export type MatchedField =
   | "description"
   | "packageName"
   | "version"
-  | "file";
+  | "file"
+  /** v0.2: the package's Nexus category or one of its tags. */
+  | "nexusLabel";
 
 export interface SearchFilters {
   installed: boolean | null;
   rootIds: string[];
   includeMenuOnly: boolean;
+  /** v0.2: Nexus categories, ANY-of (a mod has one category). Empty = no filter. */
+  categories: string[];
+  /** v0.2: Nexus tags, ALL-of (each tag narrows). Empty = no filter. */
+  tags: string[];
 }
 
 export interface SearchQuery {
@@ -277,6 +285,43 @@ export interface SearchResult {
   /** Package-level update state; null when the package is not linked to Nexus. */
   update: UpdateBadge | null;
   conflicted: boolean;
+  /** v0.2: the linked mod's Nexus category (null: unlinked or never checked). */
+  nexusCategory: string | null;
+  /** v0.2: the linked mod's Nexus tags, Nexus's own spelling. */
+  nexusTags: string[];
+  /** v0.2: Nexus flags the linked mod as adult content. */
+  adult: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// v0.2 — Nexus labels as filters (get_labels)
+// ---------------------------------------------------------------------------
+
+/** What Nexus says about a linked mod, from the latest update check. */
+export interface NexusLabels {
+  category: string | null;
+  tags: string[];
+  adult: boolean;
+}
+
+export interface LabelCount {
+  /** Nexus's spelling. Filters compare case-insensitively. */
+  name: string;
+  /** Installable options in the whole library carrying it. A chip predicts
+   *  its results with this only while nothing else narrows the search; the
+   *  window counts the live answers otherwise (useSearch predictions). */
+  options: number;
+}
+
+export interface LabelFacets {
+  /** Count descending, then name. */
+  categories: LabelCount[];
+  tags: LabelCount[];
+  /** Packages with at least one installable option and neither a category nor
+   *  a tag (rift-catalog search.rs label_facets): unlinked, linked but never
+   *  checked, and also linked mods whose answer carried no category or tag
+   *  (an adult-only flag, or no labels at all). */
+  unlabeledPackages: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -335,6 +380,9 @@ export interface ConflictView {
   /** Loser first, winner last. */
   layers: LayerRef[];
   winner: LayerRef;
+  /** v0.2: a pak in it carries table flags rift-pak does not know, so the
+   * stone cannot be sure the hash is what the engine reads. */
+  unconfirmed: boolean;
 }
 
 export interface NexusFileView {
@@ -376,6 +424,10 @@ export interface OptionDetail {
   fluffyInstalled: boolean;
   conflicts: ConflictView[];
   update: UpdateRow | null;
+  /** v0.2: null when Nexus has not labelled the package: unlinked, never
+   *  checked, or an answer that carried no labels (the spine drops a blank
+   *  answer). The window reads a blank NexusLabels as unknown too. */
+  labels: NexusLabels | null;
 }
 
 export interface TreeNode {
@@ -446,6 +498,8 @@ export interface InstallResultView {
 
 export type RemovalAction =
   | { kind: "delete" }
+  /** v0.2: the file is already gone from the game folder. */
+  | { kind: "alreadyGone" }
   | { kind: "restoreBackup"; owner: string }
   | { kind: "keepChanged" }
   | { kind: "keepVanilla" }
@@ -468,7 +522,12 @@ export interface UninstallResultView {
   optionId: string;
   filesRemoved: number;
   filesRestored: number;
+  /** Left in place: changed by something else, or possibly vanilla. */
   filesKept: number;
+  /** v0.2: handed down to the install below (it now owns them). */
+  filesHandedDown: number;
+  /** v0.2: files kept aside in the backup store (InstalledView.parked). */
+  parked: number;
   restartNeeded: boolean;
 }
 
@@ -554,12 +613,48 @@ export interface InstalledView {
   pakLoad: PakLoadReport | null;
   /** pak_mods/ count above which REFramework's slot table is at risk (100). */
   pakCountWarning: number;
+  /** v0.2: files kept aside in the backup store, each with put back / discard. */
+  parked: ParkedFileView[];
+}
+
+/** v0.2: a file the stone kept aside rather than delete or force back. */
+export interface ParkedFileView {
+  /** Its handle in the backup store: what restore_parked / discard_parked take. */
+  store: string;
+  /** Where it belongs in the game folder. */
+  gamePath: string;
+  /** Whose bytes it holds: "the file that was there before", a Fluffy mod's name, or an install's. */
+  owner: string;
+  ownerKind: "unowned" | "fluffy" | "riftstone";
+  /** Its size in the store; null when the kept file is gone from it. */
+  size: number | null;
+  /** RFC 3339, UTC. */
+  parkedAt: string;
+  /** Why it was kept aside, one sentence. */
+  reason: string;
+  /** Something sits at gamePath now. Putting it back swaps that out, unless
+   *  an install or an un-adopted Fluffy mod owns the occupant: then the engine
+   *  refuses and names the owner (rift-deploy engine.rs restore_parked). */
+  occupied: boolean;
+}
+
+/** v0.2: what restore_parked did. */
+export interface ParkedRestoreReport {
+  gamePath: string;
+  restored: boolean;
+  /** The store handle of the file that sat at gamePath, now kept aside in its turn. */
+  swappedOut: string | null;
+  restartNeeded: boolean;
 }
 
 export interface AdoptResultView {
   adopted: number;
   alreadyAdopted: number;
   missingFiles: number;
+  /** v0.2: files left to Fluffy (outside the places the stone manages). */
+  refusedFiles: number;
+  /** v0.2: files whose bytes belong to another layer. */
+  sharedFiles: number;
   /** Fluffy sections no library option matched (adopted under their Fluffy name). */
   unmatched: string[];
 }
@@ -594,9 +689,17 @@ export interface Md5Result {
 // settings
 // ---------------------------------------------------------------------------
 
+/** v0.2: which screenshots are veiled (blurred until hovered). */
+export type VeilMode = "off" | "adult" | "all";
+
 export interface Settings {
-  /** Blur screenshots until hovered. Default false. */
-  veilThumbnails: boolean;
+  /** v0.2: replaces v0.1's `veilThumbnails: boolean` (true → "all", false → "off";
+   * the spine reads the old key from settings.json). Default "off". `adult`
+   * veils the options of mods Nexus flags as adult AND of packages Nexus has
+   * not labelled yet (unlinked, never checked, or an answer without labels):
+   * a veil exists to protect, so the unknown is veiled (WINDOW-CONTRACT § v0.2
+   * "Veil"; the window's one rule is services/ledger.ts veils + adultnessOf). */
+  veil: VeilMode;
   /** Check Nexus on launch when the last check is older than 12 hours. Default true. */
   autoCheckUpdates: boolean;
 }

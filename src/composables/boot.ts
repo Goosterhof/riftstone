@@ -6,6 +6,7 @@ import { EVENTS, type InstallProgressEvent, type ScanProgressEvent, type Updates
 import { rift } from "@/services/rift";
 import { resetFarWorld, useFarWorld } from "./useFarWorld";
 import { resetInstalled, useInstalled } from "./useInstalled";
+import { resetLabels, useLabels } from "./useLabels";
 import { resetNavigation, useNavigation } from "./useNavigation";
 import { resetPackage, usePackage } from "./usePackage";
 import { resetSearch, useSearch } from "./useSearch";
@@ -26,6 +27,7 @@ async function onLibraryChanged(): Promise<void> {
     stone.refreshRootCounts(),
     useSearch().run(),
     usePackage().reload(),
+    useLabels().load(),
   ]);
 }
 
@@ -40,9 +42,17 @@ async function onGameChanged(): Promise<void> {
   await Promise.all(tasks);
 }
 
-/** A check found (or cleared) updates: the far world, and every card's badge. */
+/** A check found (or cleared) updates, or a link changed: the far world,
+ *  every card's badge and labels, and the open detail — its labels decide
+ *  the "adult" veil, so a stale detail would show what its card now blurs. */
 async function onUpdatesChanged(): Promise<void> {
-  await Promise.all([useFarWorld().load(), useSearch().run(), useStone().refreshOverview()]);
+  await Promise.all([
+    useFarWorld().load(),
+    useSearch().run(),
+    useStone().refreshOverview(),
+    useLabels().load(),
+    useWorld().refresh(),
+  ]);
 }
 
 async function subscribe(): Promise<void> {
@@ -69,6 +79,7 @@ export async function wakeRiftstone(): Promise<void> {
     stone.refreshTroubled(),
     stone.refreshRootCounts(),
     useFarWorld().load(),
+    useLabels().load(),
   ]);
 }
 
@@ -85,6 +96,7 @@ export function resetRiftstone(): void {
   resetWorld();
   resetInstalled();
   resetFarWorld();
+  resetLabels();
   resetSettings();
   resetNavigation();
   resetToasts();

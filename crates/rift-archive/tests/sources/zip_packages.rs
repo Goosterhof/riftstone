@@ -4,8 +4,8 @@ use rift_archive::ZipSource;
 use rift_core::{PackageSource, RiftError};
 
 use crate::fixtures::{
-    compressible, corrupt_before_central_directory, extract_to, mark_zip_entry_encrypted, modinfo,
-    patch_bytes, paths, zip_at, Z,
+    assert_refused_at, compressible, corrupt_before_central_directory, extract_racing, extract_to,
+    mark_zip_entry_encrypted, modinfo, patch_bytes, paths, zip_at, Z,
 };
 
 const COLLECTION: &str = "Vernworth Cloaks Collection";
@@ -203,6 +203,8 @@ fn extract_writes_each_item_fully_and_reports_after_each() {
         .progress
         .iter()
         .all(|p| p.files_total == 2 && p.bytes_total == total));
+    let items: Vec<usize> = extracted.progress.iter().map(|p| p.item).collect();
+    assert_eq!(items, [0, 1], "each report names the file it finished");
     assert!(path.exists(), "the library stays untouched");
 }
 
@@ -370,4 +372,73 @@ fn a_zip_behind_a_program_stub_lists_reads_and_extracts() {
     let (result, _, dests) = extract_to(&mut source, dir.path(), &["Lantern Glow/modinfo.ini"]);
     result.unwrap();
     assert_eq!(fs::read(&dests[0]).unwrap(), info);
+}
+
+#[test]
+fn a_destination_taken_mid_batch_stops_the_batch_and_is_left_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Vernworth Cloaks Collection.zip");
+    let cape = compressible(120_000, 5);
+    zip_at(
+        &path,
+        &[
+            Z::Deflated("Cloaks/Ermine Cape/natives/stm/cape.mesh", &cape),
+            Z::Stored("Cloaks/Ermine Cape/modinfo.ini", b"name=Ermine Cape"),
+            Z::Stored("Cloaks/Ermine Cape/screenshot.png", b"\x89PNG"),
+        ],
+    );
+    let mut source = ZipSource::open(&path).unwrap();
+    // The rival creates item 1's destination once item 0 is done.
+    let (result, extracted, dests) = extract_racing(
+        &mut source,
+        dir.path(),
+        &[
+            "Cloaks/Ermine Cape/natives/stm/cape.mesh",
+            "Cloaks/Ermine Cape/modinfo.ini",
+            "Cloaks/Ermine Cape/screenshot.png",
+        ],
+        1,
+        1,
+    );
+    assert_refused_at(&result, &dests[1]);
+    assert_eq!(
+        fs::read(&dests[0]).unwrap(),
+        cape,
+        "written whole before the rival came"
+    );
+    assert!(!dests[2].exists(), "nothing after the refusal");
+    assert_eq!(extracted.progress.len(), 1);
+    assert_eq!(
+        extracted.progress[0].item, 0,
+        "only the file it wrote is reported: the caller leaves the taken one be"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_planted_at_a_destination_is_never_written_through() {
+    // RS-3: a link at a temporary name pointing at a vanilla file must not
+    // turn the extraction into a write to that file.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Lantern Glow Recolor.zip");
+    zip_at(
+        &path,
+        &[Z::Stored("Lantern Glow/Lantern Glow.pak", b"KPKA modded")],
+    );
+    let vanilla = dir.path().join("re_chunk_000.pak");
+    fs::write(&vanilla, b"KPKA vanilla").unwrap();
+    let dest = dir.path().join("staging/0.out");
+    fs::create_dir_all(dest.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&vanilla, &dest).unwrap();
+    let mut source = ZipSource::open(&path).unwrap();
+    let (result, extracted, _) =
+        extract_to(&mut source, dir.path(), &["Lantern Glow/Lantern Glow.pak"]);
+    assert!(
+        matches!(&result, Err(RiftError::Refused { reason })
+            if reason.contains(&dest.display().to_string())),
+        "{result:?}"
+    );
+    assert_eq!(fs::read(&vanilla).unwrap(), b"KPKA vanilla");
+    assert!(dest.is_symlink(), "the link is left as it was too");
+    assert!(extracted.progress.is_empty());
 }

@@ -9,6 +9,7 @@ import { voice, voicedLine, type VoiceContext } from "@/services/voice";
 import { useToasts } from "./useToasts";
 import { useStone } from "./useStone";
 import { useNavigation } from "./useNavigation";
+import { useInstalled } from "./useInstalled";
 
 export type ReframeworkSwitch = "looseFileLoader" | "pakDirectory";
 
@@ -95,6 +96,10 @@ async function runCheck(action: CheckAction): Promise<void> {
     pickGameFolder: () => pickGameFolder(),
     openUrl: () => (action.kind === "openUrl" ? openUrl(action.url) : undefined),
     rescan: () => rescan(),
+    reviewParked: () => {
+      useNavigation().go("world");
+      useInstalled().summonParked();
+    },
   };
   await handlers[action.kind]();
 }

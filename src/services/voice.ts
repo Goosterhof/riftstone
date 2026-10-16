@@ -30,7 +30,10 @@ export type VoiceContext =
   | "nexusCheck"
   | "nexusKey"
   | "nexusLink"
-  | "settings";
+  | "settings"
+  /** v0.2: Put back / Discard on a PARKED file. The caller adds `gamePath`
+   *  and `act` ("putBack" | "discard") to the detail. */
+  | "parked";
 
 export type RecoveryKind =
   | "retry"
@@ -167,9 +170,15 @@ function noGame(): Voiced {
   };
 }
 
+/** The engine's running-game wording ("Dragon's Dogma 2 is running and holds
+ *  … open", Windows' "being used by another process") — not the bare word
+ *  "open", which a path like opening_title.tex carries too. */
+const RUNNING = /\b(?:is|are) running\b|\bin use\b|being used by another process|\bholds\b.{0,120}\bopen\b/i;
+
 function refused(d: Detail, context: VoiceContext): Voiced {
+  if (context === "parked") return parkedRefused(d);
   const reason = reasonOf(d, "the game is running");
-  const running = /running|in use|open/i.test(reason);
+  const running = RUNNING.test(reason);
   return {
     kind: "refused",
     inscription: running ? "THE WORLD IS AWAKE" : null,
@@ -179,6 +188,53 @@ function refused(d: Detail, context: VoiceContext): Voiced {
         ? "Nothing was changed. Close Dragon's Dogma 2, then try again."
         : "Nothing was written. Close Dragon's Dogma 2 if it's running, then try again.",
     recovery: [RETRY],
+  };
+}
+
+/** A parked refusal is the spine's own sentence; game-running advice only
+ *  when that is what the sentence says, never a retry that cannot succeed. */
+function parkedRefused(d: Detail): Voiced {
+  const reason = reasonOf(d, "the stone could not act on the kept file");
+  const running = RUNNING.test(reason);
+  return {
+    kind: "refused",
+    inscription: running ? "THE WORLD IS AWAKE" : null,
+    voice: `The stone held back: ${stripStop(reason)}.`,
+    empathy: running
+      ? "Nothing was moved: the file is still kept aside. Close Dragon's Dogma 2, then try again."
+      : "Nothing was moved, and the PARKED list has been read again.",
+    recovery: running ? [RETRY] : [DISMISS],
+  };
+}
+
+const OS_ERROR_TAIL = /\s*\(os error \d+\)\s*\.?\s*$/i;
+
+/** The engine's io detail is "<context>: <os text>": keep only the os text. */
+function parkedReason(d: Detail): string {
+  const raw = reasonOf(d, "Windows refused the move");
+  const os = /^could not [^:]*:\s*([\s\S]+)$/i.exec(raw)?.[1] ?? raw;
+  return stripStop(os.replace(OS_ERROR_TAIL, ""));
+}
+
+function parkedIo(d: Detail): Voiced {
+  const path = pick(d, "gamePath") ?? "the kept file";
+  const reason = parkedReason(d);
+  if (pick(d, "act") === "discard") {
+    return {
+      kind: "io",
+      inscription: null,
+      voice: `Couldn't let go of the kept copy of ${path}: ${reason}.`,
+      empathy: "It is still kept aside, and your game folder was not touched.",
+      recovery: [RETRY, COPY],
+    };
+  }
+  return {
+    kind: "io",
+    inscription: null,
+    voice: `Couldn't put ${path} back: ${reason}.`,
+    empathy:
+      "It is still kept aside; your game folder is as it was. Close the game if it holds the file, then Put back again.",
+    recovery: [RETRY, COPY],
   };
 }
 
@@ -256,7 +312,7 @@ const HANDLERS: Record<RiftError["kind"], Handler> = {
   refused,
   journal: journalFailure,
   nexus: nexusFailure,
-  io: ioFailure,
+  io: (d, context) => (context === "parked" ? parkedIo(d) : ioFailure(d, context)),
 };
 
 /** Give a failure its voice. */

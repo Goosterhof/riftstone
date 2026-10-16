@@ -899,7 +899,7 @@ requests. Labels are per Nexus MOD: every option of a linked package inherits th
   (`#[serde(default)]` so old caches load).
 - **rift-catalog:** `SearchFilters` gains `categories: Vec<String>` (ANY-of — a mod has one
   category) and `tags: Vec<String>` (ALL-of — each tag narrows); `SearchIndex` gains
-  per-package labels (`set_labels(HashMap<PackageId, PackageLabels { category, tags }>)`),
+  per-package labels (`set_labels(HashMap<PackageId, PackageLabels { category, tags, adult }>)`),
   searchable as a field `nexusLabel` (weight 4, between bundle and author) and used by the
   two filters; `MatchedField::NexusLabel`. Labels compare case-insensitively; display keeps
   Nexus's spelling.
@@ -908,20 +908,28 @@ requests. Labels are per Nexus MOD: every option of a linked package inherits th
   `get_labels() -> LabelFacets { categories: LabelCount[], tags: LabelCount[], unlabeledPackages:
   number }` (`LabelCount { name, options }` — option counts, so a facet predicts the results).
   `SearchResult` gains `nexusCategory: string | null`, `nexusTags: string[]`, `adult: boolean`;
-  `OptionDetail` shows them via `update.link` + the same fields.
+  `OptionDetail.labels` carries the same three, read from the same index.
 - **window:** a NEXUS facet group in the stone below STATE — CATEGORY chips (any-of) and TAG
   chips (all-of) with counts; an unlinked-packages line with the one-click identify; the card
   carries the category as a quiet chip; the detail lists category, tags and the mod-page link.
-  Settings: the veil gains a mode — `off` / `adult` (only mods Nexus flags adult) / `all`.
+  Settings: the veil gains a mode — `off` / `adult` (mods Nexus flags adult, and packages it has
+  not labelled yet) / `all`.
 
 ### v0.2 backlog beside the labels (from the deploy safety review, 2026-10-16)
 
 - **Parked backups in the window:** `InstalledView.parked: ParkedFile[]` ({store, gamePath,
-  owner, ownerKind, size | null, parkedAt, reason, occupied}); `UninstallResultView.parked` and
-  `RecoveryNote.parked`; commands `restore_parked(store) -> ParkedRestoreReport` ({gamePath,
+  owner, ownerKind, size | null, parkedAt, reason, occupied}); `UninstallResultView.parked` (a
+  `RecoveryNote.parked` count was dropped: the recovery sentence names the file and the review
+  check covers the rest); commands `restore_parked(store) -> ParkedRestoreReport` ({gamePath,
   restored, swappedOut | null, restartNeeded}) and `discard_parked(store)`, both followed by
-  `rift://game-changed`; `CheckAction` gains `{ kind: "reviewParked" }`; `RecoveryNote.action`
+  `rift://game-changed` (a restore while the game runs still happens and answers
+  `restartNeeded: true`); `CheckAction` gains `{ kind: "reviewParked" }`; `RecoveryNote.action`
   gains `"restoreParked"`.
 - **rift-archive defence in depth:** the extractor opens destinations with
   `OpenOptions::create_new(true)` (the engine already pre-checks and re-guards part names; this
-  closes the live race between that check and `File::create`).
+  closes the live race between that check and `File::create`). Built: every progress report names
+  its item (`ExtractProgress.item`); when an extraction stops, the engine marks the parts it never
+  saw reported `IntentStep::Place.unextracted` (saved to the journal), and the rollback, including
+  a reinstall's restore of the old copy, leaves those names alone. The extractor removes its own
+  half-written file itself. After a crash (a panic, not an error) which parts were written is not
+  known, so recovery keeps the old rule: a part at a name the install checked free is its own.

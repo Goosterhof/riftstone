@@ -3,7 +3,7 @@
 // status glyph + word + the measured value + its recovery action. Then the
 // library roots, the Nexus key and the two settings the user owns.
 import { computed } from "vue";
-import type { Check } from "@/types/rift";
+import type { Check, VeilMode } from "@/types/rift";
 import { useStone } from "@/composables/useStone";
 import { useSettings } from "@/composables/useSettings";
 import { useNavigation } from "@/composables/useNavigation";
@@ -37,6 +37,19 @@ function switchWord(on: boolean | null | undefined): string {
   if (on === null || on === undefined) return "unknown";
   return on ? "ON" : "OFF";
 }
+
+const VEILS: { id: VeilMode; label: string; line: string }[] = [
+  { id: "off", label: "Off", line: "Every screenshot shows as it is." },
+  {
+    id: "adult",
+    label: "Adult & unlabeled",
+    line: "Blurs the screenshots of mods Nexus flags as adult, and of packages Nexus has not labelled yet, until you hover or focus their card. A veil protects, so the unknown stays veiled: link a package and check for updates, and its veil lifts once Nexus labels it without the adult flag.",
+  },
+  { id: "all", label: "All", line: "Blurs every screenshot until you hover or focus its card." },
+];
+const veilLine = computed(
+  () => `${VEILS.find((v) => v.id === settings.value.veil)?.line ?? ""} The lightbox always opens unveiled.`,
+);
 
 const buildLevel = computed<Level>(() => (game.value?.buildChanged ? "warn" : "ok"));
 </script>
@@ -152,7 +165,9 @@ const buildLevel = computed<Level>(() => (game.value?.buildChanged ? "warn" : "o
         <span class="pre__word rs-mono">{{ GLYPH[c.level].word }}</span>
         <span class="pre__what">{{ c.title }}</span>
         <span class="pre__val">{{ c.detail }}</span>
-        <RiftButton v-if="c.action" size="sm" @click="preflight.runCheck(c.action)">Fix</RiftButton>
+        <RiftButton v-if="c.action" size="sm" @click="preflight.runCheck(c.action)">{{
+          c.action.kind === "reviewParked" ? "Review" : "Fix"
+        }}</RiftButton>
       </li>
     </ol>
 
@@ -199,14 +214,23 @@ const buildLevel = computed<Level>(() => (game.value?.buildChanged ? "warn" : "o
     <section class="pre__sec">
       <header class="pre__sechead"><h2 class="pre__h rs-inscription">SETTINGS</h2></header>
       <ul class="pre__list">
-        <li class="pre__row is-plain">
-          <label class="pre__toggle">
-            <input type="checkbox" :checked="settings.veilThumbnails" @change="setVeil(!settings.veilThumbnails)" />
-            <span class="pre__what">Veil thumbnails</span>
-          </label>
-          <span class="pre__val"
-            >Blur every screenshot until you hover or focus its card. The lightbox always opens unveiled.</span
-          >
+        <li class="pre__row is-plain pre__row--veil">
+          <span id="veil-label" class="pre__what">Veil screenshots</span>
+          <div class="veil" role="radiogroup" aria-labelledby="veil-label">
+            <label v-for="v in VEILS" :key="v.id" class="veil__opt" :class="{ 'is-on': settings.veil === v.id }">
+              <input
+                type="radio"
+                name="rift-veil"
+                class="veil__radio"
+                :value="v.id"
+                :checked="settings.veil === v.id"
+                @change="setVeil(v.id)"
+              />
+              <span class="veil__swatch" :class="`veil__swatch--${v.id}`" aria-hidden="true"><i /><i /><i /></span>
+              <span class="veil__word">{{ v.label }}</span>
+            </label>
+          </div>
+          <span class="pre__val pre__val--veil">{{ veilLine }}</span>
         </li>
         <li class="pre__row is-plain">
           <label class="pre__toggle">
@@ -319,6 +343,80 @@ const buildLevel = computed<Level>(() => (game.value?.buildChanged ? "warn" : "o
   font-size: 14px;
   color: var(--rs-muted);
   letter-spacing: 0.1em;
+}
+/* v0.2 — the veil as three panes of frosted glass: none, one, all three. */
+.pre__row--veil {
+  grid-template-columns: 190px auto minmax(0, 1fr);
+}
+.veil {
+  display: flex;
+  gap: 2px;
+}
+.veil__opt {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--rs-space-2);
+  min-height: 36px;
+  padding: 0 var(--rs-space-3);
+  border: 1px solid var(--rs-edgehi);
+  color: var(--rs-muted);
+  cursor: pointer;
+  transition:
+    color var(--rs-dur-quick),
+    border-color var(--rs-dur-quick);
+}
+.veil__opt:hover,
+.veil__opt.is-on {
+  color: var(--rs-text);
+}
+/* chosen the way a NEXUS chip is chosen (riftdeep fill, rift border) plus a
+   carved dot: gold stays the colour of things in your world (§4.2, §7.7),
+   and colour is never the only carrier (§1) */
+.veil__opt.is-on {
+  border-color: var(--rs-rift);
+  background: var(--rs-riftdeep);
+}
+.veil__opt::before {
+  content: "";
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--rs-faint);
+  border-radius: 50%;
+}
+.veil__opt.is-on::before {
+  border-color: var(--rs-rift);
+  background: var(--rs-rift);
+}
+.veil__opt:has(:focus-visible) {
+  outline: 2px solid var(--rs-rift);
+  outline-offset: 2px;
+}
+.veil__radio {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.veil__swatch {
+  display: flex;
+  gap: 2px;
+}
+.veil__swatch i {
+  width: 8px;
+  height: 12px;
+  background: var(--rs-rift);
+}
+.veil__swatch--adult i:nth-child(2),
+.veil__swatch--all i {
+  background: var(--rs-edgehi);
+  box-shadow: inset 0 0 0 1px var(--rs-faint);
+}
+.veil__word {
+  white-space: nowrap;
+}
+.pre__val--veil {
+  grid-column: 2 / -1;
 }
 .pre__toggle {
   display: flex;

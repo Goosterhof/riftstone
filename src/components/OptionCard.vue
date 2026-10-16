@@ -85,14 +85,25 @@ const quoteLine = computed(() => {
   return containsAnyToken(hit.descriptionSnippet, tokens) ? hit.descriptionSnippet : null;
 });
 
+/** v0.2: a nexusLabel hit on a tag says which tag (the category is already lit
+ *  on its own chip, so a category hit needs no line of its own). */
+const tagHit = computed(() => {
+  if (!hasQuery.value || !hit.matched.includes("nexusLabel")) return null;
+  if (containsAnyToken(hit.nexusCategory, tokens)) return null;
+  return hit.nexusTags.find((t) => containsAnyToken(t, tokens)) ?? null;
+});
+
 const fieldLine = computed(() => {
   if (!hasQuery.value || pathLine.value || quoteLine.value) return null;
+  if (tagHit.value) return { label: "nexus tag", value: tagHit.value };
   for (const f of OTHER_FIELDS) {
     const value = f.value(hit);
     if (hit.matched.includes(f.field) && value && containsAnyToken(value, tokens)) return { label: f.label, value };
   }
   return null;
 });
+
+const MATCHED_WORD: Partial<Record<MatchedField, string>> = { file: "file path", nexusLabel: "Nexus label" };
 
 const reasonFirst = computed(() => pathLine.value !== null && hit.matched.every((m) => m === "file"));
 
@@ -105,7 +116,7 @@ const metaLine = computed(() => {
 });
 
 const matchedLabel = computed(() =>
-  hit.matched.length ? `Matched in ${hit.matched.map((m) => (m === "file" ? "file path" : m)).join(", ")}` : "",
+  hit.matched.length ? `Matched in ${hit.matched.map((m) => MATCHED_WORD[m] ?? m).join(", ")}` : "",
 );
 </script>
 
@@ -169,6 +180,9 @@ const matchedLabel = computed(() =>
       />
       <div class="card__meta">
         <KindBadge v-for="k in kinds" :key="k" :kind="k" />
+        <span v-if="hit.nexusCategory" class="card__cat" :title="`Nexus category: ${hit.nexusCategory}`"
+          ><HitText :text="hit.nexusCategory" :tokens="hasQuery ? tokens : []"
+        /></span>
         <span class="card__metatext">{{ metaLine }}</span>
       </div>
       <p v-if="pathLine && !reasonFirst" class="card__match card__match--path" :title="pathLine.all">
@@ -283,6 +297,22 @@ const matchedLabel = computed(() =>
   min-width: 0;
   color: var(--rs-faint);
   font-size: var(--rs-text-sm);
+}
+/* v0.2 — the Nexus category, quiet: a hairline chip with a rift-cyan notch
+   on its left edge (it came from the far world), never louder than the
+   kind badges beside it */
+.card__cat {
+  flex: none;
+  max-width: 132px;
+  overflow: hidden;
+  padding: 1px 6px 1px 8px;
+  border: 1px solid var(--rs-edge);
+  border-left: 2px solid rgba(143, 227, 242, 0.55);
+  border-radius: var(--rs-radius-chip);
+  color: var(--rs-muted);
+  font: 400 var(--rs-text-xs) / 1.3 var(--rs-font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .card__metatext {
   min-width: 0;

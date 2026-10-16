@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 
 use rift_core::{LibraryRoot, RiftError};
 
-use crate::dto::Settings;
+use crate::dto::{Settings, VeilMode};
 
 /// Env override for the app data + cache dirs (tests, the WSL bench).
 pub const DATA_HOME_ENV: &str = "RIFTSTONE_DATA_HOME";
@@ -90,17 +90,58 @@ impl DataDirs {
 }
 
 /// `settings.json`: the window's [`Settings`] plus what only the spine needs.
+///
+/// v0.2 replaced the `veilThumbnails` switch with the three-way `veil`. A
+/// v0.1 file is read as it stands: with no `veil` key, its `veilThumbnails`
+/// decides (`true` → `all`, `false` → `off`). The file is written with `veil`
+/// only, so the next save drops the old key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "SettingsFile")]
 pub struct StoredSettings {
-    #[serde(default)]
-    pub veil_thumbnails: bool,
-    #[serde(default = "yes")]
+    pub veil: VeilMode,
     pub auto_check_updates: bool,
     /// The game folder the player picked by hand (`set_game_root`), tried
     /// before Steam discovery on every launch.
-    #[serde(default)]
     pub manual_game_root: Option<PathBuf>,
+}
+
+/// `settings.json` as any version wrote it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsFile {
+    /// v0.2's key. A value this build does not know (a later version's mode)
+    /// reads as absent rather than failing the whole file: the file also
+    /// holds the game folder the player picked.
+    #[serde(default, deserialize_with = "known_veil")]
+    veil: Option<VeilMode>,
+    /// v0.1's key, read only when `veil` is absent.
+    #[serde(default)]
+    veil_thumbnails: Option<bool>,
+    #[serde(default = "yes")]
+    auto_check_updates: bool,
+    #[serde(default)]
+    manual_game_root: Option<PathBuf>,
+}
+
+fn known_veil<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<VeilMode>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
+}
+
+impl From<SettingsFile> for StoredSettings {
+    fn from(file: SettingsFile) -> Self {
+        let veil = file.veil.unwrap_or(match file.veil_thumbnails {
+            Some(true) => VeilMode::All,
+            Some(false) | None => VeilMode::Off,
+        });
+        StoredSettings {
+            veil,
+            auto_check_updates: file.auto_check_updates,
+            manual_game_root: file.manual_game_root,
+        }
+    }
 }
 
 fn yes() -> bool {
@@ -111,7 +152,7 @@ impl Default for StoredSettings {
     fn default() -> Self {
         let window = Settings::default();
         StoredSettings {
-            veil_thumbnails: window.veil_thumbnails,
+            veil: window.veil,
             auto_check_updates: window.auto_check_updates,
             manual_game_root: None,
         }
@@ -122,13 +163,13 @@ impl StoredSettings {
     /// The part the window reads and writes.
     pub fn window(&self) -> Settings {
         Settings {
-            veil_thumbnails: self.veil_thumbnails,
+            veil: self.veil,
             auto_check_updates: self.auto_check_updates,
         }
     }
 
     pub fn apply(&mut self, window: Settings) {
-        self.veil_thumbnails = window.veil_thumbnails;
+        self.veil = window.veil;
         self.auto_check_updates = window.auto_check_updates;
     }
 }
@@ -380,7 +421,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("settings.json");
         let settings = StoredSettings {
-            veil_thumbnails: true,
+            veil: VeilMode::All,
             ..StoredSettings::default()
         };
         write_json(&path, &settings, true).unwrap();
@@ -476,18 +517,102 @@ mod tests {
         let settings: StoredSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(settings, StoredSettings::default());
         assert!(settings.auto_check_updates, "auto-check defaults to on");
-        assert!(!settings.veil_thumbnails);
+        assert_eq!(settings.veil, VeilMode::Off);
         let mut stored = StoredSettings::default();
         stored.apply(Settings {
-            veil_thumbnails: true,
+            veil: VeilMode::Adult,
             auto_check_updates: false,
         });
         assert_eq!(
             stored.window(),
             Settings {
-                veil_thumbnails: true,
+                veil: VeilMode::Adult,
                 auto_check_updates: false
             }
         );
+    }
+
+    #[test]
+    fn a_v01_settings_file_keeps_its_veil_and_the_next_save_writes_veil_only() {
+        // v0.1 → v0.2: the old switch decides while `veil` is absent.
+        let veiled: StoredSettings = serde_json::from_value(serde_json::json!({
+            "veilThumbnails": true,
+            "autoCheckUpdates": false,
+            "manualGameRoot": "D:\\Games\\Dragons Dogma 2"
+        }))
+        .unwrap();
+        assert_eq!(veiled.veil, VeilMode::All, "veilThumbnails true → all");
+        assert!(!veiled.auto_check_updates);
+        assert_eq!(
+            veiled.manual_game_root.as_deref(),
+            Some(Path::new("D:\\Games\\Dragons Dogma 2"))
+        );
+        let bare: StoredSettings =
+            serde_json::from_value(serde_json::json!({ "veilThumbnails": false })).unwrap();
+        assert_eq!(bare.veil, VeilMode::Off, "veilThumbnails false → off");
+
+        // v0.2 → disk: `veil` alone, the old key gone.
+        let written = serde_json::to_value(&veiled).unwrap();
+        assert_eq!(written["veil"], "all");
+        assert!(
+            written.get("veilThumbnails").is_none(),
+            "the old key is never written again: {written}"
+        );
+        let mut keys: Vec<&str> = written
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["autoCheckUpdates", "manualGameRoot", "veil"]);
+
+        // A file with both keys was written by v0.2 and edited by hand (or by
+        // v0.1 after v0.2): `veil` wins.
+        let both: StoredSettings = serde_json::from_value(serde_json::json!({
+            "veil": "adult",
+            "veilThumbnails": true
+        }))
+        .unwrap();
+        assert_eq!(both.veil, VeilMode::Adult);
+    }
+
+    #[test]
+    fn a_v01_settings_file_on_disk_migrates_through_a_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(
+            &path,
+            br#"{ "veilThumbnails": true, "autoCheckUpdates": true }"#,
+        )
+        .unwrap();
+        let Loaded::Found(stored) = load_json::<StoredSettings>(&path) else {
+            panic!("a v0.1 settings.json still loads");
+        };
+        assert_eq!(stored.window().veil, VeilMode::All);
+        let file = SavedFile::new(path.clone(), None);
+        file.save(true, || stored.clone());
+        let on_disk: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(on_disk["veil"], "all");
+        assert!(on_disk.get("veilThumbnails").is_none(), "{on_disk}");
+        assert_eq!(read_json::<StoredSettings>(&path), Some(stored));
+    }
+
+    #[test]
+    fn a_veil_this_build_does_not_know_falls_back_instead_of_losing_the_file() {
+        // A later version's mode, or a hand edit: the game folder survives.
+        let later: StoredSettings = serde_json::from_value(serde_json::json!({
+            "veil": "blurAll",
+            "veilThumbnails": true,
+            "manualGameRoot": "D:\\Games\\Dragons Dogma 2"
+        }))
+        .unwrap();
+        assert_eq!(later.veil, VeilMode::All, "the old key still speaks");
+        assert!(later.manual_game_root.is_some());
+        let odd: StoredSettings = serde_json::from_value(serde_json::json!({ "veil": 3 })).unwrap();
+        assert_eq!(odd.veil, VeilMode::Off);
+        let null: StoredSettings =
+            serde_json::from_value(serde_json::json!({ "veil": null })).unwrap();
+        assert_eq!(null.veil, VeilMode::Off);
     }
 }

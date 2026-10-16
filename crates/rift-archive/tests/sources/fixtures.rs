@@ -381,6 +381,18 @@ pub struct Extracted {
     pub progress: Vec<ExtractProgress>,
 }
 
+/// `<dest>/staging/<n>.out` for each entry (the deploy engine's temp-name shape).
+fn staged(dest: &Path, entries: &[&str]) -> Vec<ExtractItem> {
+    entries
+        .iter()
+        .enumerate()
+        .map(|(n, entry)| ExtractItem {
+            entry: (*entry).to_string(),
+            dest: dest.join(format!("staging/{n}.out")),
+        })
+        .collect()
+}
+
 /// Extract `entries` to `<dest>/<n>.out` (the deploy engine's temp-name
 /// shape), returning the progress reports and the destinations.
 pub fn extract_to(
@@ -388,18 +400,66 @@ pub fn extract_to(
     dest: &Path,
     entries: &[&str],
 ) -> (Result<(), rift_core::RiftError>, Extracted, Vec<PathBuf>) {
-    let items: Vec<ExtractItem> = entries
-        .iter()
-        .enumerate()
-        .map(|(n, entry)| ExtractItem {
-            entry: (*entry).to_string(),
-            dest: dest.join(format!("staging/{n}.out")),
-        })
-        .collect();
+    let items = staged(dest, entries);
     let mut progress = Vec::new();
     let result = source.extract(&items, &mut |report| progress.push(report));
     let dests = items.into_iter().map(|item| item.dest).collect();
     (result, Extracted { progress }, dests)
+}
+
+/// What a rival writer leaves at a destination in [`extract_racing`].
+pub const PLANTED: &[u8] = b"not the Riftstone's";
+
+/// [`extract_to`] with a rival: once `after` files are done (`0`: before the
+/// first byte), something else creates the destination of item `taken`. That
+/// is the moment the deploy engine's own check cannot cover: the name was
+/// free when it looked, and taken when the extractor got there.
+pub fn extract_racing(
+    source: &mut dyn PackageSource,
+    dest: &Path,
+    entries: &[&str],
+    after: usize,
+    taken: usize,
+) -> (Result<(), rift_core::RiftError>, Extracted, Vec<PathBuf>) {
+    let items = staged(dest, entries);
+    let target = items[taken].dest.clone();
+    let plant = || {
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, PLANTED).unwrap();
+    };
+    if after == 0 {
+        plant();
+    }
+    let mut progress = Vec::new();
+    let result = source.extract(&items, &mut |report| {
+        progress.push(report);
+        if report.files_done == after {
+            plant();
+        }
+    });
+    let dests = items.into_iter().map(|item| item.dest).collect();
+    (result, Extracted { progress }, dests)
+}
+
+/// The batch stopped at the taken destination: a refusal that names it, and
+/// the rival's file exactly as the rival left it.
+pub fn assert_refused_at(result: &Result<(), rift_core::RiftError>, taken: &Path) {
+    match result {
+        Err(rift_core::RiftError::Refused { reason }) => assert!(
+            reason.contains(&taken.display().to_string()),
+            "the refusal should name {}: {reason}",
+            taken.display()
+        ),
+        other => panic!(
+            "expected a refusal naming {}, got {other:?}",
+            taken.display()
+        ),
+    }
+    assert_eq!(
+        fs::read(taken).unwrap(),
+        PLANTED,
+        "the rival's file is untouched"
+    );
 }
 
 /// A RAR5 archive whose headers are encrypted (`rar -hp`): an archive

@@ -3,12 +3,20 @@
 // beside everything else (552): loose/script/root installs, who overrides
 // whom, REFramework's proof that the paks loaded, strays, missing files, and
 // Fluffy's installs waiting to be adopted — shown as a plan before writing.
-import { computed, onMounted } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useInstalled } from "@/composables/useInstalled";
 import { useStone } from "@/composables/useStone";
 import { usePreflight, REFRAMEWORK_URL } from "@/composables/usePreflight";
 import { formatBytes, formatDate, kindsPresent, plural } from "@/services/format";
 import { missingPackageTitle } from "@/services/voice";
+import {
+  PARKED_OCCUPIED_LINE,
+  parkedMeta,
+  parkedPutBackTitle,
+  parkedTicket,
+  removalWords,
+  returnHeading,
+} from "@/services/ledger";
 import ConflictMap from "@/components/ConflictMap.vue";
 import FailureNotice from "@/components/FailureNotice.vue";
 import KindBadge from "@/components/KindBadge.vue";
@@ -34,7 +42,76 @@ const pakLoadLine = computed(() => {
   return `${started}; REFramework injected ${plural(n, "pak")} from pak_mods/.`;
 });
 
-onMounted(() => void installed.load());
+const parkedSection = ref<HTMLElement | null>(null);
+const parked = computed(() => view.value?.parked ?? []);
+
+/** Smooth only when the user has not asked for less motion: an explicit JS
+ *  `behavior` beats the CSS floor's `scroll-behavior: auto !important`. */
+function scrollBehavior(): ScrollBehavior {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+}
+
+/** Preflight's "review parked" lands here: wait for the list, then bring it
+ *  into view — once. The summons is consumed, so a later ordinary visit to
+ *  YOUR WORLD is not pulled down to PARKED again. */
+async function revealParked(): Promise<void> {
+  installed.consumeParkedSummons();
+  if (!view.value) await installed.load();
+  await nextTick();
+  parkedSection.value?.scrollIntoView?.({ block: "start", behavior: scrollBehavior() });
+  parkedSection.value?.focus({ preventScroll: true });
+}
+
+watch(installed.parkedSummons, (n) => {
+  if (n > 0) void revealParked();
+});
+
+onMounted(() => {
+  void installed.load().then(() => {
+    if (installed.parkedSummons.value > 0) void revealParked();
+  });
+});
+
+/** Focus inside one parked slip: every act swaps the buttons under the
+ *  user's finger, so focus is put where the next press belongs. */
+async function focusIn(store: string, selector: string): Promise<void> {
+  await nextTick();
+  const row = [...(parkedSection.value?.querySelectorAll<HTMLElement>(".park") ?? [])].find(
+    (el) => el.dataset.store === store,
+  );
+  row?.querySelector<HTMLElement>(selector)?.focus();
+}
+
+/** Discard asks first; its safe answer, Keep it, takes the focus. */
+async function askDiscard(store: string): Promise<void> {
+  await installed.discard(store);
+  await focusIn(store, ".park__keep");
+}
+
+async function keep(store: string): Promise<void> {
+  installed.keepParked();
+  await focusIn(store, ".park__discard");
+}
+
+/** After a row leaves: the next row's Put back, else the section itself. */
+async function afterLeave(index: number): Promise<void> {
+  await nextTick();
+  const next = parked.value.at(Math.min(index, parked.value.length - 1));
+  if (next) await focusIn(next.store, ".park__putback");
+  else (parkedSection.value ?? document.getElementById("world-right"))?.focus();
+}
+
+async function confirmDiscard(store: string, index: number): Promise<void> {
+  await installed.discard(store);
+  if (parked.value.some((f) => f.store === store)) await focusIn(store, ".park__discard");
+  else await afterLeave(index);
+}
+
+async function putBack(store: string, index: number): Promise<void> {
+  await installed.putBack(store);
+  if (parked.value.some((f) => f.store === store)) await focusIn(store, ".park__putback");
+  else await afterLeave(index);
+}
 </script>
 
 <template>
@@ -75,17 +152,7 @@ onMounted(() => void installed.load());
     <section v-if="installed.adoptStage.value !== 'closed'" class="home__adopt" aria-label="Adopt Fluffy's installs">
       <h2 class="home__h rs-inscription">FLUFFY'S INSTALLS — THE ADOPTION</h2>
       <template v-if="installed.adoptStage.value === 'done' && installed.adoptResult.value">
-        <p class="home__line is-world">
-          Adopted {{ plural(installed.adoptResult.value.adopted, "install") }}.
-          {{ installed.adoptResult.value.alreadyAdopted }} were already the stone's.
-          <template v-if="installed.adoptResult.value.missingFiles">
-            {{ plural(installed.adoptResult.value.missingFiles, "file") }} Fluffy listed were already gone.</template
-          >
-          <template v-if="installed.adoptResult.value.unmatched.length">
-            Adopted under their Fluffy names: {{ installed.adoptResult.value.unmatched.join(", ") }}.</template
-          >
-          Fluffy's own files were not changed.
-        </p>
+        <p class="home__line is-world">{{ installed.adoptLine.value }}</p>
         <RiftButton size="sm" @click="installed.closeAdoption()">Done</RiftButton>
       </template>
       <template v-else>
@@ -141,7 +208,7 @@ onMounted(() => void installed.load());
         </ul>
       </section>
 
-      <section class="home__right">
+      <section id="world-right" class="home__right" tabindex="-1" aria-label="Loose, script and root mods">
         <h2 class="home__h rs-inscription">LOOSE · SCRIPT · ROOT</h2>
         <p v-if="!installed.otherRows.value.length" class="home__line home__dim">
           No loose, script or root mods in your game.
@@ -164,18 +231,16 @@ onMounted(() => void installed.load());
         </ul>
 
         <div v-if="installed.returning.value" class="home__return">
-          <h3 class="home__h rs-inscription">
-            THE RETURN — {{ plural(installed.returning.value.removals.length, "file") }} leave your game
-          </h3>
+          <h3 class="home__h rs-inscription">THE RETURN — {{ returnHeading(installed.returning.value.removals) }}</h3>
           <p v-if="installed.returning.value.refused" class="home__line is-ember">
             {{ installed.returning.value.refused }}
           </p>
           <ul class="home__rows rs-mono">
             <li v-for="r in installed.returning.value.removals" :key="r.gamePath" class="home__row">
               <span class="home__name">{{ r.gamePath }}</span>
-              <span :class="r.action.kind === 'restoreBackup' ? 'is-world' : 'home__dim'">{{
-                r.action.kind === "restoreBackup" ? `↩ restores ${r.action.owner}'s file` : "− removed"
-              }}</span>
+              <span :class="removalWords(r.action).tone === 'back' ? 'is-world' : 'home__dim'"
+                >{{ removalWords(r.action).glyph }} {{ removalWords(r.action).verb }}</span
+              >
             </li>
           </ul>
           <div class="home__acts">
@@ -202,6 +267,73 @@ onMounted(() => void installed.load());
             </li>
           </ul>
         </template>
+
+        <section v-if="parked.length" ref="parkedSection" class="home__parked" tabindex="-1" aria-label="Parked files">
+          <h2 class="home__h rs-inscription home__gap">
+            PARKED — <span class="home__later">kept aside, not deleted</span>
+          </h2>
+          <p class="home__line home__dim">
+            Files the stone set aside rather than delete or force back. Each stays here until you put it back or let it
+            go.
+          </p>
+          <ul class="home__rows">
+            <li
+              v-for="(f, i) in parked"
+              :key="f.store"
+              class="park"
+              :class="`park--${f.ownerKind}`"
+              :data-store="f.store"
+            >
+              <span class="park__tag rs-mono" aria-hidden="true">{{ parkedTicket(f.store, i) }}</span>
+              <div class="park__body">
+                <span class="park__path rs-mono">{{ f.gamePath }}</span>
+                <span class="park__meta">{{ parkedMeta(f) }}</span>
+                <span class="park__why">{{ f.reason }}</span>
+                <span v-if="f.occupied" class="park__occ rs-mono">{{ PARKED_OCCUPIED_LINE }}</span>
+              </div>
+              <div
+                v-if="installed.discarding.value === f.store"
+                class="park__acts"
+                role="group"
+                :aria-labelledby="`park-ask-${i}`"
+              >
+                <span :id="`park-ask-${i}`" class="park__ask">Discard for good? The kept copy can't come back.</span>
+                <RiftButton
+                  size="sm"
+                  variant="danger"
+                  :busy="installed.parkedBusy.value === f.store"
+                  @click="confirmDiscard(f.store, i)"
+                  >Discard for good</RiftButton
+                >
+                <RiftButton size="sm" class="park__keep" @click="keep(f.store)">Keep it</RiftButton>
+              </div>
+              <div v-else class="park__acts">
+                <RiftButton
+                  size="sm"
+                  variant="world"
+                  class="park__putback"
+                  :busy="installed.parkedBusy.value === f.store"
+                  :disabled="f.size === null"
+                  :reason="parkedPutBackTitle(f)"
+                  :title="parkedPutBackTitle(f)"
+                  @click="putBack(f.store, i)"
+                  >Put back</RiftButton
+                >
+                <RiftButton
+                  size="sm"
+                  variant="danger"
+                  class="park__discard"
+                  :aria-label="`Discard the kept copy of ${f.gamePath}`"
+                  @click="askDiscard(f.store)"
+                  >Discard</RiftButton
+                >
+              </div>
+            </li>
+          </ul>
+          <p v-if="installed.parkedNote.value" class="home__line park__note" role="status">
+            {{ installed.parkedNote.value }}
+          </p>
+        </section>
 
         <template v-if="view?.strays.length">
           <h2 class="home__h rs-inscription home__gap">STRAYS</h2>
@@ -366,5 +498,85 @@ onMounted(() => void installed.load());
 }
 .is-ember {
   color: var(--rs-ember);
+}
+
+/* v0.2 — PARKED: a cloakroom of kept files. Each slip carries its store
+   number on a torn stub (the ticket you would hand back), its path, whose
+   bytes it holds and why it was set aside. Gold "Put back" is a World act:
+   it puts something INTO your game (§7.7). */
+.home__right:focus,
+.home__parked:focus {
+  outline: none;
+}
+.home__parked:focus-visible {
+  outline: 2px solid var(--rs-rift);
+  outline-offset: 4px;
+}
+.park {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: var(--rs-space-1) var(--rs-space-3);
+  align-items: start;
+  margin-bottom: 2px;
+  padding: var(--rs-space-2) var(--rs-space-3) var(--rs-space-2) 0;
+  background: var(--rs-hearthhi);
+}
+/* the ticket is the store's seq (#17), never the file name: clipped, so even
+   an odd handle cannot spill over the slip's text */
+.park__tag {
+  align-self: stretch;
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  padding: 2px 4px 0;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-right: 1px dashed var(--rs-edgehi);
+  color: var(--rs-faint);
+  font-size: var(--rs-text-xs);
+  letter-spacing: 0.08em;
+}
+.park--fluffy .park__tag {
+  color: var(--rs-world);
+}
+.park--riftstone .park__tag {
+  color: var(--rs-rift);
+}
+.park__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.park__path {
+  color: var(--rs-text);
+  font-size: var(--rs-text-xs);
+  overflow-wrap: anywhere;
+}
+.park__meta,
+.park__why {
+  color: var(--rs-muted);
+}
+.park__why {
+  font-style: italic;
+}
+.park__occ {
+  color: var(--rs-warn);
+  font-size: var(--rs-text-xs);
+}
+.park__acts {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rs-space-2);
+  margin-top: var(--rs-space-1);
+}
+.park__ask {
+  color: var(--rs-ember);
+}
+.park__note {
+  margin-top: var(--rs-space-2);
 }
 </style>

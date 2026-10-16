@@ -42,6 +42,8 @@ pub fn search_impl(state: &AppState, query: &SearchQuery) -> Vec<SearchResult> {
                 .entry(&package.id)
                 .or_insert_with(|| store.badge(package));
             let info = option.info.as_ref();
+            // The package's Nexus labels, as the index holds them (v0.2).
+            let labels = hit.labels.as_ref();
             Some(SearchResult {
                 option_id: option.id.0.clone(),
                 package_id: package.id.0.clone(),
@@ -66,6 +68,9 @@ pub fn search_impl(state: &AppState, query: &SearchQuery) -> Vec<SearchResult> {
                 installed: install_badge(&installs, &snapshot.fluffy_installed, &option.id),
                 update,
                 conflicted: snapshot.conflicted.contains(&option.id.0),
+                nexus_category: labels.and_then(|l| l.category.clone()),
+                nexus_tags: labels.map(|l| l.tags.clone()).unwrap_or_default(),
+                adult: labels.is_some_and(|l| l.adult),
             })
         })
         .collect()
@@ -173,6 +178,8 @@ pub fn get_option_impl(state: &AppState, option_id: &str) -> Result<OptionDetail
         fluffy_installed: snapshot.fluffy_installed.contains(&id),
         conflicts,
         update: store.link_for(package).map(|_| store.row(package)),
+        // The labels search filters by: the index's, so the two never differ.
+        labels: shelf.labels(&package.id).map(dto::NexusLabels::from),
     })
 }
 

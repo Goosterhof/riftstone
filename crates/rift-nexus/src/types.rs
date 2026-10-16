@@ -10,7 +10,13 @@ use serde::{Deserialize, Serialize};
 use crate::error::NexusError;
 
 /// One mod page, as `legacyModsByDomain` reports it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The labels (v0.2: `category`, `tags`, `adult`) arrive in the same answer
+/// as the rest, so they cost no request of their own. They belong to the
+/// MOD: every file and every option of a package linked to it inherits them.
+/// All three are `#[serde(default)]`, so a `NexusMod` stored before v0.2
+/// still loads, as unlabeled.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NexusMod {
     pub mod_id: u64,
@@ -25,6 +31,22 @@ pub struct NexusMod {
     /// `hidden`, `removed`, `wastebinned`, `under_moderation`, `not_published`
     /// are the unavailable ones.
     pub status: String,
+    /// v0.2: the mod's category on Nexus (`Armour`, `Visuals`, …), in Nexus's
+    /// spelling. Every live mod has exactly one, so `None` means the answer
+    /// carried none: an older answer shape, or a value stored before v0.2.
+    #[serde(default)]
+    pub category: Option<String>,
+    /// v0.2: the mod's tags on Nexus (`Utilities for Players`, …), often none.
+    /// Nexus's spelling and order. Blank names are dropped, and so is a name
+    /// that repeats one already kept, compared case-insensitively (the way the
+    /// window's filters compare): no mod carries one tag twice.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// v0.2: Nexus flags the mod as adult content (`adultContent`). `false`
+    /// unless Nexus said `true`: a null, or an answer that did not say, reads
+    /// as not flagged.
+    #[serde(default)]
+    pub adult: bool,
 }
 
 impl NexusMod {
@@ -223,9 +245,41 @@ mod tests {
             mod_id: 4242,
             name: "Lantern Glow Recolor".into(),
             version: Some("1".into()),
-            updated_ms: None,
             status: status.into(),
+            ..NexusMod::default()
         }
+    }
+
+    #[test]
+    fn a_mod_stored_before_v0_2_loads_unlabeled() {
+        let old: NexusMod = serde_json::from_value(serde_json::json!({
+            "modId": 4242, "name": "Lantern Glow Recolor", "version": "1",
+            "updatedMs": 1_791_987_830_000_u64, "status": "published"
+        }))
+        .unwrap();
+        assert_eq!(old.category, None);
+        assert!(old.tags.is_empty());
+        assert!(!old.adult);
+        assert!(old.is_available());
+    }
+
+    #[test]
+    fn labels_round_trip_under_their_camel_case_names() {
+        let labelled = NexusMod {
+            category: Some("Visuals".into()),
+            tags: vec!["Lore-Friendly".into(), "Utilities for Players".into()],
+            adult: true,
+            ..nexus_mod("published")
+        };
+        let json = serde_json::to_value(&labelled).unwrap();
+        assert_eq!(json["category"], "Visuals");
+        assert_eq!(
+            json["tags"],
+            serde_json::json!(["Lore-Friendly", "Utilities for Players"])
+        );
+        assert_eq!(json["adult"], true);
+        let back: NexusMod = serde_json::from_value(json).unwrap();
+        assert_eq!(back, labelled);
     }
 
     #[test]

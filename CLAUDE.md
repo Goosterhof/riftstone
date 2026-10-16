@@ -11,7 +11,8 @@ once: option names, descriptions, the menu trail a variant hides behind, and eve
 inside the archives. It installs and uninstalls the way the 2026 engine expects
 (`pak_mods/`, loose `natives/`, REFramework scripts, root DLLs) under a write-ahead journal
 that remembers every byte it moved, and it asks Nexus Mods — anonymously, no key — whether a
-newer file of each download exists.
+newer file of each download exists. Since v0.2 the same check brings each linked mod's Nexus
+category and tags home, and they filter the search (categories any-of, tags all-of).
 
 The metaphor (design system #00015, *Rift-Lit Basalt*, ruled 2026-10-16): DD2's Riftstone is
 the monolith you touch to summon the pawns of other Arisen. Mods are creations from other
@@ -114,8 +115,11 @@ npm run tauri build    # on Windows: target/release/riftstone.exe (+ an unsigned
 No release pipeline and no updater: the investor ruled *"i do not really need a signed
 release for this"*. Build on the Windows side and run the exe.
 
-## Known Limitations (v0.1)
+## Known Limitations (v0.2)
 
+- Nexus labels reach linked packages only. MD5 identify cannot link an unpacked folder (there is no
+  archive to hash) or a repack (its bytes are new); link those by a pasted URL or mod id.
+- The veil's `adult` mode also blurs packages Nexus has not labelled yet, on purpose (a veil protects).
 - Windows-only (discovery reads the Windows registry; env overrides serve the WSL bench).
 - No `nxm://` handler — it would fight Vortex and MO2 for the protocol.
 - No profiles yet.

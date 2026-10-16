@@ -390,6 +390,7 @@ mod tests {
             version: Some("1".into()),
             updated_ms: Some(T0),
             status: "published".into(),
+            ..NexusMod::default()
         }
     }
 

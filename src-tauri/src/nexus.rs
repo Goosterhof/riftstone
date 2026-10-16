@@ -13,12 +13,24 @@
 //! Update checks are anonymous (GraphQL v2, no key). A mod whose files Nexus
 //! did not list is "could not be checked" — never "no files" — and its row
 //! carries the reason as an `error` state.
+//!
+//! **Labels (v0.2).** The batched mod lookup every check makes also brings
+//! each mod's category, tags and adult flag. They belong to the Nexus MOD, so
+//! the store keeps them per mod id ([`NexusStore::mod_labels`]) and a package
+//! takes the labels of whichever mod its link names now: a package linked by
+//! its file name, an MD5 match or by hand is labeled once a check has heard
+//! of that mod, an unlinked one has none, and a re-link takes the other mod's.
+//! Labels are kept like verdicts: a check that did not ask about a mod (its
+//! package was out of the library just then) leaves them as they were.
+//! The spine hands them to the catalog's index after every check, every link
+//! change and every scan ([`NexusStore::package_labels`]).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use rift_core::{NexusLink, Package};
+use rift_catalog::PackageLabels;
+use rift_core::{NexusLink, Package, PackageId};
 use rift_nexus::{ModFilesReport, NexusError, NexusMod, V1Quota};
 
 use crate::dto::{self, NexusQuota, UpdateBadge, UpdateRow, UpdateStateView};
@@ -38,6 +50,43 @@ pub struct NexusStore {
     /// Per package id.
     #[serde(default)]
     pub packages: BTreeMap<String, LinkRecord>,
+    /// v0.2: what the checks heard about each mod's labels, per mod id, kept
+    /// while a package on the shelf or a record's link or verdict names the
+    /// mod ([`NexusStore::record_labels`]). Absent from a v0.1 file: every
+    /// package starts unlabeled.
+    #[serde(default)]
+    pub mod_labels: BTreeMap<u64, ModLabels>,
+}
+
+/// One mod's labels on Nexus (v0.2), in Nexus's spelling.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModLabels {
+    /// Every live mod has one; `None` when the answer carried none.
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Nexus flags the mod as adult content.
+    #[serde(default)]
+    pub adult: bool,
+}
+
+impl ModLabels {
+    fn heard(answer: &NexusMod) -> ModLabels {
+        ModLabels {
+            category: answer.category.clone(),
+            tags: answer.tags.clone(),
+            adult: answer.adult,
+        }
+    }
+
+    /// The answer said nothing about labels (an answer without the label
+    /// fields reads as no category, no tags, not adult): kept as no labels,
+    /// never as "Nexus said not adult".
+    fn is_blank(&self) -> bool {
+        self.category.is_none() && self.tags.is_empty() && !self.adult
+    }
 }
 
 /// What the spine remembers about one package.
@@ -172,6 +221,76 @@ impl NexusStore {
         record.state = Some(outcome.state);
         record.state_mod_id = Some(outcome.mod_id);
         record.checked_ms = Some(now_ms);
+    }
+
+    /// Record the labels a check heard (v0.2). `asked` are the mod ids the
+    /// check looked up (the mods the packages on the shelf link to now);
+    /// `answered` is what Nexus sent back. A mod Nexus answered for takes the
+    /// labels of the answer. Every other mod keeps what an earlier check
+    /// heard, the way a package's verdict outlives a check that did not judge
+    /// it: a linked package whose root is out of the library (removed,
+    /// unreadable at launch, or not scanned yet) is not asked about, and
+    /// still has its labels once it is back. Only a mod nothing names any
+    /// more is forgotten: no package the check asked for, and no record's
+    /// link or verdict (an unlink or a re-link elsewhere ends both).
+    pub fn record_labels(&mut self, asked: &[u64], answered: &HashMap<u64, NexusMod>) {
+        for &mod_id in asked {
+            let Some(answer) = answered.get(&mod_id) else {
+                continue;
+            };
+            let heard = ModLabels::heard(answer);
+            if heard.is_blank() {
+                self.mod_labels.remove(&mod_id);
+            } else {
+                self.mod_labels.insert(mod_id, heard);
+            }
+        }
+        let named: HashSet<u64> = asked.iter().copied().chain(self.named_mods()).collect();
+        self.mod_labels.retain(|mod_id, _| named.contains(mod_id));
+    }
+
+    /// The mods the records name: each package's own link and the mod its
+    /// last verdict was for (a catalog guess that was checked leaves only the
+    /// latter). An unlinked package names none.
+    fn named_mods(&self) -> impl Iterator<Item = u64> + '_ {
+        self.packages
+            .values()
+            .filter(|record| !record.unlinked)
+            .flat_map(|record| {
+                record
+                    .link
+                    .as_ref()
+                    .map(|link| link.mod_id)
+                    .into_iter()
+                    .chain(record.state_mod_id)
+            })
+    }
+
+    /// The labels a package carries now: those of the mod its link names, as
+    /// the latest check heard them. `None` when it is unlinked, or no check
+    /// has heard of its mod yet.
+    pub fn labels_for(&self, package: &Package) -> Option<&ModLabels> {
+        let link = self.link_for(package)?;
+        self.mod_labels.get(&link.mod_id)
+    }
+
+    /// Every package's labels, for the catalog's index
+    /// (`Catalog::set_labels`): the labeled packages only.
+    pub fn package_labels(&self, packages: &[Package]) -> HashMap<PackageId, PackageLabels> {
+        packages
+            .iter()
+            .filter_map(|package| {
+                let labels = self.labels_for(package)?;
+                Some((
+                    package.id.clone(),
+                    PackageLabels {
+                        category: labels.category.clone(),
+                        tags: labels.tags.clone(),
+                        adult: labels.adult,
+                    },
+                ))
+            })
+            .collect()
     }
 }
 
@@ -332,6 +451,9 @@ mod tests {
                 version: Some("1".into()),
                 updated_ms: None,
                 status: "published".into(),
+                category: Some("Armour".into()),
+                tags: vec!["Cloaks".into(), "Lore-Friendly".into()],
+                adult: false,
             },
         )])
     }
@@ -492,6 +614,194 @@ mod tests {
             1_000 + AUTO_CHECK_AFTER_MS - 1
         ));
         assert!(auto_check_due(Some(1_000), 1_000 + AUTO_CHECK_AFTER_MS));
+    }
+
+    fn manual(mod_id: u64) -> NexusLink {
+        NexusLink {
+            mod_id,
+            file_id: None,
+            group_id: None,
+            sqid: None,
+            version: None,
+            uploaded_ms: None,
+            source: LinkSource::Manual,
+        }
+    }
+
+    /// Another download, unlinked (no Nexus file name).
+    fn other_package() -> Package {
+        Package {
+            id: PackageId("00000000000000bb".into()),
+            file_name: "Lantern Glow Recolor.zip".into(),
+            display_name: "Lantern Glow Recolor".into(),
+            ..package(None)
+        }
+    }
+
+    fn mod_answer(mod_id: u64, category: Option<&str>, tags: &[&str], adult: bool) -> NexusMod {
+        NexusMod {
+            mod_id,
+            name: format!("Mod {mod_id}"),
+            status: "published".into(),
+            category: category.map(str::to_string),
+            tags: tags.iter().map(|t| (*t).to_string()).collect(),
+            adult,
+            ..NexusMod::default()
+        }
+    }
+
+    #[test]
+    fn labels_belong_to_the_mod_and_follow_whichever_link_a_package_has_now() {
+        let mut store = NexusStore::new();
+        let cloaks = package(Some(filename_link()));
+        let lantern = other_package();
+        assert_eq!(store.labels_for(&cloaks), None, "no check has run");
+        assert!(store
+            .package_labels(std::slice::from_ref(&cloaks))
+            .is_empty());
+
+        store.record_labels(&[2207], &published());
+        let heard = store
+            .labels_for(&cloaks)
+            .expect("the check heard of mod 2207");
+        assert_eq!(heard.category.as_deref(), Some("Armour"));
+        assert_eq!(heard.tags, vec!["Cloaks", "Lore-Friendly"]);
+        assert!(!heard.adult);
+
+        // A second package linked by hand to the same mod is labeled at once:
+        // the labels are the mod's, and the check already heard them.
+        store.set_link(&lantern, manual(2207));
+        let labels = store.package_labels(&[cloaks.clone(), lantern.clone()]);
+        assert_eq!(labels.len(), 2);
+        assert_eq!(
+            labels[&lantern.id],
+            PackageLabels {
+                category: Some("Armour".into()),
+                tags: vec!["Cloaks".into(), "Lore-Friendly".into()],
+                adult: false,
+            }
+        );
+
+        // Unlinked: no labels. Re-linked to a mod no check has heard of: none.
+        store.unlink(&cloaks);
+        assert_eq!(store.labels_for(&cloaks), None);
+        store.set_link(&lantern, manual(5150));
+        assert_eq!(store.labels_for(&lantern), None);
+        assert!(store
+            .package_labels(&[cloaks.clone(), lantern.clone()])
+            .is_empty());
+    }
+
+    #[test]
+    fn a_check_keeps_the_labels_of_the_mods_it_asked_for_and_forgets_the_rest() {
+        let mut store = NexusStore::new();
+        store.record_labels(
+            &[2207, 99],
+            &HashMap::from([
+                (2207, mod_answer(2207, Some("Armour"), &["Cloaks"], false)),
+                (99, mod_answer(99, Some("Visuals"), &[], true)),
+            ]),
+        );
+        assert_eq!(store.mod_labels.len(), 2);
+
+        // The next check: 2207 is still linked but Nexus left it out of its
+        // answer; 99 is linked no more; 4242 is new; 6006 answered without
+        // any label at all (an answer shape that does not carry them).
+        store.record_labels(
+            &[2207, 4242, 6006],
+            &HashMap::from([
+                (
+                    4242,
+                    mod_answer(4242, Some("Visuals"), &["Utilities for Players"], false),
+                ),
+                (6006, mod_answer(6006, None, &[], false)),
+            ]),
+        );
+        let ids: Vec<u64> = store.mod_labels.keys().copied().collect();
+        assert_eq!(
+            ids,
+            vec![2207, 4242],
+            "unanswered keeps, unlinked goes, blank is no labels"
+        );
+        assert_eq!(store.mod_labels[&2207].tags, vec!["Cloaks"]);
+
+        // An answer carrying only the adult flag still veils.
+        store.record_labels(&[7], &HashMap::from([(7, mod_answer(7, None, &[], true))]));
+        assert!(store.mod_labels[&7].adult);
+    }
+
+    #[test]
+    fn a_check_keeps_the_labels_of_a_linked_package_that_is_off_the_shelf() {
+        // The cloaks were linked and checked; then their root went out of the
+        // library (removed, or unreadable at launch), so the next check asked
+        // Nexus about nothing — the shelf held no linked package at all.
+        let mut store = NexusStore::new();
+        let cloaks = package(Some(filename_link()));
+        store.record_check(
+            &cloaks,
+            CheckOutcome {
+                mod_id: 2207,
+                pinned: None,
+                mod_name: Some("Vernworth Cloaks Collection".into()),
+                state: UpdateStateView::Current,
+            },
+            7,
+        );
+        store.record_labels(&[2207], &published());
+        store.record_labels(&[], &HashMap::new());
+        assert_eq!(
+            store
+                .labels_for(&cloaks)
+                .and_then(|l| l.category.as_deref()),
+            Some("Armour"),
+            "the verdict survives the check, and so do the labels"
+        );
+        assert_eq!(store.row(&cloaks).state, UpdateStateView::Current);
+
+        // A link made by hand names its mod even before any check judged it.
+        let lantern = other_package();
+        store.set_link(&lantern, manual(4242));
+        store.record_labels(
+            &[4242],
+            &HashMap::from([(
+                4242,
+                mod_answer(4242, Some("Visuals"), &["Utilities for Players"], false),
+            )]),
+        );
+        store.record_labels(&[], &HashMap::new());
+        assert!(store.labels_for(&lantern).is_some(), "named by its link");
+
+        // Only an unlink (or a re-link elsewhere) lets a mod's labels go.
+        store.unlink(&cloaks);
+        store.set_link(&lantern, manual(5150));
+        store.record_labels(&[], &HashMap::new());
+        assert!(
+            store.mod_labels.is_empty(),
+            "nothing names 2207 or 4242 any more: {:?}",
+            store.mod_labels
+        );
+    }
+
+    #[test]
+    fn a_v01_nexus_file_loads_unlabeled_and_labels_survive_a_save() {
+        let v01 = serde_json::json!({
+            "schema": 1,
+            "lastCheckMs": 42,
+            "packages": { "00000000000000aa": { "link": null, "unlinked": true } }
+        });
+        let store: NexusStore = serde_json::from_value(v01).unwrap();
+        assert!(store.mod_labels.is_empty());
+        assert!(store.packages["00000000000000aa"].unlinked);
+
+        let mut store = NexusStore::new();
+        store.record_labels(&[2207], &published());
+        let saved = serde_json::to_value(&store).unwrap();
+        assert_eq!(saved["modLabels"]["2207"]["category"], "Armour");
+        assert_eq!(
+            serde_json::from_value::<NexusStore>(saved).unwrap(),
+            store,
+            "nexus.json keeps the labels between launches"
+        );
     }
 
     #[test]

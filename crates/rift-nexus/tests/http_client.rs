@@ -5,8 +5,11 @@
 //! answers): `updatedAt` RFC 3339, `sizeInBytes`/`fileSize` as JSON strings,
 //! `primary` as 0/1, `version` possibly `""`, `modFile` possibly null, unknown
 //! mods omitted from `legacyModsByDomain` and answered `[]` by `modFiles`, the
-//! `MD5_INVALID` error shape. Names and ids are invented. Nothing here touches
-//! the network.
+//! `MD5_INVALID` error shape, and (v0.2) each mod's `category`, `tags { name }`
+//! (often `[]`) and nullable `adultContent`. `mods_page_without_labels.json` is
+//! the v0.1 answer shape, kept to prove an answer without labels still reads.
+//! Names, ids, categories and tags are invented. Nothing here touches the
+//! network.
 
 mod support;
 
@@ -22,6 +25,7 @@ use serde_json::{json, Value};
 use support::{dead_address, Recorded, Reply, TestServer};
 
 const MODS_PAGE: &str = include_str!("fixtures/mods_page.json");
+const MODS_PAGE_WITHOUT_LABELS: &str = include_str!("fixtures/mods_page_without_labels.json");
 const MOD_FILES: &str = include_str!("fixtures/mod_files_aliased.json");
 const FILE_HASHES: &str = include_str!("fixtures/file_hashes.json");
 const GRAPHQL_REFUSAL: &str = include_str!("fixtures/graphql_refusal.json");
@@ -38,8 +42,14 @@ fn aliased_ids(query: &str) -> Vec<u64> {
         .collect()
 }
 
-/// Answer `legacyModsByDomain` with one node per requested id, reversed —
-/// Nexus does not keep request order either.
+/// The invented category the echo stand-in files a mod under.
+fn echo_category(mod_id: u64) -> &'static str {
+    ["Armour", "Visuals", "Utilities"][(mod_id % 3) as usize]
+}
+
+/// Answer `legacyModsByDomain` with one labelled node per requested id,
+/// reversed — Nexus does not keep request order either. Every third mod
+/// carries no tags; even ids are flagged adult.
 fn echo_mods(request: &Recorded) -> Reply {
     let body = request.json();
     let nodes: Vec<Value> = body["variables"]["ids"]
@@ -49,8 +59,15 @@ fn echo_mods(request: &Recorded) -> Reply {
         .rev()
         .map(|id| {
             let mod_id = id["modId"].as_u64().unwrap();
+            let tags = if mod_id % 3 == 0 {
+                json!([])
+            } else {
+                json!([{ "name": format!("Invented Tag {mod_id}") }])
+            };
             json!({ "modId": mod_id, "name": format!("Invented Mod {mod_id}"), "version": "1",
-                    "updatedAt": "2026-10-14T14:23:50Z", "status": "published" })
+                    "updatedAt": "2026-10-14T14:23:50Z", "status": "published",
+                    "category": echo_category(mod_id), "tags": tags,
+                    "adultContent": mod_id % 2 == 0 })
         })
         .collect();
     Reply::json(
@@ -122,6 +139,94 @@ fn four_hundred_fifty_mods_take_three_posts() {
         .iter()
         .zip(1..=450u64)
         .all(|(m, id)| m.mod_id == id && m.name == format!("Invented Mod {id}")));
+    // Every mod came back labelled, and the labels added no POST: still three.
+    for m in &mods {
+        assert_eq!(m.category.as_deref(), Some(echo_category(m.mod_id)));
+        let expected: Vec<String> = if m.mod_id % 3 == 0 {
+            vec![]
+        } else {
+            vec![format!("Invented Tag {}", m.mod_id)]
+        };
+        assert_eq!(m.tags, expected, "mod {}", m.mod_id);
+        assert_eq!(m.adult, m.mod_id % 2 == 0, "mod {}", m.mod_id);
+    }
+    assert_eq!(server.request_count(), 3, "labels cost no request");
+}
+
+#[test]
+fn labels_come_with_the_mods_in_the_same_post() {
+    let server = TestServer::start(|_| Reply::fixture(MODS_PAGE));
+    let mods = server.client().mods(&[5150, 4242, 6006]).unwrap();
+    assert_eq!(server.request_count(), 1, "one POST for mods and labels");
+    let query = server.requests()[0].query();
+    assert!(
+        query.contains("status category tags { name } adultContent"),
+        "{query}"
+    );
+
+    // Category, tags and the adult flag, in Nexus's spelling and order.
+    let cloaks = &mods[0];
+    assert_eq!(cloaks.mod_id, 5150);
+    assert_eq!(cloaks.category.as_deref(), Some("Armour"));
+    assert_eq!(cloaks.tags, ["Cloaks", "Lore-Friendly"]);
+    assert!(cloaks.adult);
+
+    // An empty tag list: a category and nothing else.
+    let lantern = &mods[1];
+    assert_eq!(lantern.mod_id, 4242);
+    assert_eq!(lantern.category.as_deref(), Some("Visuals"));
+    assert!(lantern.tags.is_empty());
+    assert!(!lantern.adult);
+
+    let banners = &mods[2];
+    assert_eq!(banners.tags, ["Utilities for Players"]);
+    assert!(!banners.adult, "adultContent null is not flagged");
+    assert!(
+        !banners.is_available(),
+        "a hidden mod keeps its labels and its status"
+    );
+}
+
+#[test]
+fn an_answer_in_the_older_shape_still_parses_unlabeled() {
+    // The v0.1 answer: no category, no tags, no adultContent anywhere.
+    let server = TestServer::start(|_| Reply::fixture(MODS_PAGE_WITHOUT_LABELS));
+    let mods = server.client().mods(&[4242, 6006, 5150, 7777]).unwrap();
+    assert_eq!(
+        mods.iter().map(|m| m.mod_id).collect::<Vec<_>>(),
+        vec![4242, 6006, 5150],
+        "the same mods as ever, in request order"
+    );
+    assert_eq!(mods[0].name, "Lantern Glow Recolor");
+    assert_eq!(mods[0].version.as_deref(), Some("2.1"));
+    assert!(!mods[1].is_available());
+    assert_eq!(mods[2].updated_ms, Some(1_791_987_830_000));
+    for m in &mods {
+        assert_eq!(m.category, None, "mod {}", m.mod_id);
+        assert!(m.tags.is_empty(), "mod {}", m.mod_id);
+        assert!(!m.adult, "mod {}", m.mod_id);
+    }
+    assert_eq!(server.request_count(), 1);
+}
+
+#[test]
+fn a_label_that_failed_refuses_the_page_so_adult_never_reads_as_false() {
+    // `adultContent` is nullable: a resolver failure nulls it and names it in
+    // `errors`. Read at face value, a flagged mod would come back unflagged and
+    // the window's adult veil would leave its screenshots bare.
+    let server = TestServer::start(|_| {
+        Reply::fixture(
+            r#"{"data":{"legacyModsByDomain":{"totalCount":1,"nodes":[{"modId":5150,"name":"Vernworth Cloaks Collection","version":"1","updatedAt":"2026-10-14T14:23:50Z","status":"published","category":"Armour","tags":[],"adultContent":null}]}},
+                "errors":[{"message":"adultContent could not be resolved","path":["legacyModsByDomain","nodes",0,"adultContent"]}]}"#,
+        )
+    });
+    assert_eq!(
+        server.client().mods(&[5150]),
+        Err(NexusError::BadResponse(
+            "adultContent could not be resolved".into()
+        ))
+    );
+    assert_eq!(server.request_count(), 1);
 }
 
 #[test]
@@ -579,6 +684,10 @@ fn an_update_check_end_to_end() {
     let files = client.mod_files(&[5150]).unwrap();
     assert_eq!(mods.len(), 1, "only the mod asked about");
     assert_eq!(files.len(), 1);
+    // The check's mods lookup brought the labels along (asserted below: the
+    // whole check is still two POSTs).
+    assert_eq!(mods[0].category.as_deref(), Some("Armour"));
+    assert_eq!(mods[0].tags, ["Cloaks", "Lore-Friendly"]);
 
     // `Vernworth Cloaks Collection 5150 7 2026-09-30T10-44Z aB3dE5fG7.zip`
     let local = NexusLink {

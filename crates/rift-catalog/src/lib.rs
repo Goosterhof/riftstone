@@ -10,7 +10,7 @@
 //! | [`tree`] | `addonfor` parents and breadcrumb trails across the library |
 //! | [`scan`] | a root's candidates; one package off disk |
 //! | [`catalog`] | every root scanned in parallel, the cache, the index |
-//! | [`search`] | the search index |
+//! | [`search`] | the search index, and the Nexus labels it filters by |
 //! | [`conflicts`] | which installed options put a file at the same game path |
 //!
 //! See `docs/BUILD-SPEC.md` § rift-catalog for the contract.
@@ -31,4 +31,7 @@ pub use catalog::{
 };
 pub use conflicts::{Conflict, ConflictKey, Layer};
 pub use scan::ScannedPackage;
-pub use search::{MatchedField, SearchFilters, SearchHit, SearchQuery};
+pub use search::{
+    LabelCount, LabelFacets, MatchedField, PackageLabels, SearchFilters, SearchHit, SearchIndex,
+    SearchQuery,
+};

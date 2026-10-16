@@ -16,7 +16,9 @@ pub const SCAN_PROGRESS: &str = "rift://scan-progress";
 pub const LIBRARY_CHANGED: &str = "rift://library-changed";
 /// During extraction — `InstallProgressEvent`.
 pub const INSTALL_PROGRESS: &str = "rift://install-progress";
-/// After install / uninstall / reorder / adopt / switch / game root change — `{}`.
+/// After install / uninstall / reorder / adopt / switch / game root change,
+/// and after a parked file is put back or discarded (v0.2) — `{}`. A refused
+/// command changed nothing and sends nothing.
 pub const GAME_CHANGED: &str = "rift://game-changed";
 /// During `check_updates` / `identify_packages` — `UpdatesProgressEvent`.
 pub const UPDATES_PROGRESS: &str = "rift://updates-progress";

@@ -9,7 +9,10 @@
 //! state to write only inside its own turn. A scan builds a whole new catalog
 //! before swapping it in. The one long-held lock is `deploy_lock`, on purpose:
 //! one writer in the game folder at a time. When more than one lock is held,
-//! the order is `deploy_lock` → `world` → everything else.
+//! the order is `deploy_lock` → `world` → everything else, and `shelf` →
+//! `nexus`: a shelf is put in place (or relabeled) with the Nexus labels the
+//! store holds at that moment, so nothing may wait for the shelf while it
+//! holds the store.
 //!
 //! Every lock is taken through [`lock`], [`read`] or [`write`], which recover
 //! from poisoning: a panic in one command must not wedge every command after it.
@@ -266,7 +269,12 @@ impl AppState {
 
         let game = find_game(&config.discovery, settings.manual_game_root.as_deref());
         let journal = load_journal(dirs.state_dir(), game.as_ref());
+        // The labels nexus.json kept: the window filters by them at once.
         let shelf = Shelf::from_cache(&roots, &cache);
+        let shelf = {
+            let labels = nexus.package_labels(shelf.packages());
+            shelf.with_labels(labels)
+        };
 
         let state = Arc::new(AppState {
             events,
@@ -498,10 +506,34 @@ impl AppState {
     pub fn reshelve_from_cache(&self) {
         let roots = self.roots_snapshot();
         let cache = self.catalog_cache_snapshot();
-        let shelf = Shelf::from_cache(&roots, &cache);
-        *write(&self.shelf) = Arc::new(shelf);
+        self.shelve(Shelf::from_cache(&roots, &cache));
         self.sources.clear();
         self.invalidate_snapshot();
+    }
+
+    /// Put a newly built shelf in place, labeled with what the Nexus store
+    /// holds at this moment. Both happen under the shelf's write lock, so a
+    /// check that ends meanwhile either is seen here or relabels this shelf
+    /// right after ([`AppState::relabel`]) — never lost under an older swap.
+    fn shelve(&self, shelf: Shelf) {
+        let mut current = write(&self.shelf);
+        let labels = lock(&self.nexus).package_labels(shelf.packages());
+        *current = Arc::new(shelf.with_labels(labels));
+    }
+
+    /// The Nexus store's labels changed (a check heard them, a link changed):
+    /// hand them to the shelf in place — only the index's label layer is
+    /// rebuilt, never the library. Call it before telling the window
+    /// (`rift://updates-changed`), and with no shelf of your own in hand: a
+    /// reader that still holds the shelf keeps reading the old one, so the
+    /// labeled shelf is a copy then.
+    pub fn relabel(&self) {
+        let mut current = write(&self.shelf);
+        let labels = lock(&self.nexus).package_labels(current.packages());
+        if current.carries_labels(&labels) {
+            return;
+        }
+        Arc::make_mut(&mut *current).set_labels(labels);
     }
 
     /// What the overview says about the scan.
@@ -615,7 +647,7 @@ impl AppState {
         }));
         match outcome {
             Ok((catalog, fresh)) => {
-                *write(&self.shelf) = Arc::new(Shelf::scanned(catalog));
+                self.shelve(Shelf::scanned(catalog));
                 // Written only when it changed: the watcher rescans after every
                 // change in a Downloads folder, and most leave the library as it was.
                 let unchanged = matches!(

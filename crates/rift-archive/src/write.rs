@@ -1,13 +1,23 @@
 //! The write side of extraction, shared by every source: destination files,
 //! capped reads, and the progress tally.
 //!
+//! **Created new, never overwritten.** Every destination is opened with
+//! `create_new` (zip, 7z, RAR and folder copies alike, and the second copy of
+//! an entry asked for twice): when anything already sits there, a file, a
+//! folder or a link (even a dangling one), the batch stops with
+//! [`RiftError::Refused`] naming it, and the thing that sits there is left
+//! exactly as it was: never truncated, never written through, never removed.
+//! The deploy engine checks that its temporary names are free before it
+//! extracts; this closes the moment between that check and the write.
+//!
 //! A destination is written fully, flushed, and only then reported done. A
 //! file that fails half-way is removed again (best effort): a caller never
 //! finds a half-written file at a destination the extractor did not report.
-//! Files reported earlier stay where they are — the caller's journal knows
-//! them. `extract` does not fsync; durability is the deploy engine's call.
+//! Only a file this module created is ever removed. Files reported earlier
+//! stay where they are — the caller's journal knows them. `extract` does not
+//! fsync; durability is the deploy engine's call.
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Read, Write};
 use std::path::Path;
 
@@ -56,14 +66,23 @@ pub(crate) struct DestWriter<'a> {
 }
 
 impl<'a> DestWriter<'a> {
-    /// Create (or truncate) `dest`, creating its parent folders first.
+    /// Create `dest` as a new file, creating its parent folders first. When
+    /// anything already sits at `dest` this refuses ([`fail::taken`]) and
+    /// touches nothing; no `DestWriter` exists then, so nothing can remove it.
     pub(crate) fn create(dest: &'a Path, entry: &'a str) -> Result<Self, RiftError> {
         if let Some(parent) = dest.parent() {
             if !parent.as_os_str().is_empty() {
                 fs::create_dir_all(parent).map_err(|err| fail::write(dest, entry, &err))?;
             }
         }
-        let file = File::create(dest).map_err(|err| fail::write(dest, entry, &err))?;
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dest)
+            .map_err(|err| match err.kind() {
+                io::ErrorKind::AlreadyExists => fail::taken(dest, entry),
+                _ => fail::write(dest, entry, &err),
+            })?;
         Ok(DestWriter {
             dest,
             entry,
@@ -151,20 +170,26 @@ pub(crate) fn write_from_reader(
 }
 
 /// Copy an already extracted file to a further destination (the same entry
-/// requested twice in one batch).
+/// requested twice in one batch). The copy is created new like every other
+/// destination; `fs::copy` would truncate whatever sat there, and its error
+/// path removed `dest` even when the file there was never the extractor's.
 pub(crate) fn duplicate(written: &Path, dest: &Path, entry: &str) -> Result<u64, RiftError> {
-    if let Some(parent) = dest.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|err| fail::write(dest, entry, &err))?;
-        }
-    }
-    fs::copy(written, dest).map_err(|err| {
-        let _ = fs::remove_file(dest);
-        fail::write(dest, entry, &err)
-    })
+    let copy_failed = |err: &io::Error| {
+        RiftError::io(
+            format!(
+                "could not copy {} to {} (unpacking {entry})",
+                written.display(),
+                dest.display()
+            ),
+            err,
+        )
+    };
+    let mut original = File::open(written).map_err(|err| copy_failed(&err))?;
+    write_from_reader(dest, entry, &mut original, &copy_failed)
 }
 
-/// Counts finished files and reports after each one.
+/// Counts finished files and reports after each one, naming it: the caller
+/// learns from the reports exactly which destinations were created.
 pub(crate) struct Tally<'p> {
     report: &'p mut dyn FnMut(ExtractProgress),
     state: ExtractProgress,
@@ -183,13 +208,16 @@ impl<'p> Tally<'p> {
                 files_total,
                 bytes_done: 0,
                 bytes_total,
+                item: 0,
             },
         }
     }
 
-    pub(crate) fn file_done(&mut self, bytes: u64) {
+    /// The batch's `item` is written whole, `bytes` long.
+    pub(crate) fn file_done(&mut self, item: usize, bytes: u64) {
         self.state.files_done += 1;
         self.state.bytes_done += bytes;
+        self.state.item = item;
         (self.report)(self.state);
     }
 }
@@ -245,6 +273,88 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, RiftError::CorruptArchive { .. }));
         assert!(!dest.exists());
+    }
+
+    fn assert_refused_over(err: &RiftError, dest: &Path) {
+        assert!(
+            matches!(err, RiftError::Refused { reason }
+                if reason.contains(&dest.display().to_string())),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_destination_that_is_taken_is_refused_and_left_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("natives/stm/cape.mesh.riftstone-part");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, b"not the Riftstone's").unwrap();
+        let err = write_from_reader(&dest, "cape.mesh", &mut &b"cape"[..], &|_| unreachable!())
+            .unwrap_err();
+        assert_refused_over(&err, &dest);
+        assert_eq!(std::fs::read(&dest).unwrap(), b"not the Riftstone's");
+
+        // A folder there fails the write too, naming it, and stays.
+        let folder = dir.path().join("natives/stm/hood.mesh.riftstone-part");
+        std::fs::create_dir_all(folder.join("inside")).unwrap();
+        let err = DestWriter::create(&folder, "hood.mesh").err().unwrap();
+        assert!(
+            err.to_string().contains(&folder.display().to_string()),
+            "{err:?}"
+        );
+        #[cfg(unix)] // EEXIST; Windows may answer access denied for a folder
+        assert_refused_over(&err, &folder);
+        assert!(folder.join("inside").is_dir());
+    }
+
+    #[test]
+    fn a_duplicate_is_created_new_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let written = dir.path().join("0.out");
+        std::fs::write(&written, b"cape").unwrap();
+        let free = dir.path().join("deeper/1.out");
+        assert_eq!(duplicate(&written, &free, "cape.mesh").unwrap(), 4);
+        assert_eq!(std::fs::read(&free).unwrap(), b"cape");
+
+        let taken = dir.path().join("2.out");
+        std::fs::write(&taken, b"not the Riftstone's").unwrap();
+        let err = duplicate(&written, &taken, "cape.mesh").unwrap_err();
+        assert_refused_over(&err, &taken);
+        assert_eq!(std::fs::read(&taken).unwrap(), b"not the Riftstone's");
+
+        // A copy whose original is gone fails without removing what sits at
+        // the destination (fs::copy's error path used to delete it).
+        std::fs::remove_file(&written).unwrap();
+        let err = duplicate(&written, &taken, "cape.mesh").unwrap_err();
+        assert!(
+            matches!(&err, RiftError::Io { detail } if detail.contains("could not copy")),
+            "{err:?}"
+        );
+        assert_eq!(std::fs::read(&taken).unwrap(), b"not the Riftstone's");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_at_the_destination_is_never_written_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let vanilla = dir.path().join("re_chunk_000.pak");
+        std::fs::write(&vanilla, b"KPKA vanilla").unwrap();
+        let dest = dir.path().join("planted.riftstone-part");
+        std::os::unix::fs::symlink(&vanilla, &dest).unwrap();
+        let err = write_from_reader(&dest, "a.pak", &mut &b"mod bytes"[..], &|_| unreachable!())
+            .unwrap_err();
+        assert_refused_over(&err, &dest);
+        assert_eq!(std::fs::read(&vanilla).unwrap(), b"KPKA vanilla");
+        assert!(dest.is_symlink(), "the link itself stays too");
+
+        // A dangling link is refused as well: nothing is created at its target.
+        let nowhere = dir.path().join("DD2.exe");
+        let dangling = dir.path().join("dangling.riftstone-part");
+        std::os::unix::fs::symlink(&nowhere, &dangling).unwrap();
+        let err = write_from_reader(&dangling, "a.dll", &mut &b"MZ"[..], &|_| unreachable!())
+            .unwrap_err();
+        assert_refused_over(&err, &dangling);
+        assert!(!nowhere.exists());
     }
 
     #[test]

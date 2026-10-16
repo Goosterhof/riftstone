@@ -39,12 +39,41 @@ understand what you tried, what to do next.
 | `set_nexus_key` | `key: string \| null` | `NexusSummary` | Optional (v1 extras only). Stored in Windows Credential Manager; validated with `/v1/users/validate.json`. |
 | `get_troubled_packages` | — | `PackageSummary[]` | The §9 trouble cards: every package carrying one of the four trouble kinds, including those with zero options — `unreadable` (can't be opened; ember rail), `nothingToInstall`, `outdatedFormats` (pre-TU 3.2 files), `filesSkipped`. Ordered by the first of those kinds a package carries, in that order, then library order. Packages with `outdatedFormats` or `filesSkipped` still install; a card speaks for its first trouble kind (`services/voice.ts` `troubleLine`), never for `problems[0]` blindly. |
 | `get_nexus_quota` | — | `NexusQuota \| null` | The v1 budget from the last `X-RL-*` headers; `null` when no key is set or no v1 call has run (anonymous v2 carries no quota headers). |
+| `get_labels` | — | `LabelFacets` | **v0.2.** The Nexus categories and tags of every linked package, from the latest update check (stored in `nexus.json`), with installable-option counts. The window refetches it after `rift://updates-changed` and `rift://library-changed`. |
+| `restore_parked` | `store: string` | `ParkedRestoreReport` | **v0.2.** Puts a parked file back (rift-deploy `restore_parked`). Anything at the path is parked in its turn (`swappedOut`). Refused while an install or an un-adopted Fluffy mod owns the path, or for a handle the list no longer holds (the refusal names the game path, never the store handle, and says to look again at PARKED; the window reloads the list after any refusal). While the game runs it still puts the file back and answers `restartNeeded: true`; a file the game holds open fails the move, which is rolled back and comes back as an error, never as a half-restore. So `restored` is always `true` on success. Emits `rift://game-changed`. |
+| `discard_parked` | `store: string` | `void` | **v0.2.** Deletes a parked file from the backup store for good (rift-deploy `discard_parked`). Refused (`refused`) for a handle the list no longer holds. Emits `rift://game-changed`. |
 | `get_settings` | — | `Settings` | |
 | `set_settings` | `settings: Settings` | `Settings` | |
 
 Opening a URL or revealing a file is done window-side with
 `@tauri-apps/plugin-opener` (`openUrl`, `revealItemInDir`) through
 `src/services/rift.ts`.
+
+## v0.2 — Nexus labels as filters
+
+The investor's ask: *"is it also possible to use the tags from nexus for our overview? so that i can
+easily filter on those tags?"* Every Nexus mod carries a `category` (always one) and `tags`
+(often none), plus an `adultContent` flag. They arrive in the same batched `legacyModsByDomain`
+call the update check already makes, at zero extra requests. Labels belong to the Nexus MOD, so
+every option of a linked package inherits them.
+
+- **Search:** `SearchFilters.categories` is ANY-of and `SearchFilters.tags` is ALL-of. Both compare
+  case-insensitively, and both are empty for no filter. Free text also matches labels, as the
+  `nexusLabel` field (weight 4, between bundle and author). Every `SearchResult` carries
+  `nexusCategory`, `nexusTags` and `adult`. A package Nexus has not labelled (unlinked, linked but
+  never checked, or checked with an answer that carried no labels) has none of them, so a label
+  filter hides it. `LabelFacets.unlabeledPackages` counts the packages with at least one
+  installable option and no category or tag; an adult flag alone still counts as unlabeled. The
+  facets leave out labels that only menu entries carry, since their chips would find nothing.
+- **Detail:** `OptionDetail.labels`, read from the same index as search, so the two never disagree.
+- **Kept like verdicts:** a check keeps the labels of every mod it did not ask about (a package whose
+  root is out, say). A mod's labels are forgotten only when no package on the shelf and no
+  record's link or verdict names it any more (an unlink, or a re-link to another mod).
+- **Veil:** `Settings.veil` is `off`, `adult` or `all`. `adult` veils the options of mods Nexus
+  flags adult **and of packages Nexus has not labelled yet** (no category, no tags and not adult:
+  unlinked, never checked, or an answer without labels; `ledger.ts` `adultnessOf`). A veil exists to protect, so the unknown is veiled; it
+  clears as packages are linked and checked. Cards, the detail and the lookbook apply the same
+  rule. (Ruled 2026-10-16, after the contract verifier found the three surfaces disagreeing.)
 
 ## Check ids
 
@@ -75,7 +104,7 @@ an adopted install's `InstalledRow.optionId` (with `packageMissing: true`), or a
 | `rift://scan-progress` | `ScanProgressEvent` | After each package of a scan. |
 | `rift://library-changed` | `{}` | A scan finished (manual, startup, or the library watcher). |
 | `rift://install-progress` | `InstallProgressEvent` | During extraction. |
-| `rift://game-changed` | `{}` | After install / uninstall / reorder / adopt / switch / game root change. |
+| `rift://game-changed` | `{}` | After install / uninstall / reorder / adopt / switch / game root change, and after `restore_parked` / `discard_parked`. Never after a refusal. |
 | `rift://updates-progress` | `UpdatesProgressEvent` | During `check_updates` / `identify_packages`. |
 | `rift://updates-changed` | `{}` | After an update check or a link change. |
 

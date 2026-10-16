@@ -5,13 +5,19 @@
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import App from "@/App.vue";
 import { resetRiftstone } from "@/composables/boot";
-import { setRiftBackend } from "@/services/rift";
+import { setRiftBackend, type RiftBackend } from "@/services/rift";
 import { createMockBackend } from "@/services/mock/index";
 
 /** A node's text. Typed on Node, where the DOM lib (every TS version the
  *  gates run) still says `string | null`, so neither vue-tsc nor tsgolint
  *  argues about the fallback. */
 export const textOf = (n: Node): string => n.textContent ?? "";
+
+/** The trimmed text of the first element matching `selector`, or null. */
+export function textAt(selector: string): string | null {
+  const el = document.querySelector(selector);
+  return el ? textOf(el).trim() : null;
+}
 
 export type Scene =
   | ""
@@ -26,6 +32,14 @@ export type Scene =
   | "quotalow";
 
 let mounted: VueWrapper | null = null;
+let backend: RiftBackend | null = null;
+
+/** The mock spine this spec's window talks to: spy on it to read what the
+ *  window sent, or stand in for one of its answers. */
+export function spine(): RiftBackend {
+  if (!backend) throw new Error("No spine is awake: call wakeOn() first");
+  return backend;
+}
 
 /** Poll until `probe` holds; the mock answers on real timers (8–400 ms). */
 export async function until(probe: () => boolean, what: string, timeoutMs = 3000): Promise<void> {
@@ -40,7 +54,8 @@ export async function until(probe: () => boolean, what: string, timeoutMs = 3000
 export async function wakeOn(scene: Scene = ""): Promise<VueWrapper> {
   window.history.replaceState(null, "", scene ? `/?mock=${scene}` : "/");
   resetRiftstone();
-  setRiftBackend(createMockBackend());
+  backend = createMockBackend();
+  setRiftBackend(backend);
   const host = document.createElement("div");
   document.body.append(host);
   mounted = mount(App, { attachTo: host });
@@ -54,6 +69,7 @@ export function sleep(): void {
   mounted = null;
   resetRiftstone();
   setRiftBackend(null);
+  backend = null;
   document.body.innerHTML = "";
 }
 

@@ -6,7 +6,10 @@ use std::fs;
 use rift_archive::RarSource;
 use rift_core::{PackageFormat, PackageSource, RiftError};
 
-use crate::fixtures::{compressible, extract_to, modinfo, paths, rar5_at, rar5_bytes, R};
+use crate::fixtures::{
+    assert_refused_at, compressible, extract_racing, extract_to, modinfo, paths, rar5_at,
+    rar5_bytes, R,
+};
 
 const SYMLINK: u64 = 1;
 const HARD_LINK: u64 = 4;
@@ -203,6 +206,12 @@ fn extract_is_one_walk_in_archive_order() {
             .progress
             .iter()
             .all(|p| p.files_total == 3 && p.bytes_total == a + b + c));
+        let items: Vec<usize> = extracted.progress.iter().map(|p| p.item).collect();
+        assert_eq!(
+            items,
+            [1, 2, 0],
+            "solid={solid}: each report names its file"
+        );
     }
 }
 
@@ -706,4 +715,57 @@ fn rar4_may_end_without_an_end_block_but_not_mid_file() {
         matches!(&err, RiftError::CorruptArchive { detail, .. } if detail.contains("cut off")),
         "{err:?}"
     );
+}
+
+#[test]
+fn a_destination_taken_mid_walk_stops_the_walk_and_is_left_alone() {
+    // UnRAR runs in test mode and hands its bytes to the Riftstone's own
+    // writer, so a RAR destination is created new like every other.
+    for solid in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Vernworth Cloaks Collection.rar");
+        let cape = compressible(70_000, 41);
+        rar5_at(
+            &path,
+            solid,
+            &[
+                R::File("Cloaks/Ermine Cape/natives/stm/cape.mesh", &cape),
+                R::File("Cloaks/Ermine Cape/modinfo.ini", b"name=Ermine Cape"),
+                R::File("Cloaks/Ermine Cape/screenshot.png", b"\x89PNG"),
+            ],
+        );
+        let mut source = RarSource::open(&path).unwrap();
+        let (result, extracted, dests) = extract_racing(
+            &mut source,
+            dir.path(),
+            &[
+                "Cloaks/Ermine Cape/natives/stm/cape.mesh",
+                "Cloaks/Ermine Cape/modinfo.ini",
+                "Cloaks/Ermine Cape/screenshot.png",
+            ],
+            1,
+            1,
+        );
+        assert_refused_at(&result, &dests[1]);
+        assert_eq!(fs::read(&dests[0]).unwrap(), cape, "solid={solid}");
+        assert!(!dests[2].exists(), "solid={solid}: the walk stopped there");
+        assert_eq!(extracted.progress.len(), 1, "solid={solid}");
+        assert_eq!(extracted.progress[0].item, 0, "solid={solid}");
+        assert_eq!(source.decode_passes(), 1, "solid={solid}");
+
+        // The second copy of an entry asked for twice is created new too.
+        let out = tempfile::tempdir().unwrap();
+        let (result, _, dests) = extract_racing(
+            &mut source,
+            out.path(),
+            &[
+                "Cloaks/Ermine Cape/modinfo.ini",
+                "cloaks/ermine cape/MODINFO.INI",
+            ],
+            0,
+            1,
+        );
+        assert_refused_at(&result, &dests[1]);
+        assert_eq!(fs::read(&dests[0]).unwrap(), b"name=Ermine Cape");
+    }
 }
