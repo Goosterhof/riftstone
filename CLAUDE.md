@@ -121,7 +121,7 @@ tests and a real option name in BUILD-SPEC, both from before the scrub.)*
 ## Running It
 
 ```sh
-npm run dev            # the window in a browser on the mock backend (?mock=empty|nogame|scanning|refoff|patched|offline|fresh|firstrun|key|quotalow, comma-separated)
+npm run dev            # the window in a browser on the mock backend (?mock=empty|nogame|scanning|refoff|patched|offline|fresh|firstrun|key|quotalow|nocreations, comma-separated)
 npm run tauri dev      # the real app (WSL bench: set RIFTSTONE_GAME_ROOT / RIFTSTONE_FLUFFY_ROOT / RIFTSTONE_DATA_HOME)
 npm run tauri build    # on Windows: target/release/riftstone.exe (+ an unsigned NSIS installer)
 ```

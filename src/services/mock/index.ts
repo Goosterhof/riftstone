@@ -1,8 +1,10 @@
 // The mock backend: the whole window contract over the invented library in
 // ./library.ts, in memory. Scenarios for rendering every state come from the
 // page's query string: ?mock=empty | nogame | scanning | refoff | patched |
-// offline | fresh | key | quotalow (comma-separated to combine). `quotalow`
-// implies `key`: the quota is the v1 budget, and only a keyed window has one.
+// offline | fresh | key | quotalow | nocreations (comma-separated to combine).
+// `quotalow` implies `key`: the quota is the v1 budget, and only a keyed window
+// has one. `nocreations` keeps every package and strips every option: the
+// library with nothing to fold the trouble over (§8.1.1).
 //
 // v0.2: the Nexus labels (./library.ts MOCK_LABELS) are served only once an
 // update check has run, so `?mock=fresh` is the first launch before any check:
@@ -115,6 +117,7 @@ export function createMockBackend(): RiftBackend {
   // writes into package summaries, and must never leak into the next backend
   // (the next spec, the next scenario).
   let packages: MockPackage[] = scene.has("empty") ? [] : structuredClone(MOCK_PACKAGES);
+  if (scene.has("nocreations")) packages = packages.map((p) => ({ ...p, options: [] }));
   let roots: LibraryRoot[] = [...MOCK_ROOTS];
   let settings: Settings = { veil: "off", autoCheckUpdates: true };
   let gameRoot: string | null = scene.has("nogame")

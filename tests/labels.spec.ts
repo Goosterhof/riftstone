@@ -267,14 +267,18 @@ describe("when the labels hide every answer", () => {
 
   it("should hide the trouble cards while a label filter is on, and bring them back when it clears", async () => {
     await wakeWithChips();
+    // §8.1.1: the trouble is folded at launch; open it so its cards are in view
+    button("Show ▸").click();
     await until(() => troubleNames().length === 3, "the trouble cards");
     expect(troubleNames()).toStrictEqual(["Corrupted Download", "Readme Only", "Old Road Armor Pack"]);
 
     chip("Visuals").click();
     await until(() => answers().length === 2, "the Visuals answers");
     expect(troubleNames()).toStrictEqual([]);
+    expect(document.querySelector(".trouble-fold")).toBeNull();
 
     clearChip().click();
     await until(() => answers().length === LIBRARY_OPTIONS && troubleNames().length === 3, "the cards back");
+    expect(button("Close ▾").getAttribute("aria-expanded")).toBe("true");
   });
 });

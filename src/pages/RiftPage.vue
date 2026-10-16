@@ -13,7 +13,7 @@ import { usePreflight } from "@/composables/usePreflight";
 import { formatBytes, plural } from "@/services/format";
 import { adultnessOf, veils } from "@/services/ledger";
 import OptionCard from "@/components/OptionCard.vue";
-import TroubledCard from "@/components/TroubledCard.vue";
+import TroubleFold from "@/components/TroubleFold.vue";
 import RiftInscription from "@/components/RiftInscription.vue";
 import RiftButton from "@/components/RiftButton.vue";
 import FailureNotice from "@/components/FailureNotice.vue";
@@ -77,6 +77,12 @@ async function focusCard(index: number): Promise<void> {
   search.activeIndex.value = index;
   await nextTick();
   list.value?.querySelector<HTMLElement>(`[data-index="${index}"]`)?.focus();
+}
+
+/** The last trouble card left with the focus: the first creation takes it, else the well (§8.1.1). */
+function onTroubleEmptied(): void {
+  if (search.results.value.length) void focusCard(0);
+  else document.getElementById("rift-search")?.focus();
 }
 
 function open(optionId: string, index: number): void {
@@ -259,58 +265,60 @@ defineExpose({ focusCard });
           <RiftButton @click="search.clearText()">Clear search</RiftButton>
         </RiftInscription>
 
-        <div
-          v-else
-          id="rift-answers"
-          ref="list"
-          class="rift__list"
-          role="listbox"
-          :aria-label="query ? `Answers for ${query}` : 'Library'"
-          @keydown="onListKey"
-        >
-          <template v-if="showTroubled">
-            <TroubledCard v-for="p in stone.troubled.value" :key="p.id" :pkg="p" />
-          </template>
-          <template v-if="search.grouped.value">
-            <section v-for="g in search.groups.value" :key="g.packageId" class="rift__groupbox">
-              <header class="rift__pkg">
-                <span class="rift__pkgname">{{ g.hits[0]?.packageName }}</span>
-                <span class="rift__dim">{{ plural(g.hits.length, "match", "matches") }}</span>
-                <button type="button" class="rift__open" @click="nav.openPackage(g.packageId)">Open package ▸</button>
-              </header>
+        <template v-else>
+          <!-- §8.1.1 the trouble, carved as one line above the first creation,
+               outside the listbox: its cards are not options -->
+          <TroubleFold v-if="!query && !search.labelFiltered.value" @emptied="onTroubleEmptied" />
+          <div
+            id="rift-answers"
+            ref="list"
+            class="rift__list"
+            :class="{ 'is-after-fold': showTroubled }"
+            role="listbox"
+            :aria-label="query ? `Answers for ${query}` : 'Library'"
+            @keydown="onListKey"
+          >
+            <template v-if="search.grouped.value">
+              <section v-for="g in search.groups.value" :key="g.packageId" class="rift__groupbox">
+                <header class="rift__pkg">
+                  <span class="rift__pkgname">{{ g.hits[0]?.packageName }}</span>
+                  <span class="rift__dim">{{ plural(g.hits.length, "match", "matches") }}</span>
+                  <button type="button" class="rift__open" @click="nav.openPackage(g.packageId)">Open package ▸</button>
+                </header>
+                <OptionCard
+                  v-for="hit in g.hits"
+                  :key="hit.optionId"
+                  :hit="hit"
+                  :index="search.results.value.indexOf(hit)"
+                  :tokens="search.tokens.value"
+                  :selected="world.selectedId.value === hit.optionId"
+                  :active="search.activeIndex.value === search.results.value.indexOf(hit)"
+                  :veiled="veils(settings.veil, adultnessOf(hit))"
+                  :root-label="rootLabels.get(hit.rootId) ?? ''"
+                  @open="open(hit.optionId, search.results.value.indexOf(hit))"
+                  @crumb="crumb"
+                  @zoom="zoom(hit.optionId, hit.name)"
+                />
+              </section>
+            </template>
+            <template v-else>
               <OptionCard
-                v-for="hit in g.hits"
+                v-for="(hit, i) in search.results.value"
                 :key="hit.optionId"
                 :hit="hit"
-                :index="search.results.value.indexOf(hit)"
+                :index="i"
                 :tokens="search.tokens.value"
                 :selected="world.selectedId.value === hit.optionId"
-                :active="search.activeIndex.value === search.results.value.indexOf(hit)"
+                :active="search.activeIndex.value === i || (search.activeIndex.value < 0 && i === 0)"
                 :veiled="veils(settings.veil, adultnessOf(hit))"
                 :root-label="rootLabels.get(hit.rootId) ?? ''"
-                @open="open(hit.optionId, search.results.value.indexOf(hit))"
+                @open="open(hit.optionId, i)"
                 @crumb="crumb"
                 @zoom="zoom(hit.optionId, hit.name)"
               />
-            </section>
-          </template>
-          <template v-else>
-            <OptionCard
-              v-for="(hit, i) in search.results.value"
-              :key="hit.optionId"
-              :hit="hit"
-              :index="i"
-              :tokens="search.tokens.value"
-              :selected="world.selectedId.value === hit.optionId"
-              :active="search.activeIndex.value === i || (search.activeIndex.value < 0 && i === 0)"
-              :veiled="veils(settings.veil, adultnessOf(hit))"
-              :root-label="rootLabels.get(hit.rootId) ?? ''"
-              @open="open(hit.optionId, i)"
-              @crumb="crumb"
-              @zoom="zoom(hit.optionId, hit.name)"
-            />
-          </template>
-        </div>
+            </template>
+          </div>
+        </template>
       </div>
 
       <!-- one package -->
@@ -454,6 +462,10 @@ defineExpose({ focusCard });
   flex-direction: column;
   gap: var(--rs-space-2);
   padding: var(--rs-space-4) var(--rs-space-6) var(--rs-space-12);
+}
+/* 8 px from the fold's line (or its last card) to the first creation */
+.rift__list.is-after-fold {
+  padding-top: var(--rs-space-2);
 }
 .rift__groupbox {
   display: flex;

@@ -29,7 +29,8 @@ export type Scene =
   | "offline"
   | "fresh"
   | "key"
-  | "quotalow";
+  | "quotalow"
+  | "nocreations";
 
 let mounted: VueWrapper | null = null;
 let backend: RiftBackend | null = null;

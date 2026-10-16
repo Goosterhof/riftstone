@@ -2,7 +2,7 @@
 // Fluffy, the roots and the library; the scan in flight; the packages that
 // would not open. Other composables read it; it reads only the services.
 
-import { computed, ref } from "vue";
+import { computed, readonly, ref } from "vue";
 import type { Overview, PackageSummary, ScanProgressEvent } from "@/types/rift";
 import { asRiftFailure, rift } from "@/services/rift";
 import { troubledProbe } from "@/services/pending";
@@ -17,6 +17,9 @@ const scanProgress = ref<ScanProgressEvent | null>(null);
 const scanRequested = ref(false);
 const troubled = ref<PackageSummary[]>([]);
 const hiddenTroubled = ref<string[]>([]);
+/** §8.1.1 the trouble fold: closed at every launch, held for the session,
+ *  never written to settings (a remembered "open" rebuilds the wall). */
+const troubleOpen = ref(false);
 /** Packages per root, counted from an unfiltered search (contract request: carry it on LibraryRoot). */
 const rootCounts = ref<Record<string, number>>({});
 const dismissedBuild = ref<string | null>(null);
@@ -39,6 +42,11 @@ const scanReading = computed<ScanProgressEvent | null>(() => {
 
 const visibleTroubled = computed(() => troubled.value.filter((p) => !hiddenTroubled.value.includes(p.id)));
 
+/** The last card left: the next trouble of the session arrives folded. */
+function closeIfEmpty(): void {
+  if (!visibleTroubled.value.length) troubleOpen.value = false;
+}
+
 /** The build-changed banner, unless the user said "I've tested it". */
 const buildChange = computed(() => {
   const changed = overview.value?.game?.buildChanged ?? null;
@@ -60,6 +68,7 @@ async function refreshTroubled(): Promise<void> {
   const backend = await rift();
   const probe = troubledProbe(backend);
   troubled.value = probe ? await probe() : [];
+  closeIfEmpty();
 }
 
 async function refreshRootCounts(): Promise<void> {
@@ -101,6 +110,10 @@ export function useStone() {
     scanning,
     scanReading,
     troubled: visibleTroubled,
+    troubleOpen: readonly(troubleOpen),
+    toggleTrouble: () => {
+      troubleOpen.value = !troubleOpen.value;
+    },
     rootCounts,
     buildChange,
     refreshOverview,
@@ -111,6 +124,7 @@ export function useStone() {
     onLibraryChanged,
     hideTroubled: (id: string) => {
       hiddenTroubled.value = [...hiddenTroubled.value, id];
+      closeIfEmpty();
     },
     dismissBuildChange: () => {
       dismissedBuild.value = overview.value?.game?.buildChanged?.now ?? null;
@@ -125,6 +139,7 @@ export function resetStone(): void {
   scanRequested.value = false;
   troubled.value = [];
   hiddenTroubled.value = [];
+  troubleOpen.value = false;
   rootCounts.value = {};
   dismissedBuild.value = null;
 }
