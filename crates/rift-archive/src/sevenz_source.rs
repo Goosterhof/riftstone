@@ -415,7 +415,7 @@ impl PackageSource for SevenZipSource {
             match found.locator.block {
                 None => {
                     let empty = DestWriter::create(&items[item].dest, &found.path)?;
-                    tally.file_done(empty.finish()?);
+                    tally.file_done(item, empty.finish()?);
                 }
                 Some(block) => by_block
                     .entry(block)
@@ -441,7 +441,7 @@ impl PackageSource for SevenZipSource {
                 let entry = names.get(&file).map_or("", String::as_str);
                 let first = &items[requested[0]].dest;
                 match write_block_file(&package, first, entry, reader) {
-                    Ok(written) => tally.file_done(written),
+                    Ok(written) => tally.file_done(requested[0], written),
                     Err(err) => {
                         outcome = Err(err);
                         return Ok(false);
@@ -449,7 +449,7 @@ impl PackageSource for SevenZipSource {
                 }
                 for &item in &requested[1..] {
                     match duplicate(first, &items[item].dest, entry) {
-                        Ok(written) => tally.file_done(written),
+                        Ok(written) => tally.file_done(item, written),
                         Err(err) => {
                             outcome = Err(err);
                             return Ok(false);

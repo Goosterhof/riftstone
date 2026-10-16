@@ -6,6 +6,7 @@
 
 import type {
   ArchiveEntry,
+  NexusLabels,
   LibraryRoot,
   ModInfo,
   ModOption,
@@ -353,6 +354,15 @@ export const MOCK_PACKAGES: MockPackage[] = [
     format: "zip",
     size: 241_172_480,
     modifiedMs: NOW - 3 * DAY,
+    nexus: {
+      modId: 2207,
+      fileId: 5120,
+      groupId: 220700,
+      sqid: "Rk4vLmN2Q",
+      version: "3",
+      uploadedMs: NOW - 30 * DAY,
+      source: "homepage",
+    },
     extraEntries: [{ path: `${WARDROBE}/README-COLLECTION.txt`, size: 3_072 }],
     options: wardrobeOptions,
   }),
@@ -447,6 +457,15 @@ export const MOCK_PACKAGES: MockPackage[] = [
     format: "rar",
     size: 137_284,
     modifiedMs: NOW - 9 * DAY,
+    nexus: {
+      modId: 3301,
+      fileId: 7004,
+      groupId: 330100,
+      sqid: null,
+      version: "1.2",
+      uploadedMs: NOW - 60 * DAY,
+      source: "manual",
+    },
     options: [
       {
         root: "Pawn Chatter Filter",
@@ -609,3 +628,21 @@ export const MOCK_PACKAGES: MockPackage[] = [
 
 export const MOCK_NOW = NOW;
 export const MOCK_DAY = DAY;
+
+// --- v0.2: what Nexus says each linked mod is --------------------------------
+// Invented labels in Nexus's own shape: one category per mod, tags often none,
+// and one invented mod Nexus flags adult (it carries the "Sexualised" tag, so
+// the "adult" veil has something to blur). Keyed by mod id; the mock serves
+// them only after an update check has run, as the spine does (nexus.json).
+
+export const MOCK_LABELS: Record<number, NexusLabels> = {
+  2207: { category: "Armour", tags: ["Fashion", "Retexture"], adult: false },
+  412: { category: "Visuals", tags: ["Lighting", "Retexture"], adult: false },
+  889: { category: "Visuals", tags: ["Retexture", "Sexualised"], adult: true },
+  3301: { category: "Utilities", tags: ["Utilities for Players", "Audio"], adult: false },
+  // what an MD5 identify finds for Brine Water Clarity (the one Nexus knows)
+  3302: { category: "Visuals", tags: ["Environment"], adult: false },
+};
+
+/** The package the mock's MD5 identify recognises, and the link it answers. */
+export const MOCK_MD5_MATCH = { displayName: "Brine Water Clarity", modId: 3302, fileId: 7140 };

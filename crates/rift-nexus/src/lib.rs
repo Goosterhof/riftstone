@@ -16,12 +16,16 @@
 //!   key. Dragon's Dogma 2 is game domain `dragonsdogma2`, game id `6234`
 //!   ([`rift_core::dd2`]).
 //! - `legacyModsByDomain(ids: [CompositeDomainWithIdInput!]!, offset, count) ->
-//!   ModPage!` — `nodes { modId name version updatedAt status }`. 200 ids per call
-//!   work; results come back in no particular order and unknown ids are simply
-//!   left out. `CompositeDomainWithIdInput.modId` is a GraphQL `Int` (32-bit), so
-//!   ids above `i32::MAX` are never sent — one would fail the whole batch.
-//!   `updatedAt` is RFC 3339 (`2026-10-14T14:23:50Z`); `status` is a plain string
-//!   (`published` for a live mod).
+//!   ModPage!` — `nodes { modId name version updatedAt status category tags { name }
+//!   adultContent }`. 200 ids per call work; results come back in no particular
+//!   order and unknown ids are simply left out. `CompositeDomainWithIdInput.modId`
+//!   is a GraphQL `Int` (32-bit), so ids above `i32::MAX` are never sent — one
+//!   would fail the whole batch. `updatedAt` is RFC 3339 (`2026-10-14T14:23:50Z`);
+//!   `status` is a plain string (`published` for a live mod).
+//! - The labels (v0.2, measured on the anonymous API): `category: String!` (every
+//!   mod has one), `tags: [LegacyTag!]!` with `{ name }` (often empty) and
+//!   `adultContent: Boolean`. They come in the same `legacyModsByDomain` answer,
+//!   so labelling a library costs no request of its own ([`NexusMod`]).
 //! - `modFiles(modId: ID!, gameId: ID!) -> [ModFile!]!` — aliased, several mods per
 //!   POST. An unknown mod answers `[]`, not an error. Field types: `fileId: Int!`,
 //!   `groupId: Int` (nullable), `sqid: String!`, `version: String!` (may be `""`),
@@ -51,7 +55,9 @@
 //! - **An answer that carries GraphQL `errors`.** GraphQL can return `data` and
 //!   `errors` together: a failed field comes back null, so a failed nullable list
 //!   reads exactly like an empty one. A lookup that failed must never read as
-//!   "nothing found". So [`NexusClient::mods`] refuses any answer with an error,
+//!   "nothing found" (nor a label that failed as "no label": an `adultContent`
+//!   whose resolver failed comes back null, and the window's veil must never
+//!   take that for "not adult"). So [`NexusClient::mods`] refuses any answer with an error,
 //!   [`NexusClient::files_by_md5`] tolerates only errors inside another game's
 //!   upload, and [`NexusClient::mod_files_report`] leaves unchecked exactly the
 //!   mods an error's path names. Each case returns [`NexusError::BadResponse`] or

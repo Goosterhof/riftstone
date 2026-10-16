@@ -16,13 +16,14 @@ use tauri::webview::InvokeRequest;
 use tauri::Manager;
 
 use riftstone_lib::dto::{
-    AdoptResultView, GameSummary, InstallPlanView, InstallResultView, InstalledView, LibraryRoot,
-    Md5Result, NexusSummary, OptionDetail, Overview, PackageDetail, PackageSummary, SearchResult,
-    Settings, UninstallPlanView, UninstallResultView, UpdateRow, UpdatesView,
+    AdoptResultView, CheckAction, GameSummary, InstallPlanView, InstallResultView, InstalledView,
+    LabelFacets, LibraryRoot, Md5Result, NexusSummary, OptionDetail, Overview, OwnerKind,
+    PackageDetail, PackageSummary, ParkedRestoreReport, SearchResult, Settings, UninstallPlanView,
+    UninstallResultView, UpdateRow, UpdatesView, VeilMode,
 };
-use riftstone_lib::events::LIBRARY_CHANGED;
+use riftstone_lib::events::{GAME_CHANGED, LIBRARY_CHANGED};
 use riftstone_lib::persist::DataDirs;
-use support::Bench;
+use support::{Bench, ERMINE_MESH};
 
 /// The window's own origin: what Tauri serves the bundled frontend from, and
 /// the only origin the default capability lets call app commands. Windows
@@ -90,28 +91,40 @@ fn every_command_answers_the_window_by_its_invoke_name_and_argument_keys() {
     assert!(settings.auto_check_updates);
     let settings: Settings = window.call(
         "set_settings",
-        json!({ "settings": { "veilThumbnails": true, "autoCheckUpdates": false } }),
+        json!({ "settings": { "veil": "adult", "autoCheckUpdates": false } }),
     );
-    assert!(settings.veil_thumbnails && !settings.auto_check_updates);
+    assert_eq!(settings.veil, VeilMode::Adult);
+    assert!(!settings.auto_check_updates);
     let troubled: Vec<PackageSummary> = window.call("get_troubled_packages", json!({}));
     assert!(troubled.is_empty());
 
     // -- the library -------------------------------------------------------------
     let hits: Vec<SearchResult> = window.call(
         "search",
-        json!({ "query": { "text": "ermine", "filters": { "installed": null, "rootIds": [], "includeMenuOnly": false }, "limit": 0 } }),
+        json!({ "query": { "text": "ermine", "filters": { "installed": null, "rootIds": [], "includeMenuOnly": false, "categories": [], "tags": [] }, "limit": 0 } }),
     );
     let ermine = hits[0].option_id.clone();
     let package_id = hits[0].package_id.clone();
+    assert_eq!(hits[0].nexus_category, None, "no check has run");
+    assert!(hits[0].nexus_tags.is_empty() && !hits[0].adult);
     let lantern = window
         .call::<Vec<SearchResult>>(
             "search",
-            json!({ "query": { "text": "lantern", "filters": { "installed": null, "rootIds": ["fluffy"], "includeMenuOnly": false }, "limit": 5 } }),
+            json!({ "query": { "text": "lantern", "filters": { "installed": null, "rootIds": ["fluffy"], "includeMenuOnly": false, "categories": [], "tags": [] }, "limit": 5 } }),
         )[0]
         .option_id
         .clone();
+    let by_label: Vec<SearchResult> = window.call(
+        "search",
+        json!({ "query": { "text": "", "filters": { "installed": null, "rootIds": [], "includeMenuOnly": false, "categories": ["Armour"], "tags": ["Cloaks"] }, "limit": 0 } }),
+    );
+    assert!(
+        by_label.is_empty(),
+        "a label filter hides every unlabeled package"
+    );
     let detail: OptionDetail = window.call("get_option", json!({ "optionId": ermine }));
     assert_eq!(detail.option.name, "Ermine Cape");
+    assert!(detail.labels.is_none());
     let package: PackageDetail = window.call("get_package", json!({ "packageId": package_id }));
     assert_eq!(package.package.option_count, 3);
     let thumb: Option<String> = window.call(
@@ -175,6 +188,91 @@ fn every_command_answers_the_window_by_its_invoke_name_and_argument_keys() {
         .unwrap_err();
     assert_eq!(refused["kind"], "gameNotFound");
 
+    // -- files kept aside (v0.2) --------------------------------------------------------
+    // A file that was there before the cape; the cape backs it up; another
+    // tool rewrites the cape's file; the uninstall keeps the rewrite in place
+    // and parks the original.
+    let cape_path = bench.game.join(ERMINE_MESH);
+    std::fs::create_dir_all(cape_path.parent().unwrap()).unwrap();
+    std::fs::write(&cape_path, b"the cape that was there before").unwrap();
+    let _: InstallResultView = window.call("install", json!({ "optionId": ermine }));
+    std::fs::write(&cape_path, b"another tool's rewrite").unwrap();
+    let kept: UninstallResultView = window.call("uninstall", json!({ "optionId": ermine }));
+    assert_eq!((kept.files_kept, kept.parked), (1, 1));
+    let home: Overview = window.call("get_overview", json!({}));
+    let review = home
+        .checks
+        .iter()
+        .find(|c| c.id == "parkedBackups")
+        .expect("the overview says a file is kept aside");
+    assert_eq!(review.action, Some(CheckAction::ReviewParked));
+    let world: InstalledView = window.call("get_installed", json!({}));
+    assert_eq!(world.parked.len(), 1);
+    let parked = &world.parked[0];
+    assert_eq!(parked.game_path, ERMINE_MESH);
+    assert_eq!(parked.owner_kind, OwnerKind::Unowned);
+    assert!(parked.occupied, "the rewrite sits at its path");
+    // Each act on a kept file changes the game folder or its record, so the
+    // window hears rift://game-changed once; a refusal changed nothing and
+    // stays silent.
+    let game_changed = || events.named(GAME_CHANGED).len();
+    let heard = game_changed();
+    let back: ParkedRestoreReport = window.call("restore_parked", json!({ "store": parked.store }));
+    assert!(back.restored);
+    assert_eq!(
+        std::fs::read(&cape_path).unwrap(),
+        b"the cape that was there before"
+    );
+    assert_eq!(
+        game_changed(),
+        heard + 1,
+        "restore_parked emits game-changed"
+    );
+    let swapped = back
+        .swapped_out
+        .expect("the rewrite was kept aside in turn");
+    assert_eq!(
+        window.invoke("discard_parked", json!({ "store": swapped })),
+        Ok(Value::Null)
+    );
+    assert_eq!(
+        game_changed(),
+        heard + 2,
+        "discard_parked emits game-changed"
+    );
+    let world: InstalledView = window.call("get_installed", json!({}));
+    assert!(world.parked.is_empty());
+    // The handles the window still holds are out of date now: refused, in
+    // words that name the game path (never the store's inner path), and
+    // without a sound.
+    for (command, store, names) in [
+        ("restore_parked", parked.store.as_str(), Some(ERMINE_MESH)),
+        ("discard_parked", swapped.as_str(), Some(ERMINE_MESH)),
+        ("restore_parked", "backups/999/nothing", None),
+        ("discard_parked", "backups/999/nothing", None),
+    ] {
+        let stale = window
+            .invoke(command, json!({ "store": store }))
+            .unwrap_err();
+        assert_eq!(stale["kind"], "refused", "{command} {store}: {stale}");
+        let reason = stale["detail"]["reason"].as_str().unwrap_or_default();
+        assert!(
+            !reason.contains("backups/"),
+            "{command} {store}: the refusal shows no store path: {reason}"
+        );
+        assert!(
+            reason.contains("PARKED"),
+            "{command} {store}: it says where to look again: {reason}"
+        );
+        if let Some(game_path) = names {
+            assert!(
+                reason.contains(game_path),
+                "{command} {store}: it names the game path: {reason}"
+            );
+        }
+    }
+    assert_eq!(game_changed(), heard + 2, "a refusal emits nothing");
+
     // -- roots -----------------------------------------------------------------------
     let extra = bench.dir.path().join("Mods I Keep");
     std::fs::create_dir_all(&extra).unwrap();
@@ -223,4 +321,10 @@ fn every_command_answers_the_window_by_its_invoke_name_and_argument_keys() {
     let summary: NexusSummary = window.call("set_nexus_key", json!({ "key": null }));
     assert!(!summary.has_api_key);
     assert_eq!(window.invoke("get_nexus_quota", json!({})), Ok(Value::Null));
+    let labels: LabelFacets = window.call("get_labels", json!({}));
+    assert!(labels.categories.is_empty() && labels.tags.is_empty());
+    assert_eq!(
+        labels.unlabeled_packages, 3,
+        "no check has heard any labels: every package is unlabeled"
+    );
 }

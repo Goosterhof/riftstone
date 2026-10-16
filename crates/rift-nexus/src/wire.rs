@@ -4,7 +4,7 @@
 //! showed variance: BigInts arrive as strings, booleans as 0/1, versions may be
 //! `""`, `modFile` may be null.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 
 use serde::de::DeserializeOwned;
@@ -18,8 +18,12 @@ use crate::types::{
 use crate::{GAME_DOMAIN, GAME_ID, MODS_PER_REQUEST};
 
 /// Batched mod lookup. Unknown ids are left out of `nodes`; order is not kept.
+/// Since v0.2 each node also brings the mod's labels: `category: String!`,
+/// `tags: [LegacyTag!]!` (`{ name }`) and `adultContent: Boolean`, so the
+/// labels ride the update check's own POST and cost no request of their own.
 pub(crate) const MODS_QUERY: &str = "query RiftstoneMods($ids: [CompositeDomainWithIdInput!]!, $count: Int) { \
-     legacyModsByDomain(ids: $ids, count: $count) { totalCount nodes { modId name version updatedAt status } } }";
+     legacyModsByDomain(ids: $ids, count: $count) { totalCount nodes { modId name version updatedAt status \
+     category tags { name } adultContent } } }";
 
 /// The `ModFile` fields every file query selects.
 pub(crate) const FILE_FIELDS: &str =
@@ -188,6 +192,12 @@ pub(crate) struct ModPage {
     pub nodes: Vec<WireMod>,
 }
 
+/// One `Mod` node. The label fields are kept raw and read leniently: they
+/// decorate the update check, so a label in a shape this build does not
+/// expect reads as no label instead of failing the check it rides on. (A
+/// label whose resolver FAILED comes with a GraphQL error, and any error
+/// refuses the whole page first — see [`GraphQlAnswer::into_data`]: an
+/// `adultContent` that could not be read never passes for "not adult".)
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WireMod {
@@ -196,18 +206,65 @@ pub(crate) struct WireMod {
     version: Option<String>,
     updated_at: Option<String>,
     status: Option<String>,
+    category: Option<Value>,
+    tags: Option<Value>,
+    adult_content: Option<Value>,
 }
 
 impl WireMod {
     pub(crate) fn into_mod(self) -> Option<NexusMod> {
+        let mod_id = self.mod_id.as_ref().and_then(lenient_u64)?;
         Some(NexusMod {
-            mod_id: self.mod_id.as_ref().and_then(lenient_u64)?,
+            mod_id,
             name: self.name.unwrap_or_default().trim().to_string(),
             version: non_empty(self.version),
             updated_ms: self.updated_at.as_deref().and_then(rfc3339_ms),
             status: self.status.unwrap_or_default().trim().to_string(),
+            category: category_name(mod_id, self.category.as_ref()),
+            tags: tag_names(mod_id, self.tags.as_ref()),
+            adult: self.adult_content.as_ref().is_some_and(lenient_bool),
         })
     }
+}
+
+/// `category: String!`, trimmed. Absent, null, blank or not a string: none.
+fn category_name(mod_id: u64, value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::String(name) => Some(name.trim().to_string()).filter(|name| !name.is_empty()),
+        Value::Null => None,
+        other => {
+            log::debug!("mod {mod_id}: ignoring a category that is not a string: {other}");
+            None
+        }
+    }
+}
+
+/// `tags: [LegacyTag!]!` (`[{ "name": "Utilities for Players" }, …]`) as
+/// names, in Nexus's order and spelling, trimmed. A blank name is dropped, and
+/// so is a repeat of a name already kept, compared case-insensitively, as the
+/// window's filters compare. A list of plain strings is read the same way,
+/// should Nexus ever flatten `LegacyTag`. Anything that is not a list reads as
+/// no tags.
+fn tag_names(mod_id: u64, value: Option<&Value>) -> Vec<String> {
+    let tags = match value {
+        None | Some(Value::Null) => return Vec::new(),
+        Some(Value::Array(tags)) => tags,
+        Some(other) => {
+            log::debug!("mod {mod_id}: ignoring tags that are not a list: {other}");
+            return Vec::new();
+        }
+    };
+    let mut seen = HashSet::new();
+    tags.iter()
+        .filter_map(|tag| match tag {
+            Value::Object(fields) => fields.get("name").and_then(Value::as_str),
+            Value::String(name) => Some(name.as_str()),
+            _ => None,
+        })
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && seen.insert(name.to_lowercase()))
+        .map(str::to_string)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -900,6 +957,113 @@ mod tests {
         );
         assert_eq!(list.files[1].category, FileCategory::Main);
         assert_eq!(list.successor_of(1), Some(2));
+    }
+
+    fn wire_mod(node: Value) -> NexusMod {
+        serde_json::from_value::<WireMod>(node)
+            .unwrap()
+            .into_mod()
+            .unwrap()
+    }
+
+    #[test]
+    fn the_mods_query_asks_for_the_labels_beside_the_status() {
+        // One selection, one POST: the labels ride the lookup the update
+        // check already makes.
+        assert!(
+            MODS_QUERY.contains("nodes { modId name version updatedAt status category tags { name } adultContent } }"),
+            "{MODS_QUERY}"
+        );
+        assert_eq!(MODS_QUERY.matches("legacyModsByDomain(").count(), 1);
+    }
+
+    #[test]
+    fn labels_parse_from_the_live_shape() {
+        let lantern = wire_mod(json!({
+            "modId": 2207, "name": "Lantern Glow Recolor", "version": "2.1",
+            "updatedAt": "2026-09-30T08:01:02Z", "status": "published",
+            "category": " Visuals ",
+            "tags": [{ "name": "Lore-Friendly" }, { "name": " Utilities for Players " }],
+            "adultContent": true
+        }));
+        assert_eq!(lantern.category.as_deref(), Some("Visuals"));
+        assert_eq!(lantern.tags, ["Lore-Friendly", "Utilities for Players"]);
+        assert!(lantern.adult);
+
+        let untagged = wire_mod(json!({
+            "modId": 5150, "name": "Vernworth Cloaks Collection", "status": "published",
+            "category": "Armour", "tags": [], "adultContent": false
+        }));
+        assert_eq!(untagged.category.as_deref(), Some("Armour"));
+        assert!(untagged.tags.is_empty(), "most mods carry no tags");
+        assert!(!untagged.adult);
+    }
+
+    #[test]
+    fn tags_keep_nexus_order_and_spelling_and_drop_blanks_and_repeats() {
+        let tags = tag_names(
+            2207,
+            Some(&json!([
+                { "name": "Lore-Friendly" },
+                { "name": "  " },
+                { "name": "lore-friendly" },
+                { "name": null },
+                { "id": 31 },
+                { "name": "Utilities for Players" },
+                "LORE-FRIENDLY",
+                "Cloaks",
+                42
+            ])),
+        );
+        assert_eq!(
+            tags,
+            ["Lore-Friendly", "Utilities for Players", "Cloaks"],
+            "first spelling wins; a repeat in another case is the same tag"
+        );
+        assert!(tag_names(2207, Some(&json!("Cloaks"))).is_empty());
+        assert!(tag_names(2207, Some(&json!({ "name": "Cloaks" }))).is_empty());
+        assert!(tag_names(2207, Some(&Value::Null)).is_empty());
+        assert!(tag_names(2207, None).is_empty());
+    }
+
+    #[test]
+    fn an_older_answer_without_labels_still_parses_as_unlabeled() {
+        // The v0.1 selection: no category, no tags, no adultContent.
+        let old = wire_mod(json!({
+            "modId": 5150, "name": "Vernworth Cloaks Collection", "version": "1",
+            "updatedAt": "2026-10-14T14:23:50Z", "status": "published"
+        }));
+        assert_eq!(
+            (old.mod_id, old.name.as_str(), old.version.as_deref()),
+            (5150, "Vernworth Cloaks Collection", Some("1"))
+        );
+        assert_eq!(old.updated_ms, Some(1_791_987_830_000));
+        assert!(old.is_available());
+        assert_eq!(old.category, None, "no category: the answer carried none");
+        assert!(old.tags.is_empty());
+        assert!(!old.adult);
+    }
+
+    #[test]
+    fn odd_label_values_read_as_no_label_and_never_sink_the_mod() {
+        let odd = |category: Value, tags: Value, adult: Value| {
+            let node = json!({ "modId": 2207, "name": "Lantern Glow Recolor", "status": "published",
+                               "category": category, "tags": tags, "adultContent": adult });
+            wire_mod(node)
+        };
+        let shapes = odd(json!(7), json!("Cloaks"), Value::Null);
+        assert_eq!(shapes.mod_id, 2207, "the mod itself still reads");
+        assert_eq!(
+            (shapes.category, shapes.tags.len(), shapes.adult),
+            (None, 0, false)
+        );
+        assert_eq!(odd(json!("   "), json!(null), json!(0)).category, None);
+        assert!(
+            odd(Value::Null, json!([]), json!(1)).adult,
+            "0/1 as elsewhere"
+        );
+        assert!(odd(Value::Null, json!([]), json!("true")).adult);
+        assert!(!odd(Value::Null, json!([]), json!("no")).adult);
     }
 
     #[test]

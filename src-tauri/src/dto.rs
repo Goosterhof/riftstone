@@ -290,6 +290,8 @@ pub enum CheckAction {
         url: String,
     },
     Rescan,
+    /// v0.2: open the parked-backup review (`InstalledView.parked`).
+    ReviewParked,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -319,6 +321,8 @@ pub enum RecoveryAction {
     Install,
     Uninstall,
     Reorder,
+    /// v0.2: putting a parked file back (`restore_parked`).
+    RestoreParked,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -359,6 +363,8 @@ pub enum MatchedField {
     PackageName,
     Version,
     File,
+    /// v0.2: the package's Nexus category or one of its tags.
+    NexusLabel,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -367,6 +373,13 @@ pub struct SearchFilters {
     pub installed: Option<bool>,
     pub root_ids: Vec<String>,
     pub include_menu_only: bool,
+    /// v0.2: Nexus categories, ANY-of (a mod has one category). Empty = no
+    /// filter. Read as empty when a query leaves it out (a v0.1 query).
+    #[serde(default)]
+    pub categories: Vec<String>,
+    /// v0.2: Nexus tags, ALL-of (each tag narrows). Empty = no filter.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -425,6 +438,45 @@ pub struct SearchResult {
     pub installed: Option<InstallBadge>,
     pub update: Option<UpdateBadge>,
     pub conflicted: bool,
+    /// v0.2: the linked mod's Nexus category (`None`: unlinked or never checked).
+    pub nexus_category: Option<String>,
+    /// v0.2: the linked mod's Nexus tags, Nexus's own spelling.
+    pub nexus_tags: Vec<String>,
+    /// v0.2: Nexus flags the linked mod as adult content.
+    pub adult: bool,
+}
+
+// ---------------------------------------------------------------------------
+// v0.2 — Nexus labels as filters (get_labels)
+// ---------------------------------------------------------------------------
+
+/// What Nexus says about a linked mod, from the latest update check.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NexusLabels {
+    pub category: Option<String>,
+    pub tags: Vec<String>,
+    pub adult: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelCount {
+    /// Nexus's spelling. Filters compare case-insensitively.
+    pub name: String,
+    /// Installable options carrying it, so a chip predicts its results.
+    pub options: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelFacets {
+    /// Count descending, then name.
+    pub categories: Vec<LabelCount>,
+    pub tags: Vec<LabelCount>,
+    /// Packages a label filter hides: at least one installable option and
+    /// no category or tag (unlinked, or linked but never checked).
+    pub unlabeled_packages: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -518,10 +570,8 @@ pub struct ConflictView {
     /// Loser first, winner last.
     pub layers: Vec<LayerRef>,
     pub winner: LayerRef,
-    /// A pak in this conflict carries feature flags no reference reader
-    /// describes, so its hashes are unconfirmed. Kept off the wire until
-    /// `src/types/rift.ts` grows the field (see the spine's contract request).
-    #[serde(skip)]
+    /// v0.2: a pak in this conflict carries table flags rift-pak does not
+    /// know, so the stone cannot be sure the hash is what the engine reads.
     pub unconfirmed: bool,
 }
 
@@ -573,6 +623,9 @@ pub struct OptionDetail {
     pub fluffy_installed: bool,
     pub conflicts: Vec<ConflictView>,
     pub update: Option<UpdateRow>,
+    /// v0.2: `None` when the package is unlinked, never checked, or its
+    /// answer carried no labels (the index drops a blank entry).
+    pub labels: Option<NexusLabels>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -683,6 +736,8 @@ pub struct InstallResultView {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RemovalAction {
     Delete,
+    /// v0.2: the file is already gone from the game folder.
+    AlreadyGone,
     #[serde(rename_all = "camelCase")]
     RestoreBackup {
         owner: String,
@@ -718,7 +773,12 @@ pub struct UninstallResultView {
     pub option_id: String,
     pub files_removed: usize,
     pub files_restored: usize,
+    /// Left in place: changed by something else, or possibly vanilla.
     pub files_kept: usize,
+    /// v0.2: handed down to the install below (it now owns them).
+    pub files_handed_down: usize,
+    /// v0.2: files kept aside in the backup store (`InstalledView.parked`).
+    pub parked: usize,
     pub restart_needed: bool,
 }
 
@@ -820,6 +880,51 @@ pub struct InstalledView {
     pub fluffy_unadopted: Vec<FluffyModView>,
     pub pak_load: Option<PakLoadReport>,
     pub pak_count_warning: usize,
+    /// v0.2: files kept aside in the backup store, each with put back / discard.
+    pub parked: Vec<ParkedFileView>,
+}
+
+/// Whose bytes a parked file holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OwnerKind {
+    Unowned,
+    Fluffy,
+    Riftstone,
+}
+
+/// v0.2: a file the stone kept aside rather than delete or force back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParkedFileView {
+    /// Its handle in the backup store: what `restore_parked` / `discard_parked` take.
+    pub store: String,
+    /// Where it belongs in the game folder.
+    pub game_path: String,
+    /// Whose bytes it holds: "the file that was there before", a Fluffy
+    /// mod's name, or an install's.
+    pub owner: String,
+    pub owner_kind: OwnerKind,
+    /// Its size in the store; `None` when the kept file is gone from it.
+    pub size: Option<u64>,
+    /// RFC 3339, UTC.
+    pub parked_at: String,
+    /// Why it was kept aside, one sentence.
+    pub reason: String,
+    /// Something sits at `game_path` now: putting it back swaps that out.
+    pub occupied: bool,
+}
+
+/// v0.2: what `restore_parked` did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParkedRestoreReport {
+    pub game_path: String,
+    pub restored: bool,
+    /// The store handle of the file that sat at `game_path`, now kept aside
+    /// in its turn.
+    pub swapped_out: Option<String>,
+    pub restart_needed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -828,6 +933,10 @@ pub struct AdoptResultView {
     pub adopted: usize,
     pub already_adopted: usize,
     pub missing_files: usize,
+    /// v0.2: files left to Fluffy (outside the places the stone manages).
+    pub refused_files: usize,
+    /// v0.2: files whose bytes belong to another layer.
+    pub shared_files: usize,
     pub unmatched: Vec<String>,
 }
 
@@ -864,17 +973,33 @@ pub struct Md5Result {
 // settings
 // ---------------------------------------------------------------------------
 
+/// v0.2: which screenshots are veiled (blurred until hovered).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VeilMode {
+    #[default]
+    Off,
+    /// Options of mods Nexus flags as adult, and of packages Nexus has not
+    /// labelled yet (no category, no tags, not adult): a veil protects, so
+    /// the unknown is veiled. The window decides it (`ledger.ts adultnessOf`).
+    Adult,
+    All,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
-    pub veil_thumbnails: bool,
+    /// v0.2: replaces v0.1's `veilThumbnails: bool` (`settings.json` keeps
+    /// reading the old key; see `persist::StoredSettings`). Default `off`.
+    pub veil: VeilMode,
+    /// Check Nexus on launch when the last check is older than 12 hours.
     pub auto_check_updates: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            veil_thumbnails: false,
+            veil: VeilMode::Off,
             auto_check_updates: true,
         }
     }
@@ -1190,13 +1315,12 @@ impl From<rift_deploy::CheckLevel> for CheckLevel {
     }
 }
 
-impl CheckAction {
-    /// The window's action for a preflight check, when it has one. Reviewing
-    /// the files kept aside has no window action yet (contract request: a
-    /// `reviewParked` kind and the commands behind it), so that check comes
-    /// without a button.
-    pub fn from_deploy(action: &rift_deploy::CheckAction) -> Option<CheckAction> {
-        Some(match action {
+impl From<&rift_deploy::CheckAction> for CheckAction {
+    /// The window's button for a preflight check. `reviewParked` opens the
+    /// parked-backup review, whose rows carry `restore_parked` and
+    /// `discard_parked`.
+    fn from(action: &rift_deploy::CheckAction) -> Self {
+        match action {
             rift_deploy::CheckAction::AdoptFluffy => CheckAction::AdoptFluffy,
             rift_deploy::CheckAction::EnableSwitch { switch_key } => CheckAction::EnableSwitch {
                 switch: (*switch_key).into(),
@@ -1204,8 +1328,8 @@ impl CheckAction {
             rift_deploy::CheckAction::PickGameFolder => CheckAction::PickGameFolder,
             rift_deploy::CheckAction::OpenUrl { url } => CheckAction::OpenUrl { url: url.clone() },
             rift_deploy::CheckAction::Rescan => CheckAction::Rescan,
-            rift_deploy::CheckAction::ReviewParked => return None,
-        })
+            rift_deploy::CheckAction::ReviewParked => CheckAction::ReviewParked,
+        }
     }
 }
 
@@ -1241,7 +1365,7 @@ impl From<&rift_deploy::Check> for Check {
             level: check.level.into(),
             title: check.title.clone(),
             detail: check.detail.clone(),
-            action: check.action.as_ref().and_then(CheckAction::from_deploy),
+            action: check.action.as_ref().map(CheckAction::from),
         }
     }
 }
@@ -1370,9 +1494,7 @@ impl From<&rift_deploy::RemovalAction> for RemovalAction {
                     to_option_name: to_option_name.clone(),
                 }
             }
-            // The file is gone already: the end state is the one a delete
-            // leaves. (Contract request: an `alreadyGone` kind in the TS.)
-            rift_deploy::RemovalAction::AlreadyGone => RemovalAction::Delete,
+            rift_deploy::RemovalAction::AlreadyGone => RemovalAction::AlreadyGone,
         }
     }
 }
@@ -1402,9 +1524,9 @@ impl From<&rift_deploy::UninstallReport> for UninstallResultView {
             option_id: report.option_id.0.clone(),
             files_removed: report.files_removed,
             files_restored: report.files_restored,
-            // A handed-down file stays in the game too: the install above
-            // owns it now.
-            files_kept: report.files_kept + report.files_handed_down,
+            files_kept: report.files_kept,
+            files_handed_down: report.files_handed_down,
+            parked: report.parked.len(),
             restart_needed: report.restart_needed,
         }
     }
@@ -1416,7 +1538,48 @@ impl From<&rift_deploy::AdoptReport> for AdoptResultView {
             adopted: report.adopted,
             already_adopted: report.already_adopted,
             missing_files: report.missing_files,
+            refused_files: report.refused_files,
+            shared_files: report.shared_files,
             unmatched: report.unmatched.clone(),
+        }
+    }
+}
+
+impl From<rift_deploy::OwnerKind> for OwnerKind {
+    fn from(kind: rift_deploy::OwnerKind) -> Self {
+        match kind {
+            rift_deploy::OwnerKind::Unowned => OwnerKind::Unowned,
+            rift_deploy::OwnerKind::Fluffy => OwnerKind::Fluffy,
+            rift_deploy::OwnerKind::Riftstone => OwnerKind::Riftstone,
+        }
+    }
+}
+
+impl From<&rift_deploy::ParkedFile> for ParkedFileView {
+    fn from(file: &rift_deploy::ParkedFile) -> Self {
+        ParkedFileView {
+            store: file.store.clone(),
+            game_path: file.game_path.clone(),
+            owner: file.owner.clone(),
+            owner_kind: file.owner_kind.into(),
+            size: file.size,
+            parked_at: file.parked_at.clone(),
+            reason: file.reason.clone(),
+            occupied: file.occupied,
+        }
+    }
+}
+
+impl From<&rift_deploy::ParkedRestoreReport> for ParkedRestoreReport {
+    /// The engine answers only once the kept file is back in place, so a
+    /// report always says `restored`; a file that could not go back is an
+    /// error (refused, or rolled back), never a report.
+    fn from(report: &rift_deploy::ParkedRestoreReport) -> Self {
+        ParkedRestoreReport {
+            game_path: report.game_path.clone(),
+            restored: true,
+            swapped_out: report.swapped_out.as_ref().map(|kept| kept.store.clone()),
+            restart_needed: report.restart_needed,
         }
     }
 }
@@ -1429,9 +1592,7 @@ impl From<&rift_deploy::RecoveryReport> for RecoveryNote {
                 rift_deploy::IntentAction::Install => RecoveryAction::Install,
                 rift_deploy::IntentAction::Uninstall => RecoveryAction::Uninstall,
                 rift_deploy::IntentAction::Reorder => RecoveryAction::Reorder,
-                // Putting a kept file back is a placement, like an install.
-                // (Contract request: a `restoreParked` action in the TS.)
-                rift_deploy::IntentAction::RestoreParked => RecoveryAction::Install,
+                rift_deploy::IntentAction::RestoreParked => RecoveryAction::RestoreParked,
             },
             files_rolled_back: report.files_rolled_back,
         }
@@ -1511,6 +1672,7 @@ impl From<&rift_catalog::MatchedField> for MatchedField {
             rift_catalog::MatchedField::PackageName => MatchedField::PackageName,
             rift_catalog::MatchedField::Version => MatchedField::Version,
             rift_catalog::MatchedField::File => MatchedField::File,
+            rift_catalog::MatchedField::NexusLabel => MatchedField::NexusLabel,
         }
     }
 }
@@ -1523,8 +1685,39 @@ impl From<&SearchQuery> for rift_catalog::SearchQuery {
                 installed: query.filters.installed,
                 root_ids: query.filters.root_ids.clone(),
                 include_menu_only: query.filters.include_menu_only,
+                categories: query.filters.categories.clone(),
+                tags: query.filters.tags.clone(),
             },
             limit: query.limit,
+        }
+    }
+}
+
+impl From<&rift_catalog::PackageLabels> for NexusLabels {
+    fn from(labels: &rift_catalog::PackageLabels) -> Self {
+        NexusLabels {
+            category: labels.category.clone(),
+            tags: labels.tags.clone(),
+            adult: labels.adult,
+        }
+    }
+}
+
+impl From<&rift_catalog::LabelCount> for LabelCount {
+    fn from(count: &rift_catalog::LabelCount) -> Self {
+        LabelCount {
+            name: count.name.clone(),
+            options: count.options,
+        }
+    }
+}
+
+impl From<&rift_catalog::LabelFacets> for LabelFacets {
+    fn from(facets: &rift_catalog::LabelFacets) -> Self {
+        LabelFacets {
+            categories: facets.categories.iter().map(LabelCount::from).collect(),
+            tags: facets.tags.iter().map(LabelCount::from).collect(),
+            unlabeled_packages: facets.unlabeled_packages,
         }
     }
 }
@@ -1669,6 +1862,48 @@ mod tests {
         }
     }
 
+    fn sample_option() -> ModOption {
+        ModOption {
+            id: "00000000000000aa#Glow".into(),
+            package_id: "00000000000000aa".into(),
+            root: "Glow".into(),
+            name: "Lantern Glow Recolor".into(),
+            info: Some(ModInfo {
+                name: Some("Lantern Glow Recolor".into()),
+                description: None,
+                author: Some("Vern".into()),
+                version: Some("2.1".into()),
+                category: None,
+                screenshot: Some("screenshot.png".into()),
+                homepage: None,
+                addon_for: None,
+                name_as_bundle: None,
+                requires: vec!["REFramework".into()],
+                dummy: false,
+                menu_priority: 0,
+                extra: BTreeMap::from([("installtype".into(), "normal".into())]),
+            }),
+            screenshot: Some("Glow/screenshot.png".into()),
+            payload: vec![PayloadFile {
+                entry: "Glow/LanternGlow.pak".into(),
+                target: DeployTarget::Pak {
+                    file_name: "LanternGlow.pak".into(),
+                },
+                size: 4096,
+            }],
+            skipped: vec![SkippedFile {
+                entry: "Glow/modinfo.ini".into(),
+                reason: SkipReason::Modinfo,
+            }],
+            kinds: kinds(),
+            parent: None,
+            addon_for: None,
+            bundle: None,
+            menu_only: false,
+            trail: vec!["Lantern Glow Recolor".into()],
+        }
+    }
+
     fn update_row() -> UpdateRow {
         UpdateRow {
             package_id: "00000000000000aa".into(),
@@ -1744,6 +1979,7 @@ mod tests {
             (RecoveryAction::Install, "install"),
             (RecoveryAction::Uninstall, "uninstall"),
             (RecoveryAction::Reorder, "reorder"),
+            (RecoveryAction::RestoreParked, "restoreParked"),
         ]);
         literals(&[
             (MatchedField::Name, "name"),
@@ -1755,6 +1991,17 @@ mod tests {
             (MatchedField::PackageName, "packageName"),
             (MatchedField::Version, "version"),
             (MatchedField::File, "file"),
+            (MatchedField::NexusLabel, "nexusLabel"),
+        ]);
+        literals(&[
+            (VeilMode::Off, "off"),
+            (VeilMode::Adult, "adult"),
+            (VeilMode::All, "all"),
+        ]);
+        literals(&[
+            (OwnerKind::Unowned, "unowned"),
+            (OwnerKind::Fluffy, "fluffy"),
+            (OwnerKind::Riftstone, "riftstone"),
         ]);
         literals(&[
             (InstallOrigin::Riftstone, "riftstone"),
@@ -1839,6 +2086,7 @@ mod tests {
             (CheckAction::AdoptFluffy, "adoptFluffy"),
             (CheckAction::PickGameFolder, "pickGameFolder"),
             (CheckAction::Rescan, "rescan"),
+            (CheckAction::ReviewParked, "reviewParked"),
         ] {
             assert_eq!(round_trip(&action, &["kind"])["kind"], kind);
         }
@@ -2002,6 +2250,7 @@ mod tests {
     fn removal_action_union() {
         for (action, kind) in [
             (RemovalAction::Delete, "delete"),
+            (RemovalAction::AlreadyGone, "alreadyGone"),
             (RemovalAction::KeepChanged, "keepChanged"),
             (RemovalAction::KeepVanilla, "keepVanilla"),
         ] {
@@ -2073,45 +2322,7 @@ mod tests {
                 "source",
             ],
         );
-        let option = ModOption {
-            id: "00000000000000aa#Glow".into(),
-            package_id: "00000000000000aa".into(),
-            root: "Glow".into(),
-            name: "Lantern Glow Recolor".into(),
-            info: Some(ModInfo {
-                name: Some("Lantern Glow Recolor".into()),
-                description: None,
-                author: Some("Vern".into()),
-                version: Some("2.1".into()),
-                category: None,
-                screenshot: Some("screenshot.png".into()),
-                homepage: None,
-                addon_for: None,
-                name_as_bundle: None,
-                requires: vec!["REFramework".into()],
-                dummy: false,
-                menu_priority: 0,
-                extra: BTreeMap::from([("installtype".into(), "normal".into())]),
-            }),
-            screenshot: Some("Glow/screenshot.png".into()),
-            payload: vec![PayloadFile {
-                entry: "Glow/LanternGlow.pak".into(),
-                target: DeployTarget::Pak {
-                    file_name: "LanternGlow.pak".into(),
-                },
-                size: 4096,
-            }],
-            skipped: vec![SkippedFile {
-                entry: "Glow/modinfo.ini".into(),
-                reason: SkipReason::Modinfo,
-            }],
-            kinds: kinds(),
-            parent: None,
-            addon_for: None,
-            bundle: None,
-            menu_only: false,
-            trail: vec!["Lantern Glow Recolor".into()],
-        };
+        let option = sample_option();
         let json = round_trip(
             &option,
             &[
@@ -2297,13 +2508,41 @@ mod tests {
     fn search_shapes_carry_exactly_the_ts_keys() {
         let query: SearchQuery = serde_json::from_value(json!({
             "text": "\"ermine cape\" top_314",
-            "filters": { "installed": null, "rootIds": ["fluffy"], "includeMenuOnly": false },
+            "filters": {
+                "installed": null, "rootIds": ["fluffy"], "includeMenuOnly": false,
+                "categories": ["Armour", "Visuals"], "tags": ["Utilities for Players"]
+            },
             "limit": 0
         }))
         .unwrap();
         assert_eq!(query.filters.root_ids, vec!["fluffy".to_string()]);
         assert_eq!(query.filters.installed, None);
-        round_trip(&query, &["text", "filters", "limit"]);
+        assert_eq!(query.filters.categories, vec!["Armour", "Visuals"]);
+        assert_eq!(query.filters.tags, vec!["Utilities for Players"]);
+        let json = round_trip(&query, &["text", "filters", "limit"]);
+        assert_eq!(
+            keys(&json["filters"]),
+            sorted(&[
+                "installed",
+                "rootIds",
+                "includeMenuOnly",
+                "categories",
+                "tags"
+            ])
+        );
+        // The crate gets both label filters as the window sent them.
+        let crate_query = rift_catalog::SearchQuery::from(&query);
+        assert_eq!(crate_query.filters.categories, query.filters.categories);
+        assert_eq!(crate_query.filters.tags, query.filters.tags);
+        // A v0.1 query (no label filters) still reads: no label filter.
+        let v01: SearchQuery = serde_json::from_value(json!({
+            "text": "",
+            "filters": { "installed": null, "rootIds": [], "includeMenuOnly": false },
+            "limit": 0
+        }))
+        .unwrap();
+        assert!(v01.filters.categories.is_empty() && v01.filters.tags.is_empty());
+
         let result = SearchResult {
             option_id: "00000000000000aa#Glow".into(),
             package_id: "00000000000000aa".into(),
@@ -2329,6 +2568,9 @@ mod tests {
             }),
             update: Some(UpdateBadge::Current),
             conflicted: false,
+            nexus_category: Some("Visuals".into()),
+            nexus_tags: vec!["Utilities for Players".into()],
+            adult: false,
         };
         let json = round_trip(
             &result,
@@ -2354,9 +2596,76 @@ mod tests {
                 "installed",
                 "update",
                 "conflicted",
+                "nexusCategory",
+                "nexusTags",
+                "adult",
             ],
         );
         assert_eq!(keys(&json["installed"]), sorted(&["origin", "installedAt"]));
+        // An unlabeled package: null category, no tags — present, never absent.
+        let bare = serde_json::to_value(SearchResult {
+            nexus_category: None,
+            nexus_tags: vec![],
+            ..result
+        })
+        .unwrap();
+        assert!(bare["nexusCategory"].is_null());
+        assert_eq!(bare["nexusTags"], json!([]));
+    }
+
+    #[test]
+    fn label_shapes_carry_exactly_the_ts_keys() {
+        round_trip(
+            &NexusLabels {
+                category: Some("Armour".into()),
+                tags: vec!["Cloaks".into()],
+                adult: true,
+            },
+            &["category", "tags", "adult"],
+        );
+        let facets = round_trip(
+            &LabelFacets {
+                categories: vec![LabelCount {
+                    name: "Armour".into(),
+                    options: 3,
+                }],
+                tags: vec![LabelCount {
+                    name: "Utilities for Players".into(),
+                    options: 1,
+                }],
+                unlabeled_packages: 2,
+            },
+            &["categories", "tags", "unlabeledPackages"],
+        );
+        assert_eq!(keys(&facets["categories"][0]), sorted(&["name", "options"]));
+        assert_eq!(keys(&facets["tags"][0]), sorted(&["name", "options"]));
+
+        // From the catalog, field for field.
+        let from_catalog = LabelFacets::from(&rift_catalog::LabelFacets {
+            categories: vec![rift_catalog::LabelCount {
+                name: "Visuals".into(),
+                options: 4,
+            }],
+            tags: vec![],
+            unlabeled_packages: 7,
+        });
+        assert_eq!(
+            serde_json::to_value(from_catalog).unwrap(),
+            json!({
+                "categories": [{ "name": "Visuals", "options": 4 }],
+                "tags": [],
+                "unlabeledPackages": 7
+            })
+        );
+        let labels = NexusLabels::from(&rift_catalog::PackageLabels {
+            category: None,
+            tags: vec!["Cloaks".into()],
+            adult: true,
+        });
+        assert_eq!(
+            serde_json::to_value(labels).unwrap(),
+            json!({ "category": null, "tags": ["Cloaks"], "adult": true })
+        );
     }
 
     #[test]
@@ -2388,15 +2697,15 @@ mod tests {
             winner: layer("New"),
             unconfirmed: false,
         };
-        let json = round_trip(&conflict, &["key", "layers", "winner"]);
+        let json = round_trip(&conflict, &["key", "layers", "winner", "unconfirmed"]);
         assert_eq!(keys(&json["winner"]), sorted(&["optionId", "name"]));
-        // The unconfirmed flag stays off the wire until the TS grows it.
+        // v0.2: the unconfirmed flag crosses the bridge.
         let flagged = serde_json::to_value(ConflictView {
             unconfirmed: true,
             ..conflict.clone()
         })
         .unwrap();
-        assert!(flagged.get("unconfirmed").is_none());
+        assert_eq!(flagged["unconfirmed"], true);
 
         round_trip(
             &update_row(),
@@ -2447,6 +2756,49 @@ mod tests {
         assert_eq!(
             keys(&info["files"][0]),
             sorted(&["gamePath", "kind", "size"])
+        );
+
+        let detail = OptionDetail {
+            option: sample_option(),
+            package: package_summary(),
+            parent_name: Some("Cloaks".into()),
+            children: vec![],
+            installed: None,
+            fluffy_installed: false,
+            conflicts: vec![conflict.clone()],
+            update: Some(update_row()),
+            labels: Some(NexusLabels {
+                category: Some("Armour".into()),
+                tags: vec!["Cloaks".into(), "Lore-Friendly".into()],
+                adult: false,
+            }),
+        };
+        let json = round_trip(
+            &detail,
+            &[
+                "option",
+                "package",
+                "parentName",
+                "children",
+                "installed",
+                "fluffyInstalled",
+                "conflicts",
+                "update",
+                "labels",
+            ],
+        );
+        assert_eq!(
+            keys(&json["labels"]),
+            sorted(&["category", "tags", "adult"])
+        );
+        let unlabeled = serde_json::to_value(OptionDetail {
+            labels: None,
+            ..detail
+        })
+        .unwrap();
+        assert!(
+            unlabeled["labels"].is_null(),
+            "unlinked or never checked: null, not absent"
         );
 
         let tree = round_trip(
@@ -2544,7 +2896,9 @@ mod tests {
                 option_id: "00000000000000aa#Glow".into(),
                 files_removed: 1,
                 files_restored: 0,
-                files_kept: 0,
+                files_kept: 1,
+                files_handed_down: 2,
+                parked: 1,
                 restart_needed: false,
             },
             &[
@@ -2552,6 +2906,8 @@ mod tests {
                 "filesRemoved",
                 "filesRestored",
                 "filesKept",
+                "filesHandedDown",
+                "parked",
                 "restartNeeded",
             ],
         );
@@ -2560,9 +2916,18 @@ mod tests {
                 adopted: 1,
                 already_adopted: 5,
                 missing_files: 0,
+                refused_files: 2,
+                shared_files: 1,
                 unmatched: vec!["Ox Cart Express".into()],
             },
-            &["adopted", "alreadyAdopted", "missingFiles", "unmatched"],
+            &[
+                "adopted",
+                "alreadyAdopted",
+                "missingFiles",
+                "refusedFiles",
+                "sharedFiles",
+                "unmatched",
+            ],
         );
     }
 
@@ -2613,6 +2978,16 @@ mod tests {
                 error: None,
             }),
             pak_count_warning: 100,
+            parked: vec![ParkedFileView {
+                store: "backups/3/natives/stm/lantern/glow.tex.251211553".into(),
+                game_path: "natives/stm/lantern/glow.tex.251211553".into(),
+                owner: "the file that was there before".into(),
+                owner_kind: OwnerKind::Unowned,
+                size: None,
+                parked_at: "2026-10-16T10:00:00Z".into(),
+                reason: "Something else had changed the file at its path.".into(),
+                occupied: true,
+            }],
         };
         let json = round_trip(
             &view,
@@ -2625,7 +3000,25 @@ mod tests {
                 "fluffyUnadopted",
                 "pakLoad",
                 "pakCountWarning",
+                "parked",
             ],
+        );
+        assert_eq!(
+            keys(&json["parked"][0]),
+            sorted(&[
+                "store",
+                "gamePath",
+                "owner",
+                "ownerKind",
+                "size",
+                "parkedAt",
+                "reason",
+                "occupied",
+            ])
+        );
+        assert!(
+            json["parked"][0]["size"].is_null(),
+            "a kept file gone from the store has a null size"
         );
         assert_eq!(
             keys(&json["installs"][0]),
@@ -2700,17 +3093,27 @@ mod tests {
             &["packageId", "matched", "link"],
         );
         let settings: Settings =
-            serde_json::from_value(json!({ "veilThumbnails": true, "autoCheckUpdates": false }))
-                .unwrap();
-        round_trip(&settings, &["veilThumbnails", "autoCheckUpdates"]);
+            serde_json::from_value(json!({ "veil": "adult", "autoCheckUpdates": false })).unwrap();
+        assert_eq!(settings.veil, VeilMode::Adult);
+        round_trip(&settings, &["veil", "autoCheckUpdates"]);
         assert_eq!(
             Settings::default(),
             Settings {
-                veil_thumbnails: false,
+                veil: VeilMode::Off,
                 auto_check_updates: true
             },
             "the TS documents these defaults"
         );
+        let report = round_trip(
+            &ParkedRestoreReport {
+                game_path: "natives/stm/lantern/glow.tex.251211553".into(),
+                restored: true,
+                swapped_out: None,
+                restart_needed: false,
+            },
+            &["gamePath", "restored", "swappedOut", "restartNeeded"],
+        );
+        assert!(report["swappedOut"].is_null());
         round_trip(
             &ScanProgressEvent {
                 done: 1,
@@ -2746,10 +3149,116 @@ mod tests {
         assert_eq!(serde_json::to_value(Nothing {}).unwrap(), json!({}));
     }
 
+    fn parked_backup(store: &str) -> rift_deploy::ParkedBackup {
+        rift_deploy::ParkedBackup {
+            store: store.into(),
+            game_path: "natives/stm/lantern/glow.tex.251211553".into(),
+            owner: rift_deploy::BelowOwner::Unowned,
+            parked_at: "2026-10-16T10:00:00Z".into(),
+            reason: "Something else had changed the file at its path.".into(),
+        }
+    }
+
+    #[test]
+    fn v02_crate_shapes_reach_the_window_unfolded() {
+        // A handed-down file is no longer counted as kept; parked files are counted.
+        let uninstall = UninstallResultView::from(&rift_deploy::UninstallReport {
+            option_id: rift_core::OptionId("00000000000000aa#Glow".into()),
+            files_removed: 1,
+            files_restored: 2,
+            files_kept: 3,
+            files_handed_down: 4,
+            restart_needed: true,
+            parked: vec![parked_backup("backups/5/a"), parked_backup("backups/5/b")],
+        });
+        assert_eq!(
+            (
+                uninstall.files_removed,
+                uninstall.files_restored,
+                uninstall.files_kept,
+                uninstall.files_handed_down,
+                uninstall.parked
+            ),
+            (1, 2, 3, 4, 2)
+        );
+        assert!(uninstall.restart_needed);
+
+        let adopt = AdoptResultView::from(&rift_deploy::AdoptReport {
+            adopted: 1,
+            refused_files: 2,
+            shared_files: 3,
+            ..rift_deploy::AdoptReport::default()
+        });
+        assert_eq!((adopt.refused_files, adopt.shared_files), (2, 3));
+        assert_eq!(
+            MatchedField::from(&rift_catalog::MatchedField::NexusLabel),
+            MatchedField::NexusLabel
+        );
+
+        let check = Check::from(&rift_deploy::Check {
+            id: "parkedBackups".into(),
+            level: rift_deploy::CheckLevel::Warn,
+            title: "1 file(s) kept aside in the backup store".into(),
+            detail: "…".into(),
+            action: Some(rift_deploy::CheckAction::ReviewParked),
+        });
+        assert_eq!(check.id, "parkedBackups");
+        assert_eq!(
+            serde_json::to_value(&check).unwrap()["action"],
+            json!({ "kind": "reviewParked" })
+        );
+
+        let recovered = RecoveryNote::from(&rift_deploy::RecoveryReport {
+            action: rift_deploy::IntentAction::RestoreParked,
+            option_id: rift_core::OptionId(String::new()),
+            option_name: "the file kept aside for natives/stm/lantern/glow.tex.251211553".into(),
+            files_rolled_back: 1,
+            files_kept: 0,
+            parked: vec![],
+        });
+        assert_eq!(recovered.action, RecoveryAction::RestoreParked);
+
+        let kept = ParkedFileView::from(&rift_deploy::ParkedFile {
+            store: "backups/5/natives/stm/lantern/glow.tex.251211553".into(),
+            game_path: "natives/stm/lantern/glow.tex.251211553".into(),
+            owner: "Lantern Glow Recolor".into(),
+            owner_kind: rift_deploy::OwnerKind::Riftstone,
+            size: Some(4096),
+            parked_at: "2026-10-16T10:00:00Z".into(),
+            reason: "Something else had changed the file at its path.".into(),
+            occupied: false,
+        });
+        assert_eq!(kept.owner_kind, OwnerKind::Riftstone);
+        assert_eq!(kept.size, Some(4096));
+        assert_eq!(
+            kept.store,
+            "backups/5/natives/stm/lantern/glow.tex.251211553"
+        );
+
+        let swap = ParkedRestoreReport::from(&rift_deploy::ParkedRestoreReport {
+            game_path: "natives/stm/lantern/glow.tex.251211553".into(),
+            restored: parked_backup("backups/5/natives/stm/lantern/glow.tex.251211553"),
+            swapped_out: Some(parked_backup(
+                "backups/9/natives/stm/lantern/glow.tex.251211553",
+            )),
+            restart_needed: false,
+        });
+        assert_eq!(
+            serde_json::to_value(&swap).unwrap(),
+            json!({
+                "gamePath": "natives/stm/lantern/glow.tex.251211553",
+                "restored": true,
+                "swappedOut": "backups/9/natives/stm/lantern/glow.tex.251211553",
+                "restartNeeded": false
+            }),
+            "the swapped-out file crosses as its store handle"
+        );
+    }
+
     #[test]
     fn crate_shapes_convert_without_losing_the_window_fields() {
         let removal: RemovalAction = (&rift_deploy::RemovalAction::AlreadyGone).into();
-        assert_eq!(removal, RemovalAction::Delete);
+        assert_eq!(removal, RemovalAction::AlreadyGone);
         let write: WriteAction = (&rift_deploy::WriteAction::OverwriteRiftstone {
             option_name: "Lantern Glow Recolor".into(),
             option_id: rift_core::OptionId("00000000000000aa#Glow".into()),

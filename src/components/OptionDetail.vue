@@ -3,6 +3,9 @@
 // name, trail, by-line, description, the three doors (Install…, Open in
 // package, Show in archive), conflicts, payload and skipped files. Install…
 // opens THE CROSSING in place; the screenshot shrinks to a strip for it.
+// v0.2: the NEXUS line — the mod's category and tags as the pillar's quiet
+// chips (pressing one toggles that facet), "Nexus #id" as the door to the
+// mod's page, and an honest line when the stone has no labels for it.
 import { computed } from "vue";
 import type { OptionDetail } from "@/types/rift";
 import { useWorld } from "@/composables/useWorld";
@@ -11,6 +14,7 @@ import { useSearch } from "@/composables/useSearch";
 import { usePreflight } from "@/composables/usePreflight";
 import { useSettings } from "@/composables/useSettings";
 import { kindsPresent, formatDate, plural } from "@/services/format";
+import { adultnessOf, veils } from "@/services/ledger";
 import ConflictMap from "./ConflictMap.vue";
 import InstallPlan from "./InstallPlan.vue";
 import KindBadge from "./KindBadge.vue";
@@ -26,6 +30,7 @@ const nav = useNavigation();
 const search = useSearch();
 const preflight = usePreflight();
 const { settings } = useSettings();
+const openPage = () => pageUrl.value && preflight.openUrl(pageUrl.value);
 
 const option = computed(() => detail.option);
 const planning = computed(() => world.stage.value !== "detail");
@@ -37,9 +42,18 @@ const byLine = computed(() => {
   if (info?.author) bits.push(`by ${info.author}`);
   if (info?.version) bits.push(`v${info.version.replace(/^v/i, "")}`);
   if (info?.category) bits.push(info.category);
-  if (detail.package.nexus) bits.push(`Nexus #${detail.package.nexus.modId}`);
   return bits.join(" · ");
 });
+
+const nexusId = computed(() => detail.package.nexus?.modId ?? null);
+const pageUrl = computed(() => detail.update?.pageUrl ?? null);
+const labels = computed(() => detail.labels);
+const unlabeledLine = computed(() =>
+  nexusId.value === null
+    ? "No Nexus labels: link this package on the NEXUS page and its category and tags follow."
+    : "No Nexus labels yet: the stone learns them at the next update check.",
+);
+const veiled = computed(() => veils(settings.value.veil, adultnessOf(detail.labels)));
 
 const update = computed(() => (detail.update?.state.kind === "updateAvailable" ? detail.update.state.newer : null));
 
@@ -69,7 +83,7 @@ function crumb(name: string): void {
 </script>
 
 <template>
-  <article class="odetail" :class="{ 'is-veiled': settings.veilThumbnails }">
+  <article class="odetail" :class="{ 'is-veiled': veiled }">
     <button
       type="button"
       class="odetail__shot"
@@ -89,7 +103,19 @@ function crumb(name: string): void {
     <h2 class="odetail__name">{{ option.name }}</h2>
     <MenuTrail :trail="option.trail" :tokens="search.tokens.value" @crumb="crumb" />
     <p class="odetail__by">
-      {{ byLine }}
+      {{ byLine
+      }}<template v-if="nexusId !== null"
+        ><template v-if="byLine"> · </template
+        ><button
+          v-if="pageUrl"
+          type="button"
+          class="odetail__nexus"
+          :title="`Open Nexus mod ${nexusId} in your browser`"
+          @click="openPage"
+        >
+          Nexus #{{ nexusId }} ↗</button
+        ><template v-else>Nexus #{{ nexusId }}</template></template
+      >
       <button v-if="update" type="button" class="odetail__upd" @click="nav.go('nexus')">
         · UPDATE v{{ update.version ?? "?" }} ▸
       </button>
@@ -102,6 +128,40 @@ function crumb(name: string): void {
     <p v-else-if="detail.fluffyInstalled" class="odetail__in">
       Fluffy installed this. Adopt it on Your World to uninstall or reorder it here.
     </p>
+    <div class="odetail__labels" aria-label="Nexus labels">
+      <template v-if="labels && (labels.category || labels.tags.length)">
+        <button
+          v-if="labels.category"
+          type="button"
+          class="odetail__lab"
+          :class="{ 'is-on': search.hasCategory(labels.category) }"
+          :aria-pressed="search.hasCategory(labels.category)"
+          :title="`Nexus category: ${labels.category}. Press to filter the Rift by it.`"
+          @click="search.toggleCategory(labels.category)"
+        >
+          {{ labels.category }}
+        </button>
+        <button
+          v-for="t in labels.tags"
+          :key="t"
+          type="button"
+          class="odetail__lab odetail__lab--tag"
+          :class="{ 'is-on': search.hasTag(t) }"
+          :aria-pressed="search.hasTag(t)"
+          :title="`Nexus tag: ${t}. Press to filter the Rift by it.`"
+          @click="search.toggleTag(t)"
+        >
+          {{ t }}
+        </button>
+        <span v-if="labels.adult" class="odetail__adult rs-mono" title="Nexus flags this mod as adult content"
+          >adult</span
+        >
+      </template>
+      <span v-else-if="labels?.adult" class="odetail__nolab"
+        >Nexus flags this mod as adult content, and gives it no category or tags.</span
+      >
+      <span v-else class="odetail__nolab">{{ unlabeledLine }}</span>
+    </div>
     <p v-if="option.info?.description" class="odetail__desc">{{ option.info.description }}</p>
     <div class="odetail__kinds">
       <KindBadge v-for="k in kindsPresent(option.kinds)" :key="k" :kind="k" :count="option.kinds[k]" />
@@ -197,6 +257,69 @@ function crumb(name: string): void {
   color: var(--rs-verdant);
   font: inherit;
   cursor: pointer;
+}
+.odetail__nexus {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--rs-muted);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.odetail__nexus:hover {
+  color: var(--rs-text);
+}
+/* the NEXUS line: the card's quiet label chip (card__cat), pressable */
+.odetail__labels {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--rs-space-2);
+}
+.odetail__lab {
+  max-width: 100%;
+  min-height: 24px;
+  overflow: hidden;
+  padding: 1px 6px 1px 8px;
+  border: 1px solid var(--rs-edge);
+  border-left: 2px solid rgba(143, 227, 242, 0.55);
+  border-radius: var(--rs-radius-chip);
+  background: transparent;
+  color: var(--rs-muted);
+  font: 400 var(--rs-text-xs) / 1.3 var(--rs-font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.odetail__lab--tag {
+  border-left-color: var(--rs-edgehi);
+}
+.odetail__lab:hover {
+  color: var(--rs-text);
+  border-color: var(--rs-rift);
+}
+.odetail__lab.is-on {
+  background: var(--rs-riftdeep);
+  border-color: var(--rs-rift);
+  color: var(--rs-text);
+}
+.odetail__adult {
+  color: var(--rs-faint);
+  font-size: var(--rs-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.odetail__nolab {
+  color: var(--rs-faint);
+  font-size: var(--rs-text-sm);
+}
+.odetail__nexus:focus-visible,
+.odetail__lab:focus-visible {
+  outline: 2px solid var(--rs-rift);
+  outline-offset: 2px;
 }
 .odetail__desc {
   margin: var(--rs-space-2) 0 0;

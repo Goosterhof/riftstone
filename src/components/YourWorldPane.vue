@@ -11,6 +11,7 @@ import { useNavigation } from "@/composables/useNavigation";
 import { useFarWorld } from "@/composables/useFarWorld";
 import { usePreflight, REFRAMEWORK_URL } from "@/composables/usePreflight";
 import { kindsSentence, plural } from "@/services/format";
+import { recoverySentence } from "@/services/ledger";
 import type { PayloadKinds } from "@/types/rift";
 import OptionDetail from "./OptionDetail.vue";
 import RiftButton from "./RiftButton.vue";
@@ -85,9 +86,7 @@ onMounted(() => {
           </RiftInscription>
         </div>
         <p v-if="stone.overview.value?.recovered" class="world__recovered">
-          The last {{ stone.overview.value.recovered.action }} of {{ stone.overview.value.recovered.optionName }} was
-          cut short. We rolled back {{ plural(stone.overview.value.recovered.filesRolledBack, "file") }}; your game
-          folder is as it was before.
+          {{ recoverySentence(stone.overview.value.recovered) }}
         </p>
 
         <dl class="world__summary">

@@ -74,6 +74,9 @@ const HIT: SearchResult = {
   installed: null,
   update: null,
   conflicted: false,
+  nexusCategory: null,
+  nexusTags: [],
+  adult: false,
 };
 
 describe("the IN FILE line", () => {

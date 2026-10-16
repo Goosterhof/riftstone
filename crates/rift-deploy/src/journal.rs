@@ -273,6 +273,14 @@ pub enum IntentStep {
         /// install's — an undo never deletes it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fingerprint: Option<String>,
+        /// The extraction stopped before it wrote this file's part, so
+        /// whatever sits at `<game_path>.riftstone-part` is not this
+        /// install's (the extractor refused a name something else took after
+        /// the check, or never got that far): an undo leaves it alone. Set
+        /// only when an extraction fails; `false` otherwise, and after a
+        /// crash, when a part at a name the install checked free is its own.
+        #[serde(default, skip_serializing_if = "is_false")]
+        unextracted: bool,
     },
     /// Uninstall: `game_path` moves to `trash` (deleted after the commit).
     #[serde(rename_all = "camelCase")]
@@ -445,6 +453,12 @@ fn journal_error(detail: String) -> RiftError {
     RiftError::Journal { detail }
 }
 
+/// Keeps a flag that is off out of the journal file (serde's
+/// `skip_serializing_if` hands it a reference).
+fn is_false(flag: &bool) -> bool {
+    !*flag
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,6 +531,7 @@ mod tests {
             backup: None,
             owner: None,
             fingerprint: None,
+            unextracted: false,
         })
         .unwrap();
         assert_eq!(step["kind"], "place");
@@ -525,6 +540,33 @@ mod tests {
             step.get("fingerprint").is_none(),
             "an unset fingerprint stays off the wire"
         );
+        assert!(
+            step.get("unextracted").is_none(),
+            "so does a part nobody doubts"
+        );
+        let doubted = serde_json::json!({ "kind": "place", "gamePath": "a", "size": 1,
+                                          "backup": null, "unextracted": true });
+        let parsed: IntentStep = serde_json::from_value(doubted.clone()).unwrap();
+        assert!(matches!(
+            parsed,
+            IntentStep::Place {
+                unextracted: true,
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), doubted);
+        // A step written before the flag existed reads as an extracted part.
+        let older: IntentStep = serde_json::from_value(
+            serde_json::json!({ "kind": "place", "gamePath": "a", "size": 1, "backup": null }),
+        )
+        .unwrap();
+        assert!(matches!(
+            older,
+            IntentStep::Place {
+                unextracted: false,
+                ..
+            }
+        ));
     }
 
     #[test]

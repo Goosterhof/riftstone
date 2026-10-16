@@ -15,7 +15,8 @@ use std::fs;
 use riftstone_lib::commands::{deploy, library, nexus, overview};
 use riftstone_lib::dto::{
     CheckLevel, ConflictKey, GameSource, InstallOrigin, JournalOrigin, PlanWarning, RemovalAction,
-    ScanState, SearchFilters, SearchQuery, Settings, ThumbnailSize, TreeNodeKind, WriteAction,
+    ScanState, SearchFilters, SearchQuery, Settings, ThumbnailSize, TreeNodeKind, VeilMode,
+    WriteAction,
 };
 use riftstone_lib::events::{GAME_CHANGED, INSTALL_PROGRESS, LIBRARY_CHANGED, SCAN_PROGRESS};
 use riftstone_lib::persist::{DataDirs, DATA_HOME_ENV};
@@ -345,11 +346,18 @@ fn the_spine_scans_searches_installs_and_uninstalls_over_a_fake_world() {
 
     // -- settings, roots -----------------------------------------------------
     let settings = Settings {
-        veil_thumbnails: true,
+        veil: VeilMode::Adult,
         auto_check_updates: false,
     };
     assert_eq!(overview::set_settings_impl(&state, settings), settings);
     assert_eq!(overview::get_settings_impl(&state), settings);
+    let on_disk: serde_json::Value =
+        serde_json::from_slice(&fs::read(dirs.settings_file()).unwrap()).unwrap();
+    assert_eq!(on_disk["veil"], "adult");
+    assert!(
+        on_disk.get("veilThumbnails").is_none(),
+        "v0.2 writes the veil mode only: {on_disk}"
+    );
     assert!(
         nexus::get_nexus_quota_impl(&state).is_none(),
         "no key, no quota"

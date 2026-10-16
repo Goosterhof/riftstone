@@ -129,6 +129,9 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         commands::nexus::set_nexus_key,
         commands::overview::get_troubled_packages,
         commands::nexus::get_nexus_quota,
+        commands::nexus::get_labels,
+        commands::deploy::restore_parked,
+        commands::deploy::discard_parked,
         commands::overview::get_settings,
         commands::overview::set_settings,
     ])

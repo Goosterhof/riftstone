@@ -11,7 +11,8 @@
 //! 2. Write-ahead: the journal is saved with an [`Intent`] whose steps name
 //!    every path, every backup slot and every folder the install creates.
 //! 3. The package extracts every file to `<target>.riftstone-part` in one
-//!    pass (solid archives decompress once). Nothing else has moved yet.
+//!    pass (solid archives decompress once), each part created new and
+//!    reported by name once written. Nothing else has moved yet.
 //! 4. Each part is size-checked and fingerprinted, and the fingerprints are
 //!    saved into the intent before the first rename.
 //! 5. File by file: what sits at the target moves into
@@ -21,12 +22,16 @@
 //!
 //! Any failure undoes the intent from what is on disk, every step even when
 //! one of them fails, and never deletes what it cannot prove it wrote: a part
-//! is the install's own (its name was free), a file at a target only when no
-//! part is left for it and its size and fingerprint match the ones saved in
-//! step 4. A backup that cannot go back because something else now sits at
-//! its path stays in the store, kept aside on record ([`ParkedBackup`]). A
-//! crash leaves `pending` on disk; [`recover`] does the same undo at the next
-//! launch.
+//! is the install's own (its name was free, and the extractor never writes
+//! over anything) — but when the extraction itself stopped, only the parts it
+//! reported written are, and a name something else took meanwhile stays
+//! with whoever took it; a file at a target only when no part is left for it
+//! and its size and fingerprint match the ones saved in step 4. A backup
+//! that cannot go back because something else now sits at its path stays in
+//! the store, kept aside on record ([`ParkedBackup`]). A crash leaves
+//! `pending` on disk; [`recover`] does the same undo at the next launch
+//! (after a crash, which parts the extraction wrote is not known: a part at
+//! a name the install checked free counts as its own).
 //!
 //! Reinstalling an installed option is ONE intent: the old copy's uninstall
 //! steps first, then the new copy's placements. A failure anywhere undoes
@@ -133,6 +138,7 @@ impl PlannedFile {
                 _ => None,
             },
             fingerprint: None,
+            unextracted: false,
         }
     }
 }
@@ -248,9 +254,13 @@ pub fn install(
         return Err(err);
     }
 
-    let fingerprints = match extract_parts(ctx, package, &files, source, progress) {
+    let mut extracted = vec![false; files.len()];
+    let fingerprints = match extract_parts(ctx, package, &files, source, progress, &mut extracted) {
         Ok(fingerprints) => fingerprints,
-        Err(err) => return Err(fail_and_roll_back(ctx, journal, &before, err)),
+        Err(err) => {
+            note_unextracted(ctx, journal, &extracted);
+            return Err(fail_and_roll_back(ctx, journal, &before, err));
+        }
     };
     // From here on a file at a target with its size and fingerprint is this
     // install's own: say so before the first rename.
@@ -764,22 +774,25 @@ fn fluffy_name(fluffy: Option<&FluffyLedger>, section: &str) -> String {
 
 /// Steps 3 and 4 of an install: one extraction pass into the temporary
 /// names, then every part size-checked and fingerprinted. Nothing in the game
-/// folder has moved yet.
+/// folder has moved yet. `extracted[n]` turns true as the extractor reports
+/// file `n` written: when this fails, those are the only parts this install
+/// made ([`note_unextracted`]).
 fn extract_parts(
     ctx: &DeployContext,
     package: &Package,
     files: &[PlannedFile],
     source: &mut dyn PackageSource,
     progress: &mut dyn FnMut(ExtractProgress),
+    extracted: &mut [bool],
 ) -> Result<Vec<String>, RiftError> {
     let root = &ctx.game.root;
     let parts: Vec<PathBuf> = files
         .iter()
         .map(|f| with_suffix(&join_rel(root, &f.game_path), PART_SUFFIX))
         .collect();
-    // The extractor creates each part (and its missing folders), and would
-    // follow a link or overwrite a file it found on the way: the folders must
-    // still pass the guard and the names must still be free.
+    // The extractor creates each part and its missing folders: the folders
+    // must still pass the guard, and the names must still be free (the
+    // extractor refuses a taken one too — this says so in the engine's words).
     for (file, part) in files.iter().zip(&parts) {
         guard::guard_target(root, &file.game_path)?;
         if fsops::exists(part) {
@@ -794,7 +807,12 @@ fn extract_parts(
             dest: part.clone(),
         })
         .collect();
-    source.extract(&items, progress)?;
+    source.extract(&items, &mut |report: ExtractProgress| {
+        if let Some(written) = extracted.get_mut(report.item) {
+            *written = true;
+        }
+        progress(report);
+    })?;
 
     let mut fingerprints = Vec::with_capacity(files.len());
     for (file, part) in files.iter().zip(&parts) {
@@ -822,6 +840,36 @@ fn extract_parts(
         fingerprints.push(fingerprint);
     }
     Ok(fingerprints)
+}
+
+/// An extraction stopped: mark every `Place` step whose part the extractor
+/// never reported written, so the rollback leaves whatever sits at that name
+/// alone — something else took it after the check (the extractor refused to
+/// write over it), or nothing is there. The marks are saved too, so a crash
+/// during the rollback cannot turn the next launch's recovery against them.
+/// Places are the intent's only `Place` steps, in `files` order.
+fn note_unextracted(ctx: &DeployContext, journal: &mut Journal, extracted: &[bool]) {
+    let Some(intent) = journal.pending.as_mut() else {
+        return;
+    };
+    let places = intent.steps.iter_mut().filter_map(|step| match step {
+        IntentStep::Place { unextracted, .. } => Some(unextracted),
+        _ => None,
+    });
+    let mut marked = false;
+    for (unextracted, &written) in places.zip(extracted) {
+        if !written {
+            *unextracted = true;
+            marked = true;
+        }
+    }
+    if marked {
+        if let Err(err) = journal.save(ctx.state_dir) {
+            log::warn!(
+                "could not record which parts the stopped extraction wrote ({err}); this rollback still leaves the others alone"
+            );
+        }
+    }
 }
 
 /// Step 5 of an install: file by file, what sits at the target moves into
@@ -1452,7 +1500,10 @@ fn prune_restored_slots(ctx: &DeployContext, steps: &[IntentStep]) {
 /// that made the Riftstone keep it — swaps with it: that file is kept aside
 /// in its turn, so nothing is lost and the swap can be reversed the same way.
 /// Refused while an install or an un-adopted Fluffy mod owns the file at the
-/// path: uninstall that first. One journaled intent, rolled back on failure.
+/// path: uninstall that first. A running game does not stop it — the file
+/// loads at the next launch (`restart_needed`); one the game holds open fails
+/// to move, and the swap is rolled back. One journaled intent, rolled back on
+/// failure.
 pub fn restore_parked(
     ctx: &DeployContext,
     journal: &mut Journal,
@@ -1462,9 +1513,7 @@ pub fn restore_parked(
         return Err(RiftError::refused(reason));
     }
     let Some(at) = journal.parked.iter().position(|kept| kept.store == store) else {
-        return Err(RiftError::refused(format!(
-            "Nothing is kept aside under {store}. Reload the game state and try again."
-        )));
+        return Err(stale_parked(store));
     };
     let entry = journal.parked[at].clone();
     if !safe_store(&entry.store) || !safe_rel(&entry.game_path) {
@@ -1595,9 +1644,7 @@ pub fn discard_parked(
         return Err(RiftError::refused(reason));
     }
     let Some(at) = journal.parked.iter().position(|kept| kept.store == store) else {
-        return Err(RiftError::refused(format!(
-            "Nothing is kept aside under {store}. Reload the game state and try again."
-        )));
+        return Err(stale_parked(store));
     };
     let mut committed = journal.clone();
     let entry = committed.parked.remove(at);
@@ -1610,6 +1657,33 @@ pub fn discard_parked(
     *journal = committed;
     process_cleanup(ctx, journal);
     Ok(())
+}
+
+/// The refusal for a handle the journal no longer lists: the window's list
+/// of kept files was read before that file went back, was discarded, or
+/// moved to another entry. It names the game path the handle stands for,
+/// never the handle — an inner path of the backup store means nothing to the
+/// player — and asks for what the window offers: a fresh look at PARKED,
+/// which the window reads again after any refusal.
+fn stale_parked(store: &str) -> RiftError {
+    let entry = parked_game_path(store).map_or_else(
+        || "that entry".to_string(),
+        |path| format!("the entry for {path}"),
+    );
+    RiftError::refused(format!(
+        "The list of kept files was out of date ({entry} changed after it was shown), so nothing was touched. Look again at PARKED."
+    ))
+}
+
+/// The game path a store handle stands for: every kept file sits at
+/// `backups/<seq>/<game path>`. `None` for anything else.
+fn parked_game_path(store: &str) -> Option<&str> {
+    if !safe_store(store) {
+        return None;
+    }
+    let (seq, game_path) = store.get("backups/".len()..)?.split_once('/')?;
+    (!seq.is_empty() && seq.bytes().all(|b| b.is_ascii_digit()) && safe_rel(game_path))
+        .then_some(game_path)
 }
 
 // ---------------------------------------------------------------------------
@@ -2083,6 +2157,10 @@ struct UndoOutcome {
     parked: Vec<ParkedBackup>,
     /// Steps that could not be undone (yet).
     errors: Vec<String>,
+    /// Game paths (lower-cased) whose `.riftstone-part` a stopped extraction
+    /// never wrote and so left to whoever holds it: an earlier step at the
+    /// same path (a reinstall's restore of the old copy) leaves it too.
+    spared_parts: HashSet<String>,
 }
 
 /// Why a roll-back did not finish.
@@ -2189,6 +2267,7 @@ fn undo_intent(ctx: &DeployContext, intent: &Intent) -> UndoOutcome {
                     backup,
                     owner,
                     fingerprint,
+                    unextracted,
                 } => undo_place(
                     ctx,
                     intent,
@@ -2198,6 +2277,7 @@ fn undo_intent(ctx: &DeployContext, intent: &Intent) -> UndoOutcome {
                         backup: backup.as_deref(),
                         owner: owner.as_ref(),
                         fingerprint: fingerprint.as_deref(),
+                        unextracted: *unextracted,
                     },
                     &mut outcome,
                 )
@@ -2210,15 +2290,21 @@ fn undo_intent(ctx: &DeployContext, intent: &Intent) -> UndoOutcome {
                     game_path,
                     trash,
                     backup,
-                } => undo_restore(
-                    root,
-                    ctx.state_dir,
-                    game_path,
-                    trash.as_deref(),
-                    backup,
-                    &mut outcome,
-                )
-                .map_err(|err| format!("could not put {game_path} back: {err}")),
+                } => {
+                    let partial_spared = outcome.spared_parts.contains(&key);
+                    undo_restore(
+                        root,
+                        ctx.state_dir,
+                        &RestoreUndo {
+                            game_path,
+                            trash: trash.as_deref(),
+                            backup,
+                            partial_spared,
+                        },
+                        &mut outcome,
+                    )
+                    .map_err(|err| format!("could not put {game_path} back: {err}"))
+                }
                 IntentStep::Park { game_path, store } => {
                     undo_park(ctx, game_path, store, &mut outcome)
                         .map_err(|err| format!("could not put {game_path} back: {err}"))
@@ -2254,6 +2340,7 @@ struct PlaceUndo<'a> {
     backup: Option<&'a str>,
     owner: Option<&'a BelowOwner>,
     fingerprint: Option<&'a str>,
+    unextracted: bool,
 }
 
 fn undo_place(
@@ -2266,11 +2353,24 @@ fn undo_place(
     let target = join_rel(root, step.game_path);
     let part = with_suffix(&target, PART_SUFFIX);
     let mut undone = false;
-    // The part is this install's own: its name was free when it began.
+    // The part is this install's own: its name was free when the install
+    // began, and the extractor only ever creates files new. Unless the
+    // stopped extraction never reported writing it (`unextracted`): then
+    // whatever holds the name is someone else's, and it stays. It is no
+    // file at the target either, so it does not keep the path's other steps
+    // from being undone.
     let part_left = fsops::exists(&part);
     if part_left && !fsops::is_real_dir(&part) {
-        fsops::remove_file_if_exists(&part)?;
-        undone = true;
+        if step.unextracted {
+            log::warn!(
+                "{}{PART_SUFFIX} is not a part the install wrote (its extraction stopped before it); it was left alone",
+                step.game_path
+            );
+            outcome.spared_parts.insert(lower_key(step.game_path));
+        } else {
+            fsops::remove_file_if_exists(&part)?;
+            undone = true;
+        }
     }
     let slot = step.backup.map(|backup| join_rel(ctx.state_dir, backup));
     if let Some(slot) = &slot {
@@ -2369,20 +2469,30 @@ fn undo_remove(
     Ok(())
 }
 
+/// One `Restore` step, borrowed.
+struct RestoreUndo<'a> {
+    game_path: &'a str,
+    trash: Option<&'a str>,
+    backup: &'a str,
+    /// A reinstall's new copy left `<game_path>.riftstone-part` to whoever
+    /// holds it ([`UndoOutcome::spared_parts`]): this restore finished
+    /// before that extraction began, so the name is not its partial copy.
+    partial_spared: bool,
+}
+
 fn undo_restore(
     root: &Path,
     store: &Path,
-    game_path: &str,
-    trash: Option<&str>,
-    backup: &str,
+    step: &RestoreUndo<'_>,
     outcome: &mut UndoOutcome,
 ) -> io::Result<()> {
+    let (game_path, trash, backup) = (step.game_path, step.trash, step.backup);
     let target = join_rel(root, game_path);
     let slot = join_rel(store, backup);
     // A cross-volume restore that stopped half-way leaves a partial copy
     // beside the target (its name was checked free before the uninstall)…
     let partial = with_suffix(&target, PART_SUFFIX);
-    if !fsops::is_real_dir(&partial) {
+    if !step.partial_spared && !fsops::is_real_dir(&partial) {
         fsops::remove_file_if_exists(&partial)?;
     }
     // …and a move back into the store that stopped half-way, one there.

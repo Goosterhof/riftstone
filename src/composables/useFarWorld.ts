@@ -3,7 +3,7 @@
 // optional personal key.
 
 import { computed, ref } from "vue";
-import type { UpdateRow, UpdatesProgressEvent, UpdatesView } from "@/types/rift";
+import type { Md5Result, UpdateRow, UpdatesProgressEvent, UpdatesView } from "@/types/rift";
 import { asRiftFailure, rift } from "@/services/rift";
 import { quotaProbe, type NexusQuota } from "@/services/pending";
 import { voice, voicedLine, type Voiced } from "@/services/voice";
@@ -76,7 +76,8 @@ async function unlink(packageId: string): Promise<void> {
   await load();
 }
 
-async function identify(packageIds: string[]): Promise<void> {
+/** Identify by MD5; returns what Nexus said per package ([] on a failure). */
+async function identify(packageIds: string[]): Promise<Md5Result[]> {
   identifying.value = true;
   identifyNote.value = null;
   try {
@@ -88,8 +89,10 @@ async function identify(packageIds: string[]): Promise<void> {
         ? `Nexus recognised ${matched} of ${found.length} by their MD5 and linked them.`
         : `Nexus didn't recognise any of the ${found.length} by MD5 — they may be repacks. Link them by URL instead.`;
     await load();
+    return found;
   } catch (raw) {
     identifyNote.value = voicedLine(voice(asRiftFailure(raw), "nexusCheck"));
+    return [];
   } finally {
     identifying.value = false;
   }

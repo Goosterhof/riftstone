@@ -4,8 +4,8 @@ use rift_archive::SevenZipSource;
 use rift_core::{PackageFormat, PackageSource, RiftError};
 
 use crate::fixtures::{
-    compressible, corrupt_first_pack_tail, end_first_pack_stream_at_once, extract_to, modinfo,
-    paths, sevenz_at, S,
+    assert_refused_at, compressible, corrupt_first_pack_tail, end_first_pack_stream_at_once,
+    extract_racing, extract_to, modinfo, paths, sevenz_at, S,
 };
 
 #[test]
@@ -192,6 +192,10 @@ fn extract_makes_one_pass_per_block_in_archive_order() {
     assert_eq!(done, [1, 2, 3, 4, 5]);
     let last = extracted.progress.last().unwrap();
     assert_eq!(last.bytes_done, last.bytes_total);
+    // Each report names the file it finished, in the order the pass met
+    // them: the empty file first, then each block in archive order.
+    let items: Vec<usize> = extracted.progress.iter().map(|p| p.item).collect();
+    assert_eq!(items, [2, 3, 1, 4, 0]);
 }
 
 #[test]
@@ -215,6 +219,8 @@ fn the_same_entry_twice_is_written_twice_in_one_pass() {
     assert_eq!(fs::read(&dests[0]).unwrap(), b"bbbb");
     assert_eq!(fs::read(&dests[1]).unwrap(), b"bbbb");
     assert_eq!(extracted.progress.len(), 2);
+    let items: Vec<usize> = extracted.progress.iter().map(|p| p.item).collect();
+    assert_eq!(items, [0, 1], "the copy is reported as its own item");
     assert_eq!(source.decode_passes(), 1);
 }
 
@@ -444,4 +450,56 @@ fn a_damaged_7z_says_so_with_its_path() {
         ),
         "{err:?}"
     );
+}
+
+#[test]
+fn a_destination_taken_mid_pass_stops_the_pass_and_is_left_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Vernworth Cloaks Collection.7z");
+    let capes: Vec<(String, Vec<u8>)> = (0..3)
+        .map(|n| {
+            (
+                format!("Cloaks/Cape {n}/natives/stm/cape.mesh"),
+                compressible(40_000 + n, 60 + n as u32),
+            )
+        })
+        .collect();
+    sevenz_at(
+        &path,
+        vec![
+            S::Solid(
+                capes
+                    .iter()
+                    .map(|(n, b)| (n.as_str(), b.as_slice()))
+                    .collect(),
+            ),
+            S::Empty("Cloaks/empty.user"),
+        ],
+    );
+    let mut source = SevenZipSource::open(&path).unwrap();
+    let wanted = [
+        capes[0].0.as_str(),
+        capes[1].0.as_str(),
+        capes[2].0.as_str(),
+    ];
+    // The rival creates the second cape's destination once the first is done.
+    let (result, extracted, dests) = extract_racing(&mut source, dir.path(), &wanted, 1, 1);
+    assert_refused_at(&result, &dests[1]);
+    assert_eq!(fs::read(&dests[0]).unwrap(), capes[0].1);
+    assert!(!dests[2].exists(), "the pass stopped at the refusal");
+    assert_eq!(extracted.progress.len(), 1);
+    assert_eq!(extracted.progress[0].item, 0, "the file it wrote, by name");
+    assert_eq!(source.decode_passes(), 1);
+
+    // An empty file (it has no stream) and the second copy of an entry asked
+    // for twice are created new like any other destination.
+    let cases: [(Vec<&str>, usize); 2] = [
+        (vec!["Cloaks/empty.user"], 0),
+        (vec![capes[2].0.as_str(), capes[2].0.as_str()], 1),
+    ];
+    for (entries, taken) in cases {
+        let out = tempfile::tempdir().unwrap();
+        let (result, _, dests) = extract_racing(&mut source, out.path(), &entries, 0, taken);
+        assert_refused_at(&result, &dests[taken]);
+    }
 }

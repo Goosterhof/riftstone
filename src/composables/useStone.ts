@@ -66,7 +66,7 @@ async function refreshRootCounts(): Promise<void> {
   const backend = await rift();
   const all = await backend.search({
     text: "",
-    filters: { installed: null, rootIds: [], includeMenuOnly: true },
+    filters: { installed: null, rootIds: [], includeMenuOnly: true, categories: [], tags: [] },
     limit: 1_000_000,
   });
   const seen = new Map<string, Set<string>>();

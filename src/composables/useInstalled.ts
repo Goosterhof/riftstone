@@ -2,12 +2,16 @@
 // wins), who overrides whom, REFramework's proof that the paks loaded, strays,
 // and Fluffy's installs waiting to be adopted. Nothing touches disk until the
 // user presses Apply order / Adopt.
+// v0.2: PARKED — files the stone kept aside rather than delete or force back,
+// each with Put back (restore_parked, saying what was swapped out) and Discard
+// (discard_parked, behind a confirm: it is the one act here that loses bytes).
 
 import { computed, ref } from "vue";
 import type { AdoptResultView, InstalledRow, InstalledView, UninstallPlanView } from "@/types/rift";
 import { asRiftFailure, rift } from "@/services/rift";
 import { voice, voicedLine, type Voiced } from "@/services/voice";
 import { useToasts } from "./useToasts";
+import { adoptSummary, parkedRestoreSummary, returnedSummary } from "@/services/ledger";
 import { restoredSentence } from "./useWorld";
 
 export type AdoptStage = "closed" | "plan" | "adopting" | "done";
@@ -21,6 +25,14 @@ const adoptStage = ref<AdoptStage>("closed");
 const adoptResult = ref<AdoptResultView | null>(null);
 const returning = ref<UninstallPlanView | null>(null);
 const returnBusy = ref(false);
+/** The store handle whose Put back / Discard is running. */
+const parkedBusy = ref<string | null>(null);
+/** The store handle waiting on "Discard for good?". */
+const discarding = ref<string | null>(null);
+/** The last Put back's sentence, shown under the list until the next act. */
+const parkedNote = ref<string | null>(null);
+/** Bumped when Preflight's reviewParked asks for the list; the page scrolls to it. */
+const parkedSummons = ref(0);
 
 const order = computed(() => pendingOrder.value ?? view.value?.pakOrder ?? []);
 const orderDirty = computed(() => pendingOrder.value !== null);
@@ -115,9 +127,12 @@ async function confirmReturn(): Promise<void> {
   returnBusy.value = true;
   try {
     const backend = await rift();
-    await backend.uninstall(plan.optionId);
+    const result = await backend.uninstall(plan.optionId);
     returning.value = null;
-    useToasts().push("rift", `${plan.name} has returned to the Rift.${restoredSentence(plan.removals)}`);
+    useToasts().push(
+      "rift",
+      `${plan.name} has returned to the Rift.${restoredSentence(plan.removals)} ${returnedSummary(result)}`,
+    );
     await load();
   } catch (raw) {
     useToasts().push("ember", voicedLine(voice(asRiftFailure(raw), "uninstall")));
@@ -125,6 +140,59 @@ async function confirmReturn(): Promise<void> {
     returnBusy.value = false;
   }
 }
+
+/** A failed Put back / Discard: voiced in its own register (never the
+ *  uninstall's), the list read again so a stale row cannot linger, and the
+ *  confirm closed. */
+async function parkedFailed(raw: unknown, store: string, act: "putBack" | "discard"): Promise<void> {
+  const failure = asRiftFailure(raw);
+  const gamePath = view.value?.parked.find((f) => f.store === store)?.gamePath ?? "";
+  const voiced = voice({ kind: failure.kind, detail: { ...failure.detail, gamePath, act } }, "parked");
+  discarding.value = null;
+  parkedNote.value = voicedLine(voiced);
+  useToasts().push("ember", parkedNote.value);
+  await load();
+}
+
+async function putBack(store: string): Promise<void> {
+  parkedBusy.value = store;
+  discarding.value = null;
+  try {
+    const backend = await rift();
+    const report = await backend.restoreParked(store);
+    parkedNote.value = parkedRestoreSummary(report);
+    useToasts().push(report.restored ? "world" : "ember", parkedNote.value);
+    await load();
+  } catch (raw) {
+    await parkedFailed(raw, store, "putBack");
+  } finally {
+    parkedBusy.value = null;
+  }
+}
+
+async function discard(store: string): Promise<void> {
+  if (discarding.value !== store) {
+    discarding.value = store;
+    return;
+  }
+  const file = view.value?.parked.find((f) => f.store === store);
+  parkedBusy.value = store;
+  try {
+    const backend = await rift();
+    await backend.discardParked(store);
+    discarding.value = null;
+    parkedNote.value = `The kept copy of ${file?.gamePath ?? "that file"} is gone for good. Your game folder was not touched.`;
+    useToasts().push("rift", parkedNote.value);
+    await load();
+  } catch (raw) {
+    await parkedFailed(raw, store, "discard");
+  } finally {
+    parkedBusy.value = null;
+  }
+}
+
+/** One line for the adoption's "done" state. */
+const adoptLine = computed(() => (adoptResult.value ? adoptSummary(adoptResult.value) : ""));
 
 export function useInstalled() {
   return {
@@ -151,6 +219,17 @@ export function useInstalled() {
     planReturn,
     cancelReturn: () => (returning.value = null),
     confirmReturn,
+    parkedBusy,
+    discarding,
+    parkedNote,
+    parkedSummons,
+    adoptLine,
+    putBack,
+    discard,
+    keepParked: () => (discarding.value = null),
+    summonParked: () => (parkedSummons.value += 1),
+    /** The page took the summons: the next ordinary visit is not pulled down. */
+    consumeParkedSummons: () => (parkedSummons.value = 0),
   };
 }
 
@@ -164,4 +243,8 @@ export function resetInstalled(): void {
   adoptResult.value = null;
   returning.value = null;
   returnBusy.value = false;
+  parkedBusy.value = null;
+  discarding.value = null;
+  parkedNote.value = null;
+  parkedSummons.value = 0;
 }

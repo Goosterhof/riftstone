@@ -184,7 +184,9 @@ impl NexusClient {
         self.throttle().quota.clone()
     }
 
-    /// Look mods up: name, mod-level version, last update, status. Batched
+    /// Look mods up: name, mod-level version, last update, status, and the
+    /// labels (category, tags, the adult flag), which come in the same answer
+    /// and add no request. Batched
     /// [`MODS_PER_REQUEST`] ids per POST; duplicates and ids Nexus cannot hold
     /// (0, above `i32::MAX`) are dropped first. The answer is in request order
     /// and leaves out mods Nexus does not know. An answer that carries any

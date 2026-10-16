@@ -1,5 +1,5 @@
 //! Your world: plan, install, uninstall, the load order, Fluffy's installs,
-//! REFramework's switches, the game folder.
+//! REFramework's switches, the game folder, and the files kept aside (v0.2).
 //!
 //! Every write goes through rift-deploy's engine under the write-ahead
 //! journal; the spine only picks the option, opens the package, and tells
@@ -14,7 +14,8 @@ use crate::commands::{blocking, not_found, Spine};
 use crate::dto::{
     path_text, AdoptResultView, BuildChanged, FluffyModView, GameSummary, InstallPlanView,
     InstallProgressEvent, InstallResultView, InstalledRow, InstalledView, MissingFile,
-    PakLoadReport, PakView, StrayFile, SwitchKey, UninstallPlanView, UninstallResultView,
+    PakLoadReport, PakView, ParkedFileView, ParkedRestoreReport, StrayFile, SwitchKey,
+    UninstallPlanView, UninstallResultView,
 };
 use crate::events;
 use crate::library::match_fluffy;
@@ -186,7 +187,33 @@ pub fn get_installed_impl(state: &AppState) -> Result<InstalledView, RiftError> 
             .collect(),
         pak_load: game_state.pak_load.as_ref().map(PakLoadReport::from),
         pak_count_warning: game_state.pak_count_warning,
+        parked: game_state.parked.iter().map(ParkedFileView::from).collect(),
     })
+}
+
+/// Put a file kept aside back in the game folder (`store` is its handle,
+/// as `InstalledView.parked` lists it). Whatever sits at its path now is
+/// kept aside in its turn (`swappedOut`), so the swap can be undone the same
+/// way. Refused while an install or an un-adopted Fluffy mod owns the file
+/// there, and for a handle the list no longer holds. A running game does not
+/// stop it: the file loads at the next launch (`restartNeeded`), and one the
+/// game holds open fails to move and is rolled back. One journaled change
+/// under the deploy lock, rolled back on failure; `rift://game-changed` after.
+pub fn restore_parked_impl(
+    state: &AppState,
+    store: &str,
+) -> Result<ParkedRestoreReport, RiftError> {
+    let report = state.deploy(|ctx, journal| rift_deploy::restore_parked(ctx, journal, store))?;
+    state.events.changed(events::GAME_CHANGED);
+    Ok((&report).into())
+}
+
+/// Delete a file kept aside from the backup store for good. The game folder
+/// is not touched; `rift://game-changed` after (the record changed).
+pub fn discard_parked_impl(state: &AppState, store: &str) -> Result<(), RiftError> {
+    state.deploy(|ctx, journal| rift_deploy::discard_parked(ctx, journal, store))?;
+    state.events.changed(events::GAME_CHANGED);
+    Ok(())
 }
 
 /// The file name without its extension (`Lantern Glow.zip` → `Lantern Glow`).
@@ -335,6 +362,19 @@ pub async fn set_reframework_switch(
 #[tauri::command]
 pub async fn set_game_root(state: Spine<'_>, path: String) -> Result<GameSummary, RiftError> {
     blocking(&state, move |state| set_game_root_impl(state, &path)).await
+}
+
+#[tauri::command]
+pub async fn restore_parked(
+    state: Spine<'_>,
+    store: String,
+) -> Result<ParkedRestoreReport, RiftError> {
+    blocking(&state, move |state| restore_parked_impl(state, &store)).await
+}
+
+#[tauri::command]
+pub async fn discard_parked(state: Spine<'_>, store: String) -> Result<(), RiftError> {
+    blocking(&state, move |state| discard_parked_impl(state, &store)).await
 }
 
 #[cfg(test)]

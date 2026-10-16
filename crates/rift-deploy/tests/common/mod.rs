@@ -268,6 +268,7 @@ impl PackageSource for FakeSource {
                 files_total: items.len(),
                 bytes_done,
                 bytes_total,
+                item: n,
             });
         }
         if let Some(hook) = self.after.as_mut() {

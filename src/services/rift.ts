@@ -14,7 +14,9 @@ import type {
   InstalledView,
   LibraryRoot,
   Md5Result,
+  LabelFacets,
   NexusQuota,
+  ParkedRestoreReport,
   NexusSummary,
   OptionDetail,
   Overview,
@@ -120,6 +122,12 @@ export interface RiftBackend {
   troubledPackages(): Promise<PackageSummary[]>;
   /** The Nexus v1 request budget, when a key is set and a v1 call has run. */
   nexusQuota(): Promise<NexusQuota | null>;
+  /** v0.2: the Nexus categories and tags the library carries, with option counts. */
+  getLabels(): Promise<LabelFacets>;
+  /** v0.2: put a parked file back in the game folder. */
+  restoreParked(store: string): Promise<ParkedRestoreReport>;
+  /** v0.2: delete a parked file from the backup store for good. */
+  discardParked(store: string): Promise<void>;
   /** Subscribe to a backend event; resolves to an unsubscribe function. */
   on<T>(event: RiftEvent, handler: (payload: T) => void): Promise<() => void>;
   openUrl(url: string): Promise<void>;
@@ -170,6 +178,9 @@ async function tauriBackend(): Promise<RiftBackend> {
     setSettings: (settings) => invoke("set_settings", { settings }),
     troubledPackages: () => invoke("get_troubled_packages"),
     nexusQuota: () => invoke("get_nexus_quota"),
+    getLabels: () => invoke("get_labels"),
+    restoreParked: (store) => invoke("restore_parked", { store }),
+    discardParked: (store) => invoke("discard_parked", { store }),
     on: async (event, handler) => {
       const unlisten = await listen(event, (e) => {
         handler(e.payload as never);

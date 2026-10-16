@@ -445,6 +445,7 @@ fn recover_rolls_back_an_intent_whose_files_were_all_in_place() {
                     _ => None,
                 },
                 fingerprint: f.fingerprint.clone(),
+                unextracted: false,
             })
             .collect(),
         phase: 0,

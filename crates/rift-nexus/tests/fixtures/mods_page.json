@@ -8,21 +8,30 @@
           "name": "Vernworth Cloaks Collection",
           "version": "1",
           "updatedAt": "2026-10-14T14:23:50Z",
-          "status": "published"
+          "status": "published",
+          "category": "Armour",
+          "tags": [{ "name": "Cloaks" }, { "name": "Lore-Friendly" }],
+          "adultContent": true
         },
         {
           "modId": 4242,
           "name": "Lantern Glow Recolor",
           "version": "2.1",
           "updatedAt": "2026-09-30T08:01:02Z",
-          "status": "published"
+          "status": "published",
+          "category": "Visuals",
+          "tags": [],
+          "adultContent": false
         },
         {
           "modId": 6006,
           "name": "Bakbattahl Banner Pack",
           "version": "",
           "updatedAt": "2026-08-01T00:00:00Z",
-          "status": "hidden"
+          "status": "hidden",
+          "category": "Miscellaneous",
+          "tags": [{ "name": "Utilities for Players" }],
+          "adultContent": null
         }
       ]
     }

@@ -142,7 +142,7 @@ impl PackageSource for ZipSource {
     ) -> Result<(), RiftError> {
         let positions = self.index.resolve(&self.path, items)?;
         let mut tally = Tally::new(progress, items.len(), self.index.total_size(&positions));
-        for (item, position) in items.iter().zip(positions) {
+        for (at, (item, position)) in items.iter().zip(positions).enumerate() {
             let found = self.index.get(position);
             let (number, name) = (found.locator, found.path.as_str());
             let mut file = self
@@ -153,7 +153,7 @@ impl PackageSource for ZipSource {
             let written = write_from_reader(&item.dest, name, &mut file, &|err| {
                 fail::entry_read(package, name, err)
             })?;
-            tally.file_done(written);
+            tally.file_done(at, written);
         }
         Ok(())
     }

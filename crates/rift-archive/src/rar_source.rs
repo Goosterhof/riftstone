@@ -489,7 +489,7 @@ impl PackageSource for RarSource {
             let mut out = DestWriter::create(dest, entry)?;
             let streamed = archive.stream(&mut |chunk| out.push(chunk));
             match streamed {
-                Ok(Streamed::Complete) => tally.file_done(out.finish()?),
+                Ok(Streamed::Complete) => tally.file_done(first, out.finish()?),
                 Ok(Streamed::Stopped) => {
                     // This sink stops only when a write failed: finish()
                     // reports that error and removes the partial file.
@@ -504,7 +504,10 @@ impl PackageSource for RarSource {
                 }
             }
             for &item in &requested[1..] {
-                tally.file_done(duplicate(dest, &items[item].dest, names[item].as_str())?);
+                tally.file_done(
+                    item,
+                    duplicate(dest, &items[item].dest, names[item].as_str())?,
+                );
             }
             Ok(Flow::Continue)
         })?;

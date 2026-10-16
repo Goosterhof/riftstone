@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // §7.1 — the stone. Search, facets, nav and the game's state are carved into
-// one basalt pillar; its right edge is THE SEAM, where rift-light leaks out.
+// one basalt pillar (v0.2: the NEXUS labels join the facets, below STATE); its right edge is THE SEAM, where rift-light leaks out.
 // THE SEAM ANSWERS (§11.1) lives here and nowhere else: the flare is a CSS
 // animation keyed on each answered query, the rest states are PLACES (rest
 // 18%, answered 60%, silent 8%) so the reduced-motion clamp lands on them.
@@ -10,13 +10,25 @@ import { useStone } from "@/composables/useStone";
 import { useNavigation, type Page } from "@/composables/useNavigation";
 import { useFarWorld } from "@/composables/useFarWorld";
 import RiftSearchWell from "./RiftSearchWell.vue";
+import FarWorldLabels from "./FarWorldLabels.vue";
+import { useLabels } from "@/composables/useLabels";
 
 const search = useSearch();
 const stone = useStone();
 const nav = useNavigation();
 const farWorld = useFarWorld();
 
+const labels = useLabels();
+
 const emit = defineEmits<{ descend: []; submit: [] }>();
+
+/** Bring the NEXUS LABELS group into view and hand it the keyboard. */
+function toLabels(): void {
+  const group = document.getElementById("nexus-labels");
+  const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  group?.scrollIntoView?.({ block: "start", behavior: reduce ? "auto" : "smooth" });
+  group?.querySelector<HTMLElement>(".lchip")?.focus({ preventScroll: true });
+}
 
 const well = ref<InstanceType<typeof RiftSearchWell> | null>(null);
 const seamTop = ref(118);
@@ -105,6 +117,15 @@ defineExpose({ focusSearch: () => well.value?.focus() });
     <p class="pillar__count" :class="{ 'is-zero': search.seam.value === 'silent' }" aria-live="polite">
       {{ carvedCount }}
     </p>
+    <!-- v0.2: at the narrow posture the NEXUS LABELS group sits below the
+         facet block's fold; the chosen labels are carved here too, and a
+         door brings the group into view. -->
+    <p v-if="search.labelReading.value" class="pillar__labels rs-mono">
+      <span class="pillar__labeltext">{{ search.labelReading.value }}</span>
+    </p>
+    <button v-else-if="labels.carved.value" type="button" class="pillar__tolabels" @click="toLabels">
+      Nexus labels ↓
+    </button>
 
     <div class="pillar__facets" :class="{ 'is-dark': !awake }" :inert="!awake">
       <h2 class="pillar__head rs-inscription">LIBRARY ROOTS</h2>
@@ -138,6 +159,8 @@ defineExpose({ focusSearch: () => well.value?.focus() });
         />
         <span class="facet__label">Show menu-only</span>
       </label>
+
+      <FarWorldLabels />
     </div>
 
     <nav class="pillar__nav" :class="{ 'is-dark': !awake }" :inert="!awake" aria-label="Rooms">
@@ -239,6 +262,46 @@ defineExpose({ focusSearch: () => well.value?.focus() });
 }
 .pillar__count.is-zero {
   color: var(--rs-faint);
+}
+.pillar__labels {
+  flex: none;
+  margin: 4px 0 0;
+  padding-left: var(--rs-space-2);
+  border-left: 2px solid var(--rs-rift);
+  color: var(--rs-rift);
+  font-size: var(--rs-text-xs);
+  line-height: 1.4;
+}
+.pillar__labeltext {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+/* only where the group falls below the fold: the short window */
+.pillar__tolabels {
+  display: none;
+  flex: none;
+  align-self: flex-start;
+  min-height: 24px;
+  margin: 2px 0 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--rs-muted);
+  font: 400 var(--rs-text-xs) var(--rs-font-mono);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.pillar__tolabels:focus-visible {
+  outline: 2px solid var(--rs-rift);
+  outline-offset: 2px;
+}
+@media (max-height: 900px) {
+  .pillar__tolabels {
+    display: block;
+  }
 }
 /* the one internal scroll region of the stone (§8.0) */
 .pillar__facets {

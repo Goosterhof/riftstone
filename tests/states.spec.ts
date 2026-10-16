@@ -81,7 +81,9 @@ describe("the voiced states (§9)", () => {
     const latest = [...document.querySelectorAll(".far__table tbody tr td:nth-child(3)")].map((td) =>
       textOf(td).trim(),
     );
-    expect(latest).toStrictEqual(["v2.2", "current"]);
+    // v0.2's mock links four packages (the wardrobe and the chatter filter
+    // joined, so the NEXUS facets have labels to carve), in library order.
+    expect(latest).toStrictEqual(["current", "v2.2", "current", "current"]);
     expect(text()).not.toContain("last check failed");
   });
 

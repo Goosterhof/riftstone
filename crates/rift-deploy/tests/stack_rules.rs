@@ -4,6 +4,7 @@
 mod common;
 
 use common::{assert_no_temporaries, fluffy_mod, journal_text, Bench, TestMod};
+use rift_core::RiftError;
 use rift_deploy::{
     discard_parked, plan_install, plan_uninstall, preflight, read_game_state, restore_parked,
     uninstall, Below, BelowOwner, CheckAction, CheckLevel, FluffyLedger, OwnerKind, RemovalAction,
@@ -499,6 +500,24 @@ fn a_kept_file_never_goes_back_over_an_install_or_a_fluffy_file() {
     // An unknown handle is refused plainly.
     assert!(restore_parked(&ctx, &mut journal, "backups/1/nothing").is_err());
     assert!(discard_parked(&ctx, &mut journal, "backups/1/nothing").is_err());
+
+    // The handle the window still holds is out of date now (the file went
+    // back). The refusal names the game path, never the store's inner path,
+    // and sends the player to the list the window reads again.
+    let before = bench.snapshot();
+    for stale in [
+        restore_parked(&ctx, &mut journal, &store).unwrap_err(),
+        discard_parked(&ctx, &mut journal, &store).unwrap_err(),
+    ] {
+        let RiftError::Refused { reason } = &stale else {
+            panic!("a stale handle is a refusal: {stale:?}");
+        };
+        assert!(reason.contains("natives/stm/glow.mesh"), "{reason}");
+        assert!(!reason.contains("backups/"), "{reason}");
+        assert!(reason.contains("PARKED"), "{reason}");
+        assert!(!reason.contains("Reload the game state"), "{reason}");
+    }
+    assert_eq!(bench.snapshot(), before, "nothing moved");
 }
 
 /// An original under A, B and C, the top file edited by the player, then

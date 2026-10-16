@@ -1,12 +1,13 @@
-// The two switches the user owns (veil, auto-check). Persisted by the spine.
+// The two choices the user owns (the veil: off / adult / all, and the
+// auto-check). Persisted by the spine, which reads v0.1's veilThumbnails.
 
 import { ref } from "vue";
-import type { Settings } from "@/types/rift";
+import type { Settings, VeilMode } from "@/types/rift";
 import { asRiftFailure, rift } from "@/services/rift";
 import { voice, voicedLine } from "@/services/voice";
 import { useToasts } from "./useToasts";
 
-const settings = ref<Settings>({ veilThumbnails: false, autoCheckUpdates: true });
+const settings = ref<Settings>({ veil: "off", autoCheckUpdates: true });
 
 async function loadSettings(): Promise<void> {
   const backend = await rift();
@@ -29,11 +30,11 @@ export function useSettings() {
   return {
     settings,
     loadSettings,
-    setVeil: (on: boolean) => saveSettings({ ...settings.value, veilThumbnails: on }),
+    setVeil: (veil: VeilMode) => saveSettings({ ...settings.value, veil }),
     setAutoCheck: (on: boolean) => saveSettings({ ...settings.value, autoCheckUpdates: on }),
   };
 }
 
 export function resetSettings(): void {
-  settings.value = { veilThumbnails: false, autoCheckUpdates: true };
+  settings.value = { veil: "off", autoCheckUpdates: true };
 }

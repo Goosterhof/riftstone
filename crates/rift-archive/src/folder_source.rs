@@ -125,7 +125,7 @@ impl PackageSource for FolderSource {
     ) -> Result<(), RiftError> {
         let positions = self.index.resolve(&self.root, items)?;
         let mut tally = Tally::new(progress, items.len(), self.index.total_size(&positions));
-        for (item, position) in items.iter().zip(positions) {
+        for (at, (item, position)) in items.iter().zip(positions).enumerate() {
             let found = self.index.get(position);
             let on_disk = found.locator.as_path();
             let mut file =
@@ -133,7 +133,7 @@ impl PackageSource for FolderSource {
             let written = write_from_reader(&item.dest, &found.path, &mut file, &|err| {
                 RiftError::unreadable(on_disk, err)
             })?;
-            tally.file_done(written);
+            tally.file_done(at, written);
         }
         Ok(())
     }

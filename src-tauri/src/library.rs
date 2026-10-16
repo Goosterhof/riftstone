@@ -4,7 +4,8 @@
 //!   [`Catalog`] the last scan built, or, before the first scan of a launch has
 //!   finished, the same library rebuilt from the catalog cache without opening
 //!   a single archive (`Catalog::from_cache` — the window shows it at once,
-//!   startup step 4).
+//!   startup step 4). Its index carries the Nexus labels (v0.2), set apart
+//!   from the rest: a check relabels the shelf without rebuilding it.
 //! - [`SourcePool`] — a few packages kept open between reads (thumbnails,
 //!   pak heads), so an archive's listing and headers are read once, not per
 //!   card. Of a solid 7z or a RAR, rift-archive keeps the small same-named
@@ -13,22 +14,26 @@
 //!   its block again on every read. Idle packages are closed by a timer.
 //! - [`match_fluffy`] — which library option a Fluffy install is.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
-use rift_catalog::{Catalog, CatalogCache, SearchHit, SearchQuery};
+use rift_catalog::{Catalog, CatalogCache, LabelFacets, PackageLabels, SearchHit, SearchQuery};
 use rift_core::{
     ArchiveEntry, LibraryRoot, ModOption, OptionId, Package, PackageFormat, PackageId,
     PackageSource, RiftError,
 };
 use rift_deploy::FluffyMod;
 
-/// What the window searches and browses: one catalog, swapped whole.
-#[derive(Default)]
+/// What the window searches and browses: one catalog, swapped whole — or,
+/// for new Nexus labels alone, relabeled in place ([`Shelf::set_labels`]).
+#[derive(Default, Clone)]
 pub struct Shelf {
     catalog: Catalog,
+    /// The labels last handed to the catalog, as given.
+    labels: HashMap<PackageId, PackageLabels>,
 }
 
 impl Shelf {
@@ -37,17 +42,52 @@ impl Shelf {
         Shelf::default()
     }
 
-    /// A catalog a scan just built.
+    /// A catalog a scan just built (no labels yet: [`Shelf::with_labels`]).
     pub fn scanned(catalog: Catalog) -> Shelf {
-        Shelf { catalog }
+        Shelf {
+            catalog,
+            labels: HashMap::new(),
+        }
     }
 
     /// The library as the last scan left it, for these roots, without
-    /// touching the disk.
+    /// touching the disk (no labels yet: [`Shelf::with_labels`]).
     pub fn from_cache(roots: &[LibraryRoot], cache: &CatalogCache) -> Shelf {
-        Shelf {
-            catalog: Catalog::from_cache(roots, cache),
+        Shelf::scanned(Catalog::from_cache(roots, cache))
+    }
+
+    /// This shelf with these labels ([`Shelf::set_labels`]).
+    pub fn with_labels(mut self, labels: HashMap<PackageId, PackageLabels>) -> Shelf {
+        self.set_labels(labels);
+        self
+    }
+
+    /// Give each package the labels of its Nexus mod (v0.2), replacing the
+    /// last ones; a package left out has none. Only the index's label layer is
+    /// rebuilt (under a millisecond at 10k options).
+    pub fn set_labels(&mut self, labels: HashMap<PackageId, PackageLabels>) {
+        if self.labels == labels {
+            return;
         }
+        self.catalog.set_labels(labels.clone());
+        self.labels = labels;
+    }
+
+    /// Are these the labels the shelf carries already?
+    pub fn carries_labels(&self, labels: &HashMap<PackageId, PackageLabels>) -> bool {
+        &self.labels == labels
+    }
+
+    /// A package's labels as the index holds them (tidied): `None` when it
+    /// has none (unlinked, or no check has heard of its mod).
+    pub fn labels(&self, id: &PackageId) -> Option<&PackageLabels> {
+        self.catalog.labels(id)
+    }
+
+    /// Every category and tag with its installable-option count, and how
+    /// many packages a label filter hides.
+    pub fn label_facets(&self) -> LabelFacets {
+        self.catalog.label_facets()
     }
 
     pub fn packages(&self) -> &[Package] {

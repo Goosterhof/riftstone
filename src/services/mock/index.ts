@@ -3,9 +3,33 @@
 // page's query string: ?mock=empty | nogame | scanning | refoff | patched |
 // offline | fresh | key | quotalow (comma-separated to combine). `quotalow`
 // implies `key`: the quota is the v1 budget, and only a keyed window has one.
+//
+// v0.2: the Nexus labels (./library.ts MOCK_LABELS) are served only once an
+// update check has run, so `?mock=fresh` is the first launch before any check:
+// no labels, the NEXUS facet group collapsed to its one quiet line. The MD5
+// identify recognises one package (MOCK_MD5_MATCH), and fails under `offline`
+// like the spine's lookup. Five packages stay unlinked, three of them with a
+// screenshot (Brine Water Clarity, Sacred Arbor Fog Removal, Old Road Armor
+// Pack): the "adult" veil blurs them as unknown until they are linked and
+// checked, beside Battahli Sun Bleach, the one mod Nexus flags adult. Every
+// backend reads its own copy of the library. Two parked files wait in
+// the backup store under the spine's own handle shape, `backups/<seq>/<gamePath>`:
+// over the first an unowned file sits now (Put back swaps it out), over the
+// second Pawn Chatter Filter's install sits (Put back is refused in the
+// engine's words until it is uninstalled). An unknown handle is refused the
+// way the spine refuses it. Uninstalling Sacred Arbor Fog Removal parks its
+// changed pak and Ermine Cape - Variation 2 leaves one changed file in place,
+// so THE RETURN's "kept aside" and "left in place" sentences render. One
+// installed file is already gone from the game (the "already gone" plan row),
+// and one hash conflict is unconfirmed. No new scenario was needed.
 
 import type {
   AdoptResultView,
+  LabelCount,
+  LabelFacets,
+  NexusLabels,
+  ParkedFileView,
+  ParkedRestoreReport,
   Check,
   ConflictView,
   GameSummary,
@@ -23,6 +47,7 @@ import type {
   PackageDetail,
   PakView,
   PlannedRemoval,
+  RemovalAction,
   PlannedWrite,
   PlanWarning,
   SearchQuery,
@@ -39,7 +64,15 @@ import { EVENTS } from "@/types/rift";
 import { RiftFailure, type RiftBackend, type RiftEvent } from "../rift";
 import type { NexusQuota, PendingBackend } from "../pending";
 import { TROUBLE_KINDS } from "../voice";
-import { MOCK_DAY, MOCK_NOW, MOCK_PACKAGES, MOCK_ROOTS, type MockPackage } from "./library";
+import {
+  MOCK_DAY,
+  MOCK_LABELS,
+  MOCK_MD5_MATCH,
+  MOCK_NOW,
+  MOCK_PACKAGES,
+  MOCK_ROOTS,
+  type MockPackage,
+} from "./library";
 
 type Listener = (payload: unknown) => void;
 
@@ -57,6 +90,10 @@ function scenarios(): Set<string> {
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const notFound = (entry: string) => new RiftFailure({ kind: "entryNotFound", detail: { entry } });
+const refusedWith = (reason: string) => new RiftFailure({ kind: "refused", detail: { reason } });
+/** rift-deploy engine.rs restore_parked / discard_parked, word for word. */
+const nothingKept = (store: string) =>
+  refusedWith(`Nothing is kept aside under ${store}. Reload the game state and try again.`);
 const nexusFailure = (detail: string) => new RiftFailure({ kind: "nexus", detail: { detail } });
 
 interface InstallRecord {
@@ -73,9 +110,12 @@ export function createMockBackend(): RiftBackend {
     for (const l of listeners.get(event) ?? []) l(payload);
   };
 
-  let packages: MockPackage[] = scene.has("empty") ? [] : MOCK_PACKAGES;
+  // Each backend reads its own copy: a link, an unlink or an MD5 identify
+  // writes into package summaries, and must never leak into the next backend
+  // (the next spec, the next scenario).
+  let packages: MockPackage[] = scene.has("empty") ? [] : structuredClone(MOCK_PACKAGES);
   let roots: LibraryRoot[] = [...MOCK_ROOTS];
-  let settings: Settings = { veilThumbnails: false, autoCheckUpdates: true };
+  let settings: Settings = { veil: "off", autoCheckUpdates: true };
   let gameRoot: string | null = scene.has("nogame")
     ? null
     : "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Dragons Dogma 2";
@@ -109,6 +149,57 @@ export function createMockBackend(): RiftBackend {
   }
   // Fluffy installed "Ox Cart Express" and nobody adopted it yet.
   let fluffyUnadopted = scene.has("empty") ? [] : ["Ox Cart Express"];
+  // An installed file someone deleted by hand: the plan says "already gone".
+  const gonePaths = new Set<string>();
+  const ermine = optionByName("Ermine Cape - Variation 2");
+  const ermineFirst = ermine?.payload.find((p) => p.target.kind !== "pak");
+  if (!scene.has("empty") && ermineFirst && ermineFirst.target.kind !== "pak")
+    gonePaths.add(ermineFirst.target.gamePath);
+
+  // Ermine's second loose file was edited by hand since install: kept on uninstall.
+  const changedPaths = new Set<string>();
+  const ermineSecond = ermine?.payload.filter((p) => p.target.kind !== "pak").at(1);
+  if (!scene.has("empty") && ermineSecond && ermineSecond.target.kind !== "pak")
+    changedPaths.add(ermineSecond.target.gamePath);
+
+  type PayloadTarget = NonNullable<typeof ermineFirst>["target"];
+  function removalAction(target: PayloadTarget): RemovalAction {
+    if (target.kind === "pak") return { kind: "delete" };
+    if (gonePaths.has(target.gamePath)) return { kind: "alreadyGone" };
+    if (changedPaths.has(target.gamePath)) return { kind: "keepChanged" };
+    return { kind: "delete" };
+  }
+
+  // The backup store: files kept aside rather than deleted or forced back.
+  let parkSeq = 40;
+  const parkStore = (gamePath: string) => `backups/${++parkSeq}/${gamePath}`;
+  /** The install that sits over a parked file's path, by game path. */
+  const heldBy = new Map<string, string>([["reframework/autorun/pawn_banter.lua", "Pawn Chatter Filter"]]);
+  let parked: ParkedFileView[] = scene.has("empty")
+    ? []
+    : [
+        {
+          store: "backups/17/natives/stm/environment/sky/sky_noon.tex.251211553",
+          gamePath: "natives/stm/environment/sky/sky_noon.tex.251211553",
+          owner: "the file that was there before",
+          ownerKind: "unowned",
+          size: 2_621_440,
+          parkedAt: new Date(MOCK_NOW - 4 * MOCK_DAY).toISOString(),
+          reason: "Brine Water Clarity's install would have overwritten it, so it was kept aside first.",
+          occupied: true,
+        },
+        {
+          store: "backups/21/reframework/autorun/pawn_banter.lua",
+          gamePath: "reframework/autorun/pawn_banter.lua",
+          owner: "Pawn Banter Quieter (Fluffy)",
+          ownerKind: "fluffy",
+          size: 4_096,
+          parkedAt: new Date(MOCK_NOW - 2 * MOCK_DAY).toISOString(),
+          reason: "Pawn Chatter Filter's install would have overwritten it, so it was kept aside first.",
+          occupied: true,
+        },
+      ];
+
   let pakOrder = installs.filter((r) => findOption(r.optionId)?.option.kinds.pak).map((r) => r.optionId);
 
   function findOption(optionId: string) {
@@ -136,6 +227,8 @@ export function createMockBackend(): RiftBackend {
         { optionId: winner.id, name: winner.name },
       ],
       winner: { optionId: winner.id, name: winner.name },
+      // the third pak entry carries table flags rift-pak does not know
+      unconfirmed: i === 2,
     }));
   }
   const conflicted = (optionId: string) => conflicts().some((c) => c.layers.some((l) => l.optionId === optionId));
@@ -172,6 +265,42 @@ export function createMockBackend(): RiftBackend {
       };
     }
     return { ...base, state: { kind: "current" } };
+  }
+
+  /** What Nexus said about the package's mod at the last check; null before one. */
+  function labelsOf(pkg: MockPackage): NexusLabels | null {
+    const link = pkg.summary.nexus;
+    if (!link || lastCheckMs === null) return null;
+    return MOCK_LABELS[link.modId] ?? null;
+  }
+
+  function labelFacets(): LabelFacets {
+    const categories = new Map<string, LabelCount>();
+    const tagCounts = new Map<string, LabelCount>();
+    let unlabeledPackages = 0;
+    const bump = (map: Map<string, LabelCount>, name: string, n: number) => {
+      const key = name.toLowerCase();
+      const entry = map.get(key) ?? { name, options: 0 };
+      entry.options += n;
+      map.set(key, entry);
+    };
+    for (const pkg of packages) {
+      const installable = pkg.options.filter((o) => !o.menuOnly).length;
+      if (!installable) continue;
+      const labels = labelsOf(pkg);
+      if (!labels) {
+        unlabeledPackages += 1;
+        continue;
+      }
+      if (labels.category) bump(categories, labels.category, installable);
+      for (const tag of labels.tags) bump(tagCounts, tag, installable);
+    }
+    const order = (a: LabelCount, b: LabelCount) => b.options - a.options || a.name.localeCompare(b.name);
+    return {
+      categories: [...categories.values()].sort(order),
+      tags: [...tagCounts.values()].sort(order),
+      unlabeledPackages,
+    };
   }
 
   function updatesView(): UpdatesView {
@@ -287,6 +416,15 @@ export function createMockBackend(): RiftBackend {
         action: { kind: "adoptFluffy" },
       });
     }
+    if (parked.length) {
+      list.push({
+        id: "parkedBackups",
+        level: "info",
+        title: `${parked.length} ${parked.length === 1 ? "file is" : "files are"} kept aside in the backup store`,
+        detail: "The stone parked them rather than delete them or force them back. Put each back or discard it.",
+        action: { kind: "reviewParked" },
+      });
+    }
     list.push({
       id: "crashreporter",
       level: "info",
@@ -353,6 +491,7 @@ export function createMockBackend(): RiftBackend {
     version: 2,
     description: 2,
     file: 1,
+    nexusLabel: 4,
   };
 
   /** Quoted phrases stay whole; everything else splits on whitespace. */
@@ -428,6 +567,13 @@ export function createMockBackend(): RiftBackend {
     if (query.filters.rootIds.length && !query.filters.rootIds.includes(pkg.summary.rootId)) return false;
     if (o.menuOnly && !query.filters.includeMenuOnly) return false;
     const installedAnywhere = isInstalled(o.id) || fluffyUnadopted.includes(o.name);
+    const wanted = (list: string[]) => list.map((x) => x.toLowerCase());
+    const labels = labelsOf(pkg);
+    const categories = wanted(query.filters.categories);
+    if (categories.length && !categories.includes(labels?.category?.toLowerCase() ?? "")) return false;
+    const tags = wanted(query.filters.tags);
+    const carried = wanted(labels?.tags ?? []);
+    if (tags.length && !tags.every((t) => carried.includes(t))) return false;
     if (query.filters.installed === true) return installedAnywhere;
     if (query.filters.installed === false) return !installedAnywhere;
     return true;
@@ -443,6 +589,7 @@ export function createMockBackend(): RiftBackend {
       ["author", o.info?.author ?? ""],
       ["version", o.info?.version ?? ""],
       ["description", o.info?.description ?? ""],
+      ["nexusLabel", nexusLabelText(labelsOf(pkg))],
     ];
     const paths = [...o.payload.map((x) => x.entry), ...o.skipped.map((x) => x.entry)];
     let score = 0;
@@ -478,7 +625,15 @@ export function createMockBackend(): RiftBackend {
       installed: installBadge(o.id, o.name),
       update: updateBadge(pkg),
       conflicted: conflicted(o.id),
+      nexusCategory: labelsOf(pkg)?.category ?? null,
+      nexusTags: labelsOf(pkg)?.tags ?? [],
+      adult: labelsOf(pkg)?.adult ?? false,
     };
+  }
+
+  function nexusLabelText(labels: NexusLabels | null): string {
+    if (!labels) return "";
+    return [labels.category ?? "", ...labels.tags].filter(Boolean).join(" › ");
   }
 
   function search(query: SearchQuery): SearchResult[] {
@@ -681,6 +836,7 @@ export function createMockBackend(): RiftBackend {
         fluffyInstalled: fluffyUnadopted.includes(option.name),
         conflicts: conflicts().filter((c) => c.layers.some((l) => l.optionId === optionId)),
         update: updateRow(pkg),
+        labels: labelsOf(pkg),
       };
       return detail;
     },
@@ -769,7 +925,7 @@ export function createMockBackend(): RiftBackend {
             ? `pak_mods/zrift-${String(pakOrder.indexOf(optionId)).padStart(4, "0")}-${p.target.fileName}`
             : p.target.gamePath,
         kind: p.target.kind,
-        action: { kind: "delete" },
+        action: removalAction(p.target),
       }));
       const plan: UninstallPlanView = {
         optionId,
@@ -782,15 +938,48 @@ export function createMockBackend(): RiftBackend {
     async uninstall(optionId) {
       await wait(300);
       const found = findOption(optionId);
+      const name = found?.option.name ?? "";
+      const pakSlot = String(pakOrder.indexOf(optionId)).padStart(4, "0");
       const at = installs.findIndex((r) => r.optionId === optionId);
       if (at >= 0) installs.splice(at, 1);
       pakOrder = pakOrder.filter((id) => id !== optionId);
+      const payload = found?.option.payload ?? [];
+      const kinds = payload.map((p) => removalAction(p.target).kind);
+      for (const p of payload) {
+        if (p.target.kind === "pak") continue;
+        gonePaths.delete(p.target.gamePath);
+        changedPaths.delete(p.target.gamePath);
+      }
+      for (const [path, holder] of heldBy) {
+        if (holder !== name) continue;
+        heldBy.delete(path);
+        parked = parked.map((f) => (f.gamePath === path ? { ...f, occupied: false } : f));
+      }
+      // Sacred Arbor Fog Removal's pak changed since install: the engine keeps
+      // a changed file aside instead of deleting it (it lands under PARKED).
+      const parks = name === "Sacred Arbor Fog Removal" ? payload.filter((p) => p.target.kind === "pak") : [];
+      for (const p of parks) {
+        const gamePath = `pak_mods/zrift-${pakSlot}-${p.target.kind === "pak" ? p.target.fileName : ""}`;
+        parked.push({
+          store: parkStore(gamePath),
+          gamePath,
+          owner: name,
+          ownerKind: "riftstone",
+          size: p.size,
+          parkedAt: new Date().toISOString(),
+          reason: `${name}'s uninstall found it changed since install, so it was kept aside instead of deleted.`,
+          occupied: false,
+        });
+      }
       emit(EVENTS.gameChanged, {});
+      const count = (k: string) => kinds.filter((x) => x === k).length;
       const result: UninstallResultView = {
         optionId,
-        filesRemoved: found?.option.payload.length ?? 0,
-        filesRestored: 0,
-        filesKept: 0,
+        filesRemoved: count("delete") - parks.length,
+        filesRestored: count("restoreBackup"),
+        filesKept: count("keepChanged") + count("keepVanilla"),
+        filesHandedDown: count("handDown"),
+        parked: parks.length,
         restartNeeded: false,
       };
       return result;
@@ -802,7 +991,14 @@ export function createMockBackend(): RiftBackend {
         pakOrder,
         conflicts: conflicts(),
         strays: scene.has("empty") ? [] : [{ gamePath: "pak_mods/old_test_mod.pak", size: 1_048_576 }],
-        missing: [],
+        missing: installs.flatMap((record) => {
+          const option = findOption(record.optionId)?.option;
+          return (option?.payload ?? []).flatMap((p) =>
+            p.target.kind !== "pak" && gonePaths.has(p.target.gamePath)
+              ? [{ optionId: record.optionId, optionName: option?.name ?? "", gamePath: p.target.gamePath }]
+              : [],
+          );
+        }),
         fluffyUnadopted: fluffyUnadopted.map((name) => ({
           section: name.replace(/\s+/g, ""),
           name,
@@ -822,6 +1018,7 @@ export function createMockBackend(): RiftBackend {
           error: null,
         },
         pakCountWarning: 100,
+        parked: parked.map((f) => ({ ...f })),
       };
       return view;
     },
@@ -849,6 +1046,8 @@ export function createMockBackend(): RiftBackend {
         adopted,
         alreadyAdopted: 5,
         missingFiles: 0,
+        refusedFiles: adopted ? 2 : 0,
+        sharedFiles: adopted ? 1 : 0,
         unmatched: [],
       };
       return result;
@@ -899,7 +1098,24 @@ export function createMockBackend(): RiftBackend {
     },
     async identifyPackages(packageIds) {
       await wait(400);
-      return packageIds.map((packageId): Md5Result => ({ packageId, matched: false, link: null }));
+      // the hashes are local, the MD5 lookup is a Nexus call: offline it fails
+      if (scene.has("offline")) throw nexusFailure("Nexus Mods could not be reached (connection refused).");
+      return packageIds.map((packageId): Md5Result => {
+        const pkg = packages.find((p) => p.summary.id === packageId);
+        if (!pkg || pkg.summary.displayName !== MOCK_MD5_MATCH.displayName || pkg.summary.nexus) {
+          return { packageId, matched: false, link: null };
+        }
+        pkg.summary.nexus = {
+          modId: MOCK_MD5_MATCH.modId,
+          fileId: MOCK_MD5_MATCH.fileId,
+          groupId: null,
+          sqid: null,
+          version: pkg.options[0]?.info?.version ?? null,
+          uploadedMs: null,
+          source: "md5",
+        };
+        return { packageId, matched: true, link: pkg.summary.nexus };
+      });
     },
     async linkPackage(packageId, urlOrId) {
       await wait(120);
@@ -931,6 +1147,48 @@ export function createMockBackend(): RiftBackend {
       await wait(200);
       hasApiKey = Boolean(key);
       return nexusSummary();
+    },
+    async getLabels() {
+      await wait(15);
+      return labelFacets();
+    },
+    async restoreParked(store) {
+      await wait(120);
+      const file = parked.find((f) => f.store === store);
+      if (!file) throw nothingKept(store);
+      if (file.size === null)
+        throw refusedWith(
+          `The kept file for "${file.gamePath}" is no longer in the backup store. There is nothing left to put back; discard the entry.`,
+        );
+      const holder = heldBy.get(file.gamePath);
+      if (holder)
+        throw refusedWith(
+          `"${holder}" is installed over ${file.gamePath}, so the kept file cannot go back there now. Uninstall it first, then put the kept file back.`,
+        );
+      parked = parked.filter((f) => f.store !== store);
+      let swappedOut: string | null = null;
+      if (file.occupied) {
+        swappedOut = parkStore(file.gamePath);
+        parked.push({
+          store: swappedOut,
+          gamePath: file.gamePath,
+          owner: "the file that sat there",
+          ownerKind: "unowned",
+          size: 3_072,
+          parkedAt: new Date().toISOString(),
+          reason: "Kept aside so a parked file could go back in its place.",
+          occupied: true,
+        });
+      }
+      emit(EVENTS.gameChanged, {});
+      const report: ParkedRestoreReport = { gamePath: file.gamePath, restored: true, swappedOut, restartNeeded: false };
+      return report;
+    },
+    async discardParked(store) {
+      await wait(80);
+      if (!parked.some((f) => f.store === store)) throw nothingKept(store);
+      parked = parked.filter((f) => f.store !== store);
+      emit(EVENTS.gameChanged, {});
     },
     getSettings() {
       return Promise.resolve(settings);

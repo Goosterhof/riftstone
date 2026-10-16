@@ -16,20 +16,28 @@ use crate::model::{ArchiveEntry, PackageFormat};
 pub struct ExtractItem {
     /// Normalized entry path inside the package.
     pub entry: String,
-    /// Absolute destination file path. The parent directory is created by the
-    /// extractor. An existing file at `dest` is overwritten — callers (the
-    /// deploy engine) decide beforehand whether that is allowed and extract
-    /// to a temporary name first.
+    /// Absolute destination file path. The extractor creates the parent
+    /// folders, and always creates the file itself new: when anything
+    /// already sits at `dest` — a file, a folder, a link, even a dangling
+    /// one — the batch stops with [`RiftError::Refused`] naming it, and the
+    /// thing there is left exactly as it was (never truncated, written
+    /// through or removed). Callers (the deploy engine) extract to a
+    /// temporary name they checked free first.
     pub dest: PathBuf,
 }
 
-/// Progress of a batch extraction, for the window's progress line.
+/// Progress of a batch extraction: one report per finished file, for the
+/// window's progress line — and for the caller's record of which
+/// destinations the extractor created (`item`), should the batch stop early.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExtractProgress {
     pub files_done: usize,
     pub files_total: usize,
     pub bytes_done: u64,
     pub bytes_total: u64,
+    /// The file just finished: its index in the batch's `items`. Solid
+    /// archives finish files in archive order, not in the order asked.
+    pub item: usize,
 }
 
 pub trait PackageSource: Send {
@@ -48,9 +56,12 @@ pub trait PackageSource: Send {
     fn read_entry(&mut self, entry: &str, limit: Option<u64>) -> Result<Vec<u8>, RiftError>;
 
     /// Extract a batch. Implementations must make at most one sequential pass
-    /// over solid archives, write each file fully before reporting it done,
-    /// and stop at the first error (files already written stay written; the
-    /// caller's journal knows which).
+    /// over solid archives, create every destination new (see
+    /// [`ExtractItem::dest`]), write each file fully before reporting it done
+    /// (once, naming its `item`), and stop at the first error. Files already
+    /// reported stay written; a file that failed half-way is removed again
+    /// (best effort). The reports are how the caller knows which destinations
+    /// the extractor created: it takes nothing unreported for its own.
     fn extract(
         &mut self,
         items: &[ExtractItem],

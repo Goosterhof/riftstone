@@ -35,6 +35,13 @@
 //! - **Links are never files.** Symlinks and junctions are dropped from the
 //!   listing; a RAR hard link or file copy is served from the entry it points
 //!   at.
+//! - **Destinations are created, never overwritten.** `extract` opens every
+//!   destination with `create_new` (folder copies, and the second copy of an
+//!   entry asked for twice, too). A file, folder or link (even a dangling one)
+//!   already at a destination stops the batch with [`RiftError::Refused`]
+//!   naming it, and nothing is written over it or through it. RAR is no
+//!   exception: UnRAR runs in test mode and hands its bytes to the same
+//!   writer, so nothing of UnRAR's own ever opens a destination.
 //! - **Damage is not emptiness.** zip and 7z keep their directories at the
 //!   end of the file, so a cut-off download fails to open. RAR streams, and
 //!   UnRAR reports a cut-off archive as merely ending; so a RAR's block chain
@@ -46,8 +53,9 @@
 //!   encrypted entry answers [`RiftError::Encrypted`] — as does reading an
 //!   entry that lies behind one in a solid RAR, which cannot be unpacked
 //!   without unpacking the locked entry first.
-//! - **Every error names the package path** (or, for a write, the
-//!   destination) so the window can say which download misbehaved.
+//! - **Every error names the package path** (or, for a write or a refused
+//!   destination, the destination) so the window can say which download
+//!   misbehaved.
 
 use std::fs::{self, File};
 use std::io::Read;
