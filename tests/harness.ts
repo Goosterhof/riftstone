@@ -89,6 +89,12 @@ export function button(label: string | RegExp): HTMLButtonElement {
   return found;
 }
 
+/** A button that can take a press now: not disabled, and not busy (a busy
+ *  RiftButton stays focusable, aria-disabled, so `.disabled` alone says nothing). */
+export function idle(b: HTMLButtonElement): boolean {
+  return !b.disabled && b.getAttribute("aria-busy") !== "true";
+}
+
 export function hasButton(label: string): boolean {
   return [...document.querySelectorAll<HTMLButtonElement>("button")].some((b) => labelOf(b) === label);
 }

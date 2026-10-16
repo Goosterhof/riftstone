@@ -915,6 +915,16 @@ requests. Labels are per Nexus MOD: every option of a linked package inherits th
   Settings: the veil gains a mode — `off` / `adult` (mods Nexus flags adult, and packages it has
   not labelled yet) / `all`.
 
+### v0.2.1 — Find on Nexus (the labels' reach, 2026-10-16)
+
+MD5 identify linked 2 of the investor's 8 unlinked packages: 4 are unpacked folders (nothing to
+hash) and 2 are repacks. Labels need a link, so the stone searches Nexus by NAME:
+`rift_nexus::search_terms` cleans a name into search words, `NexusClient::find_mods` asks the
+anonymous `mods(filter: nameStemmed …)` (MATCHES, then one WILDCARD retry), and the spine's
+`find_on_nexus(packageId) -> NexusFindings` tries the display name, then the first option's
+bundle or name. Up to five candidates; the player links one, and the update check brings its
+labels. The full rules are WINDOW-CONTRACT § Find on Nexus. A link by mod id stays unpinned.
+
 ### v0.2 backlog beside the labels (from the deploy safety review, 2026-10-16)
 
 - **Parked backups in the window:** `InstalledView.parked: ParkedFile[]` ({store, gamePath,

@@ -7,7 +7,7 @@ The Riftstone is a Windows desktop mod manager for **Dragon's Dogma 2**, built b
 - Type `cloak_301` and get the variants that carry that mesh, even out of a collection with hundreds of options. Each result shows its menu trail and the folder it sits in.
 - Install, uninstall and reorder the way the game loads mods after the September 2026 engine update. Pak mods go in REFramework's `pak_mods/` folder in name order (the last name wins). Loose `natives/` files beat paks. Scripts go in `reframework/`.
 - It asks Nexus Mods whether a newer file of each download exists. The check is anonymous and needs no account. A 2026 download name carries the file's own id, so the stone checks that exact file.
-- Filter by what Nexus calls a mod. Each linked mod's category and tags come home with that same check, at no extra request. Press categories in the stone (any of them) or tags (all of them), and every chip tells you how many answers it gives. The screenshots of mods Nexus flags adult, and of anything it has not labelled yet, can stay blurred until you hover.
+- Filter by what Nexus calls a mod. Each linked mod's category and tags come home with that same check, at no extra request. Press categories in the stone (any of them) or tags (all of them), and every chip tells you how many answers it gives. The screenshots of mods Nexus flags adult, and of anything it has not labelled yet, can stay blurred until you hover. A download Nexus cannot recognise by its bytes (an unpacked folder, a repack) can be found by name, and you pick the right mod from up to five.
 
 ## The promises
 

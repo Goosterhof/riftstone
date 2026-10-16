@@ -81,7 +81,9 @@ npm run build
 
 Bench suites (`#[ignore]`, env-gated, READ-ONLY against the investor's real data) — see each
 crate's `tests/bench_real.rs`. They never install, uninstall or flip a switch, and they print
-counts only.
+counts only. rift-nexus's live name-search bench
+(`RIFT_BENCH_NEXUS_FIND=1 cargo test -p rift-nexus --test bench_real -- --ignored --nocapture`)
+sends only its two fixed phrases (`lantern glow`, `armor`), never a name from the library.
 
 ## Privacy — the library is the investor's own
 
@@ -118,7 +120,10 @@ release for this"*. Build on the Windows side and run the exe.
 ## Known Limitations (v0.2)
 
 - Nexus labels reach linked packages only. MD5 identify cannot link an unpacked folder (there is no
-  archive to hash) or a repack (its bytes are new); link those by a pasted URL or mod id.
+  archive to hash) or a repack (its bytes are new). Find on Nexus searches those by name (the
+  package's, else its first option's bundle or modinfo name) and offers up to five candidates;
+  the player links. A name unlike the mod's Nexus name finds the wrong mods or none, and a link
+  by mod id stays unpinned (labels yes, "is my copy the newest" no) until the file's URL is pasted.
 - The veil's `adult` mode also blurs packages Nexus has not labelled yet, on purpose (a veil protects).
 - Windows-only (discovery reads the Windows registry; env overrides serve the WSL bench).
 - No `nxm://` handler — it would fight Vortex and MO2 for the protocol.

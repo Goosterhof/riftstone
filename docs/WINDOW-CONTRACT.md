@@ -34,6 +34,7 @@ understand what you tried, what to do next.
 | `get_updates` | — | `UpdatesView` | Cached state; no network. |
 | `check_updates` | — | `UpdatesView` | Network (anonymous Nexus v2). Progress via `rift://updates-progress`; `rift://updates-changed` after. |
 | `identify_packages` | `packageIds: string[]` | `Md5Result[]` | Hashes the archives (progress `hashing`), one batched MD5 lookup. |
+| `find_on_nexus` | `packageId` | `NexusFindings` | **v0.2.** Searches Nexus's Dragon's Dogma 2 mods by the package's name (see § Find on Nexus). Sends only on this call; never links. Errors: `entryNotFound`, `nexus` (offline, quota, a refused answer). |
 | `link_package` | `packageId, urlOrId: string` | `UpdateRow` | Accepts a nexusmods.com/dragonsdogma2 URL or a bare mod id. |
 | `unlink_package` | `packageId` | `void` | |
 | `set_nexus_key` | `key: string \| null` | `NexusSummary` | Optional (v1 extras only). Stored in Windows Credential Manager; validated with `/v1/users/validate.json`. |
@@ -74,6 +75,42 @@ every option of a linked package inherits them.
   unlinked, never checked, or an answer without labels; `ledger.ts` `adultnessOf`). A veil exists to protect, so the unknown is veiled; it
   clears as packages are linked and checked. Cards, the detail and the lookbook apply the same
   rule. (Ruled 2026-10-16, after the contract verifier found the three surfaces disagreeing.)
+
+## Find on Nexus (v0.2)
+
+Tags reach linked packages only, and MD5 cannot identify an unpacked folder or a repack. Find
+searches Nexus by the package's NAME, anonymously, and offers candidates; the player picks one.
+
+- **Terms** (`rift_nexus::search_terms`; its doc lists the ten rules in order). A trailing
+  `.zip`/`.7z`/`.rar` goes, and a Nexus download name (2026 or classic shape) keeps only its name
+  part. `(…)`/`[…]` go, nested ones too, though a name that is all brackets reads its brackets. A
+  2026 upload stamp goes wherever it sits, and so does the sqid that ends a name right after one.
+  Any punctuation separates words; typographic apostrophes become `'`. camelCase splits, but
+  acronyms, `REFramework` and `ReShade` stay whole. Versions (`v1.2b`, `1.2.3a`, a lone `v`, `ver`,
+  `version`) and standalone numbers go, while multipliers (`1.5x`) and words with digits (`4K`,
+  `1080p`) stay. "Fluffy" goes only as the manager's name ("Fluffy Mod Manager", or "Fluffy" with no
+  kept word after it), and so does "Dragon's Dogma 2", any apostrophe, with a "for" just before
+  either. At most 8 words and 100 characters after all that. "Searchable" means at least one word
+  of 2+ letters. A dropped word only widens the search (Nexus wants every term); a stray one finds
+  nothing.
+- **Which names:** the first two different searches among the display name, the first option's
+  bundle and that option's name. A name with nothing searchable is skipped. A second search runs
+  only when the first found nothing. `terms` is the set answered last; `""` when none held anything
+  searchable, and then nothing was sent.
+- **Query:** GraphQL `mods(filter: { gameDomainName: dragonsdogma2, nameStemmed: <terms> MATCHES },
+  sort: relevance DESC, count: 5)`, the terms as a variable, never in the query text. No usable
+  candidate → one retry with `WILDCARD`. At most 2 POSTs per search and 4 per call, through the
+  update check's GraphQL path (headers, the shared 429 back-off, a GraphQL error refuses the
+  answer). Skipped: a node for another game, without a name, or with a mod id outside
+  1..=i32::MAX; a repeated mod id counts once.
+- **Linking** stays the player's act: `link_package(packageId, String(modId))`, then
+  `check_updates`. The check brings the mod's labels and name, but a link by mod id carries no
+  file id, sqid, upload stamp or version, so the row stays `unpinned`: the stone cannot tell
+  whether the player's copy is the newest. Pasting the file's own Nexus URL (`file_id=`) pins it.
+  (A version seeded from modinfo was considered and left out: it is a guess the pinning design
+  avoids.)
+- **Privacy:** names leave the machine only when the player presses Find (one row, or Find all
+  by name): the display name, and when that finds nothing, the first option's bundle or name.
 
 ## Check ids
 

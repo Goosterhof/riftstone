@@ -195,13 +195,13 @@ export function askNexusToast(o: AskOutcome): { tone: "ember" | "rift"; line: st
   if (!learned) {
     return {
       tone: "rift",
-      line: `Nexus didn't recognise any of the ${plural(o.after, "package")} by MD5 — they may be repacks or come from elsewhere. Link them by URL on the NEXUS page and their labels follow.`,
+      line: `Nexus didn't recognise any of the ${plural(o.after, "package")} by MD5 — they may be repacks or come from elsewhere. Find them by name on the NEXUS page and their labels follow.`,
       learned,
     };
   }
   const named = `Nexus named ${plural(learned, o.hadLabels ? "more package" : "package", o.hadLabels ? "more packages" : "packages")}.`;
   const rest = o.after
-    ? `${plural(o.after, "package")} Nexus doesn't know ${o.after === 1 ? "stays" : "stay"} unlabeled: link ${them(o.after)} by URL on the NEXUS page.`
+    ? `${plural(o.after, "package")} Nexus doesn't know ${o.after === 1 ? "stays" : "stay"} unlabeled: find ${them(o.after)} by name on the NEXUS page.`
     : "Every package carries its labels now.";
   return { tone: "rift", line: `${named} ${rest}`, learned };
 }

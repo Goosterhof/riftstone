@@ -15,6 +15,7 @@ import type {
   LibraryRoot,
   Md5Result,
   LabelFacets,
+  NexusFindings,
   NexusQuota,
   ParkedRestoreReport,
   NexusSummary,
@@ -113,6 +114,8 @@ export interface RiftBackend {
   getUpdates(): Promise<UpdatesView>;
   checkUpdates(): Promise<UpdatesView>;
   identifyPackages(packageIds: string[]): Promise<Md5Result[]>;
+  /** v0.2: search Nexus by the package's name. Sends the name; never links. */
+  findOnNexus(packageId: string): Promise<NexusFindings>;
   linkPackage(packageId: string, urlOrId: string): Promise<UpdateRow>;
   unlinkPackage(packageId: string): Promise<void>;
   setNexusKey(key: string | null): Promise<NexusSummary>;
@@ -171,6 +174,7 @@ async function tauriBackend(): Promise<RiftBackend> {
     getUpdates: () => invoke("get_updates"),
     checkUpdates: () => invoke("check_updates"),
     identifyPackages: (packageIds) => invoke("identify_packages", { packageIds }),
+    findOnNexus: (packageId) => invoke("find_on_nexus", { packageId }),
     linkPackage: (packageId, urlOrId) => invoke("link_package", { packageId, urlOrId }),
     unlinkPackage: (packageId) => invoke("unlink_package", { packageId }),
     setNexusKey: (key) => invoke("set_nexus_key", { key }),

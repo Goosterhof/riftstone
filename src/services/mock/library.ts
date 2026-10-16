@@ -6,6 +6,7 @@
 
 import type {
   ArchiveEntry,
+  NexusCandidate,
   NexusLabels,
   LibraryRoot,
   ModInfo,
@@ -642,6 +643,95 @@ export const MOCK_LABELS: Record<number, NexusLabels> = {
   3301: { category: "Utilities", tags: ["Utilities for Players", "Audio"], adult: false },
   // what an MD5 identify finds for Brine Water Clarity (the one Nexus knows)
   3302: { category: "Visuals", tags: ["Environment"], adult: false },
+  // what Find on Nexus offers (MOCK_FINDS below); labels arrive once linked + checked
+  4410: { category: "Armour", tags: ["Armour Sets", "Lore Friendly"], adult: false },
+  4416: { category: "Armour", tags: ["Armour Sets", "Sexualised"], adult: true },
+  5120: { category: "Visuals", tags: ["Environment", "Weather"], adult: false },
+  6031: { category: "Gameplay", tags: ["Travel"], adult: false },
+};
+
+/** v0.2 Find on Nexus: what the mock's name search answers, by package display
+ *  name. Invented mods only. `linkedPackages` here counts packages OUTSIDE the
+ *  mock library's eight (an older download of the same mod); the mock adds the
+ *  library's own links at answer time, as the spine counts them. A name absent
+ *  here answers no candidates. */
+type MockCandidate = Omit<NexusCandidate, "pageUrl">;
+const mockCandidate = (c: MockCandidate): MockCandidate => c;
+export const MOCK_FINDS: Record<string, MockCandidate[]> = {
+  "Old Road Armor Pack": [
+    mockCandidate({
+      modId: 4410,
+      name: "Old Road Armor Pack",
+      author: "Hollow Smith",
+      version: "1.3",
+      category: "Armour",
+      adult: false,
+      downloads: 12840,
+      endorsements: 611,
+      summary: "Eleven weathered armour sets for the Old Road, each in three dyes, with matching helms.",
+      updatedMs: NOW - 40 * DAY,
+      linkedPackages: 1,
+    }),
+    mockCandidate({
+      modId: 4416,
+      name: "Old Road Armor Pack - Gilded Edition",
+      author: "Hollow Smith",
+      version: "0.9",
+      category: "Armour",
+      adult: true,
+      downloads: 3021,
+      endorsements: 140,
+      summary:
+        "The Old Road sets reworked with gilded trims and lighter cuts. Same eleven sets, rebuilt from scratch for the 2026 engine, with a few extras for the pawns.",
+      updatedMs: NOW - 12 * DAY,
+      linkedPackages: 0,
+    }),
+  ],
+  "Sacred Arbor Fog Removal": [
+    mockCandidate({
+      modId: 5120,
+      name: "Sacred Arbor Fog Removal",
+      author: null,
+      version: null,
+      category: "Visuals",
+      adult: false,
+      downloads: 980,
+      endorsements: null,
+      summary: null,
+      updatedMs: null,
+      linkedPackages: 0,
+    }),
+  ],
+  "Ox Cart Express": [
+    mockCandidate({
+      modId: 6031,
+      name: "Ox Cart Express",
+      author: "Wagonwright",
+      version: "2.0",
+      category: "Gameplay",
+      adult: false,
+      downloads: 45210,
+      endorsements: 2213,
+      summary: "Oxcarts leave on time, wait for you at the gate, and skip the goblin ambush once you have seen it.",
+      updatedMs: NOW - 90 * DAY,
+      linkedPackages: 0,
+    }),
+  ],
+  "Brine Water Clarity": [
+    mockCandidate({
+      modId: 3302,
+      name: "Brine Water Clarity",
+      author: "Tidecaller",
+      version: "1.1",
+      category: "Visuals",
+      adult: false,
+      downloads: 7702,
+      endorsements: 388,
+      summary: "Clearer water along the coast and in the Brine, without touching the lighting.",
+      updatedMs: NOW - 200 * DAY,
+      linkedPackages: 0,
+    }),
+  ],
 };
 
 /** The package the mock's MD5 identify recognises, and the link it answers. */

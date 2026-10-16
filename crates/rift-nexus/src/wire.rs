@@ -13,9 +13,9 @@ use serde_json::{json, Value};
 
 use crate::error::NexusError;
 use crate::types::{
-    FileCategory, FileUpdate, Md5Hit, NexusAccount, NexusFile, NexusMod, V1FileList,
+    FileCategory, FileUpdate, Md5Hit, ModCandidate, NexusAccount, NexusFile, NexusMod, V1FileList,
 };
-use crate::{GAME_DOMAIN, GAME_ID, MODS_PER_REQUEST};
+use crate::{CANDIDATES_PER_FIND, GAME_DOMAIN, GAME_ID, MODS_PER_REQUEST};
 
 /// Batched mod lookup. Unknown ids are left out of `nodes`; order is not kept.
 /// Since v0.2 each node also brings the mod's labels: `category: String!`,
@@ -265,6 +265,189 @@ fn tag_names(mod_id: u64, value: Option<&Value>) -> Vec<String> {
         .filter(|name| !name.is_empty() && seen.insert(name.to_lowercase()))
         .map(str::to_string)
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// mods: the name search (v0.2, Find on Nexus)
+// ---------------------------------------------------------------------------
+
+/// How `ModsFilter.nameStemmed` compares the terms with a mod's name
+/// (measured on the anonymous API, 2026-10-16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NameMatch {
+    /// Every term, in any order; stems match (`cloak` finds `Cloaks`).
+    Matches,
+    /// Every term, each with a leading and a trailing wildcard.
+    Wildcard,
+}
+
+impl NameMatch {
+    /// The `op` of the filter value, a GraphQL enum literal.
+    pub(crate) fn op(self) -> &'static str {
+        match self {
+            NameMatch::Matches => "MATCHES",
+            NameMatch::Wildcard => "WILDCARD",
+        }
+    }
+}
+
+/// The `Mod` fields a find selects.
+pub(crate) const FIND_FIELDS: &str = "modId name version author uploader { name } category \
+     modCategory { name } adultContent downloads endorsements summary updatedAt game { domainName }";
+
+/// The find's query text: Dragon's Dogma 2 mods whose name holds the terms,
+/// most relevant first, [`CANDIDATES_PER_FIND`] of them. It depends on the
+/// match mode alone. The terms travel ONLY as the `$terms` variable, so
+/// nothing a file or folder name holds ever becomes query text.
+pub(crate) fn find_query(mode: NameMatch) -> String {
+    format!(
+        "query RiftstoneFindMods($terms: String!) {{ mods(filter: {{ \
+         gameDomainName: [{{ value: \"{GAME_DOMAIN}\", op: EQUALS }}], \
+         nameStemmed: [{{ value: $terms, op: {op} }}] }}, \
+         sort: [{{ relevance: {{ direction: DESC }} }}], count: {CANDIDATES_PER_FIND}) \
+         {{ totalCount nodes {{ {FIND_FIELDS} }} }} }}",
+        op = mode.op()
+    )
+}
+
+pub(crate) fn find_body(terms: &str, mode: NameMatch) -> Value {
+    json!({ "query": find_query(mode), "variables": { "terms": terms } })
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct FindData {
+    mods: FindPage,
+}
+
+#[derive(Debug, Deserialize)]
+struct FindPage {
+    /// Kept raw: one node in a shape this build does not expect is skipped,
+    /// it does not sink the others.
+    #[serde(default)]
+    nodes: Vec<Value>,
+}
+
+/// The candidates of one find answer, in Nexus's order (relevance): a node
+/// without a usable mod id or a name, or from another game, is skipped; a
+/// repeated mod id counts once; at most [`CANDIDATES_PER_FIND`].
+pub(crate) fn read_candidates(data: FindData) -> Vec<ModCandidate> {
+    let mut seen = HashSet::new();
+    data.mods
+        .nodes
+        .into_iter()
+        .filter_map(|node| match serde_json::from_value::<WireCandidate>(node) {
+            Ok(wire) => wire.into_candidate(),
+            Err(err) => {
+                log::debug!("skipping a find result in an unexpected shape: {err}");
+                None
+            }
+        })
+        .filter(|candidate| seen.insert(candidate.mod_id))
+        .take(CANDIDATES_PER_FIND)
+        .collect()
+}
+
+/// The ids a link can be made from: Nexus's GraphQL `Int` is 32-bit.
+const LINKABLE_MOD_IDS: std::ops::RangeInclusive<u64> = 1..=(i32::MAX as u64);
+/// The longest summary a candidate keeps, in characters.
+const SUMMARY_CHARS: usize = 200;
+
+/// One node of a find answer. Every field is kept raw and read leniently.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireCandidate {
+    mod_id: Option<Value>,
+    name: Option<Value>,
+    version: Option<Value>,
+    author: Option<Value>,
+    uploader: Option<Value>,
+    category: Option<Value>,
+    mod_category: Option<Value>,
+    adult_content: Option<Value>,
+    downloads: Option<Value>,
+    endorsements: Option<Value>,
+    summary: Option<Value>,
+    updated_at: Option<Value>,
+    game: Option<Value>,
+}
+
+impl WireCandidate {
+    /// The candidate, or `None` for a node without a mod id a link can be
+    /// made from, without a name, or naming another game. (The query asks
+    /// for Dragon's Dogma 2 only; a node that says nothing of its game is
+    /// taken at the filter's word.)
+    pub(crate) fn into_candidate(self) -> Option<ModCandidate> {
+        let mod_id = self
+            .mod_id
+            .as_ref()
+            .and_then(lenient_u64)
+            .filter(|id| LINKABLE_MOD_IDS.contains(id))?;
+        let name = text(self.name.as_ref())?;
+        let game = self
+            .game
+            .as_ref()
+            .and_then(|game| text(game.get("domainName")));
+        if let Some(domain) = game.filter(|domain| !domain.eq_ignore_ascii_case(GAME_DOMAIN)) {
+            log::debug!("skipping mod {mod_id} of another game ({domain})");
+            return None;
+        }
+        let named =
+            |field: &Option<Value>| field.as_ref().and_then(|value| text(value.get("name")));
+        Some(ModCandidate {
+            mod_id,
+            name,
+            author: text(self.author.as_ref()).or_else(|| named(&self.uploader)),
+            version: text(self.version.as_ref()),
+            category: text(self.category.as_ref()).or_else(|| named(&self.mod_category)),
+            adult: self.adult_content.as_ref().is_some_and(lenient_bool),
+            downloads: self.downloads.as_ref().and_then(lenient_u64),
+            endorsements: self.endorsements.as_ref().and_then(lenient_u64),
+            summary: self.summary.as_ref().and_then(summary_text),
+            updated_ms: self.updated_at.as_ref().and_then(time_ms_signed),
+        })
+    }
+}
+
+/// A string (or a number, written out), trimmed; blank is none.
+fn text(value: Option<&Value>) -> Option<String> {
+    let text = match value? {
+        Value::String(text) => text.trim().to_string(),
+        Value::Number(number) => number.to_string(),
+        _ => return None,
+    };
+    (!text.is_empty()).then_some(text)
+}
+
+/// Whitespace collapsed to single spaces, cut at [`SUMMARY_CHARS`]
+/// characters (never inside one); blank is none.
+fn summary_text(value: &Value) -> Option<String> {
+    let collapsed = value
+        .as_str()?
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let cut: String = collapsed.chars().take(SUMMARY_CHARS).collect();
+    let cut = cut.trim_end();
+    (!cut.is_empty()).then(|| cut.to_string())
+}
+
+/// `updatedAt` → ms since the epoch: RFC 3339 (`2024-05-04T01:30:45Z`), an
+/// ISO-8601 time without an offset (read as UTC), or unix seconds.
+/// Anything else is none.
+fn time_ms_signed(value: &Value) -> Option<i64> {
+    match value {
+        Value::String(text) => {
+            let text = text.trim();
+            if let Ok(at) = chrono::DateTime::parse_from_rfc3339(text) {
+                return Some(at.timestamp_millis());
+            }
+            chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S%.f")
+                .ok()
+                .map(|at| at.and_utc().timestamp_millis())
+        }
+        Value::Number(number) => number.as_i64().and_then(|secs| secs.checked_mul(1000)),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1064,6 +1247,188 @@ mod tests {
         );
         assert!(odd(Value::Null, json!([]), json!("true")).adult);
         assert!(!odd(Value::Null, json!([]), json!("no")).adult);
+    }
+
+    // -- the name search (v0.2, Find on Nexus) ---------------------------------
+
+    #[test]
+    fn the_find_query_carries_the_terms_only_as_a_variable() {
+        for (mode, op) in [
+            (NameMatch::Matches, "MATCHES"),
+            (NameMatch::Wildcard, "WILDCARD"),
+        ] {
+            let query = find_query(mode);
+            assert!(
+                query.starts_with("query RiftstoneFindMods($terms: String!) { mods(filter: { "),
+                "{query}"
+            );
+            assert!(
+                query.contains(r#"gameDomainName: [{ value: "dragonsdogma2", op: EQUALS }]"#),
+                "{query}"
+            );
+            assert!(
+                query.contains(&format!("nameStemmed: [{{ value: $terms, op: {op} }}]")),
+                "{query}"
+            );
+            assert!(
+                query.contains("sort: [{ relevance: { direction: DESC } }], count: 5)"),
+                "{query}"
+            );
+            assert!(
+                query.contains(&format!("nodes {{ {FIND_FIELDS} }}")),
+                "{query}"
+            );
+            assert_eq!(query.matches('{').count(), query.matches('}').count());
+            // Whatever a name holds, the query text stays the same: it rides
+            // in the variables, never in the text.
+            for terms in ["Lantern Glow", "x\" } }) { evil", "$terms", ""] {
+                let body = find_body(terms, mode);
+                assert_eq!(body["query"], json!(query), "{terms:?}");
+                assert_eq!(body["variables"], json!({ "terms": terms }), "{terms:?}");
+            }
+        }
+    }
+
+    fn candidate(node: Value) -> Option<ModCandidate> {
+        serde_json::from_value::<WireCandidate>(node)
+            .unwrap()
+            .into_candidate()
+    }
+
+    #[test]
+    fn a_candidate_parses_from_the_measured_shape() {
+        let found = candidate(json!({
+            "modId": 2207, "name": " Lantern Glow Recolor ", "version": "2.1",
+            "author": "Vern", "uploader": { "name": "VernUploads" },
+            "category": "Visuals", "modCategory": { "name": "Lighting" },
+            "adultContent": false, "downloads": 1520, "endorsements": 88,
+            "summary": "  Warmer   lanterns\nfor the\tcity. ",
+            "updatedAt": "2024-05-04T01:30:45Z", "game": { "domainName": "dragonsdogma2" }
+        }))
+        .unwrap();
+        assert_eq!(
+            found,
+            ModCandidate {
+                mod_id: 2207,
+                name: "Lantern Glow Recolor".into(),
+                author: Some("Vern".into()),
+                version: Some("2.1".into()),
+                category: Some("Visuals".into()),
+                adult: false,
+                downloads: Some(1520),
+                endorsements: Some(88),
+                summary: Some("Warmer lanterns for the city.".into()),
+                updated_ms: Some(1_714_786_245_000),
+            }
+        );
+    }
+
+    #[test]
+    fn a_candidate_falls_back_to_the_uploader_and_the_mod_category() {
+        let found = candidate(json!({
+            "modId": "2207", "name": "Lantern Glow Recolor", "version": "",
+            "author": "  ", "uploader": { "name": "VernUploads" },
+            "category": null, "modCategory": { "name": "Lighting" },
+            "adultContent": null, "downloads": null, "endorsements": "12",
+            "summary": null, "updatedAt": "last tuesday"
+        }))
+        .unwrap();
+        assert_eq!(found.author.as_deref(), Some("VernUploads"));
+        assert_eq!(found.category.as_deref(), Some("Lighting"));
+        assert_eq!(found.version, None, "an empty version is no version");
+        assert!(!found.adult, "a null adultContent is not adult");
+        assert_eq!((found.downloads, found.endorsements), (None, Some(12)));
+        assert_eq!(found.summary, None);
+        assert_eq!(found.updated_ms, None, "an unparseable time is none");
+
+        // Neither author nor uploader, neither category.
+        let bare = candidate(json!({ "modId": 2207, "name": "Ermine Cape" })).unwrap();
+        assert_eq!(
+            (bare.author, bare.category, bare.updated_ms),
+            (None, None, None)
+        );
+        assert!(
+            candidate(json!({ "modId": 2207, "name": "Ermine Cape", "adultContent": true }))
+                .unwrap()
+                .adult
+        );
+    }
+
+    #[test]
+    fn a_long_summary_is_cut_at_two_hundred_characters_never_inside_one() {
+        let long = format!("{} tail", "\u{e9}t\u{e9} ".repeat(60)); // 240+ chars of multi-byte text
+        let found =
+            candidate(json!({ "modId": 1, "name": "Ermine Cape", "summary": long })).unwrap();
+        let summary = found.summary.unwrap();
+        assert!(
+            summary.chars().count() <= 200,
+            "{}",
+            summary.chars().count()
+        );
+        assert!(summary.chars().count() >= 199);
+        assert!(
+            long.starts_with(&summary),
+            "a prefix, cut on a character boundary"
+        );
+        assert!(!summary.ends_with(' '));
+    }
+
+    #[test]
+    fn update_times_read_as_rfc_3339_naive_iso_or_unix_seconds() {
+        let at = |value: Value| time_ms_signed(&value);
+        assert_eq!(at(json!("2024-05-04T01:30:45Z")), Some(1_714_786_245_000));
+        assert_eq!(
+            at(json!("2024-05-04T03:30:45+02:00")),
+            Some(1_714_786_245_000)
+        );
+        assert_eq!(
+            at(json!("2024-05-04T01:30:45.250Z")),
+            Some(1_714_786_245_250)
+        );
+        assert_eq!(at(json!("2024-05-04T01:30:45")), Some(1_714_786_245_000));
+        assert_eq!(at(json!(1_714_786_245)), Some(1_714_786_245_000));
+        assert_eq!(at(json!("1714786245")), None);
+        assert_eq!(at(json!("2024-05-04")), None);
+        assert_eq!(at(json!(true)), None);
+    }
+
+    #[test]
+    fn nodes_without_an_id_or_a_name_or_from_another_game_are_skipped() {
+        for node in [
+            json!({ "name": "Ermine Cape" }),
+            json!({ "modId": 0, "name": "Ermine Cape" }),
+            json!({ "modId": 1_u64 << 40, "name": "Ermine Cape" }),
+            json!({ "modId": 2207 }),
+            json!({ "modId": 2207, "name": "   " }),
+            json!({ "modId": 2207, "name": "Ermine Cape", "game": { "domainName": "skyrimspecialedition" } }),
+        ] {
+            assert_eq!(candidate(node.clone()), None, "{node}");
+        }
+        // A node that names no game is taken at the filter's word.
+        for game in [
+            json!(null),
+            json!({}),
+            json!({ "domainName": "DragonsDogma2" }),
+        ] {
+            assert!(
+                candidate(json!({ "modId": 2207, "name": "Ermine Cape", "game": game })).is_some(),
+                "{game}"
+            );
+        }
+    }
+
+    #[test]
+    fn candidates_keep_nexus_order_count_once_and_stop_at_five() {
+        let node = |id: u64| json!({ "modId": id, "name": format!("Lantern Glow {id}") });
+        let data: FindData = serde_json::from_value(json!({ "mods": { "totalCount": 9, "nodes": [
+            node(7), "not a node", node(3), node(7), { "modId": 4 }, node(9), node(1), node(5), node(8)
+        ] } }))
+        .unwrap();
+        let ids: Vec<u64> = read_candidates(data).iter().map(|c| c.mod_id).collect();
+        assert_eq!(ids, vec![7, 3, 9, 1, 5]);
+        let empty: FindData =
+            serde_json::from_value(json!({ "mods": { "totalCount": 0, "nodes": [] } })).unwrap();
+        assert!(read_candidates(empty).is_empty());
     }
 
     #[test]

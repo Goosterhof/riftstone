@@ -2,14 +2,24 @@
 // §8.5 — NEXUS, cold: these live in another world. Three lean sections —
 // Linked, Unlinked, Key. Update checks are anonymous (no key needed); a key
 // is optional and only adds the account extras.
-import { computed, onMounted, ref } from "vue";
-import type { UpdateRow } from "@/types/rift";
-import { useFarWorld } from "@/composables/useFarWorld";
+//
+// v0.2 Find on Nexus: an unlinked row can ask Nexus about its name. What Nexus
+// offers descends from a cold seam under the row (the Rift's own answer, §11.1,
+// told small, drawn at once: §11.1 renders results without a staggered
+// entrance): ranked as Nexus ranked them, the words that matched lit (colour
+// AND underline, HitText). The player picks; Link this links and runs the
+// check, so labels arrive at once. Nothing here moves the focus onto a button
+// that sends: a press the player did not make must never send a name.
+import { computed, nextTick, onMounted, ref } from "vue";
+import type { NexusCandidate, UpdateRow } from "@/types/rift";
+import { candidateLine, linkedNow, useFarWorld, type FindState } from "@/composables/useFarWorld";
 import { useStone } from "@/composables/useStone";
 import { usePreflight, NEXUS_KEY_URL } from "@/composables/usePreflight";
 import { keyStateOf, type NexusKeyState } from "@/services/pending";
-import { formatAgo, formatClock, formatDate } from "@/services/format";
+import type { RecoveryKind } from "@/services/voice";
+import { formatAgo, formatClock, formatDate, plural } from "@/services/format";
 import FailureNotice from "@/components/FailureNotice.vue";
+import HitText from "@/components/HitText.vue";
 import RiftButton from "@/components/RiftButton.vue";
 import RiftInscription from "@/components/RiftInscription.vue";
 import StateChip from "@/components/StateChip.vue";
@@ -106,6 +116,80 @@ function openLink(packageId: string): void {
   linkText.value = "";
 }
 
+const findOf = (packageId: string): FindState | null => far.finds.value[packageId] ?? null;
+const askingRow = (packageId: string): boolean => findOf(packageId)?.status === "asking";
+
+const findAllLine = computed(() => {
+  const p = far.findAllProgress.value;
+  return p ? `asking Nexus about ${p.done} of ${p.total}…` : null;
+});
+
+/** Find…'s disclosure: everything a press may send (the spine's find_plan
+ *  falls back to the first option's name when the package's finds nothing). */
+const FIND_SENDS = "and, if that finds nothing, its first option's name";
+const findTitle = (name: string): string => `Sends the name “${name}” to Nexus Mods (${FIND_SENDS}) to search for it`;
+const FIND_ALL_TITLE = `Sends each unlinked package's name to Nexus Mods (${FIND_SENDS}), one at a time. Links nothing by itself.`;
+
+const rowEl = (packageId: string): HTMLElement | null => document.getElementById(`far-row-${packageId}`);
+const findButtonOf = (packageId: string): HTMLElement | null =>
+  document.querySelector<HTMLElement>(`[data-find="${packageId}"]`);
+/** The focus is the player's, on this row (or lost to <body>). */
+const focusOnRow = (packageId: string): boolean => {
+  const active = document.activeElement;
+  return !active || active === document.body || (rowEl(packageId)?.contains(active) ?? false);
+};
+
+/** Open the row's Link… field and focus it. A field already open on this row
+ *  keeps what the player typed; another row's open field is left alone. */
+async function pasteField(packageId: string): Promise<void> {
+  if (far.linkingId.value !== packageId) openLink(packageId);
+  await nextTick();
+  document.getElementById(`far-link-${packageId}`)?.focus();
+}
+
+/** One press of Find… (or Try again): when Nexus offers nothing, the Link…
+ *  field opens as the way on, unless another row's field is open. The focus
+ *  stays on the row's Find… through the ask (a busy button keeps it). */
+async function findOne(packageId: string): Promise<void> {
+  if (focusOnRow(packageId)) findButtonOf(packageId)?.focus();
+  const findings = await far.find(packageId);
+  if (!findings || findings.candidates.length) return;
+  const other = far.linkingId.value !== null && far.linkingId.value !== packageId;
+  if (other) return;
+  if (far.linkingId.value !== packageId) openLink(packageId);
+  if (!focusOnRow(packageId)) return;
+  await nextTick();
+  document.getElementById(`far-link-${packageId}`)?.focus();
+}
+
+/** A row failure's recovery, by kind: never a label that does something else. */
+async function recoverFind(packageId: string, kind: RecoveryKind): Promise<void> {
+  if (kind === "rescan") {
+    far.setFind(packageId, null);
+    await stone.startScan();
+  } else if (kind === "replaceKey") keyOpen.value = true;
+  else if (kind === "retry") await findOne(packageId);
+  else far.setFind(packageId, null);
+}
+
+const termsOf = (terms: string): string[] => terms.split(/\s+/).filter(Boolean);
+
+function alsoLinked(state: Extract<FindState, { status: "found" }>, c: NexusCandidate): string {
+  return `already linked to ${plural(linkedNow(state, c), "other package")}`;
+}
+
+/** Link this: the row leaves UNLINKED, so the focus goes on down the list to
+ *  the next unlinked ROW (it sends nothing: a Space or Enter there sends no
+ *  name), or to the row's new line under LINKED. */
+async function pick(packageId: string, candidate: NexusCandidate): Promise<void> {
+  const ids = far.unlinked.value.map((r) => r.packageId);
+  const next = ids[ids.indexOf(packageId) + 1] ?? null;
+  if (!(await far.linkCandidate(packageId, candidate))) return;
+  await nextTick();
+  const target = (next && rowEl(next)) || document.getElementById(`far-linked-${packageId}`);
+  target?.focus();
+}
+
 onMounted(() => void far.load());
 </script>
 
@@ -143,7 +227,9 @@ onMounted(() => void far.load());
 
     <section class="far__sec">
       <h2 class="far__h rs-inscription">LINKED</h2>
-      <p v-if="!far.linked.value.length" class="far__dim">No package is linked yet. Link one below by its Nexus URL.</p>
+      <p v-if="!far.linked.value.length" class="far__dim">
+        No package is linked yet. Find one below by its name, or link it by its Nexus URL.
+      </p>
       <table v-else class="far__table">
         <thead>
           <tr>
@@ -155,7 +241,13 @@ onMounted(() => void far.load());
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in far.linked.value" :key="row.packageId">
+          <tr
+            v-for="row in far.linked.value"
+            :id="`far-linked-${row.packageId}`"
+            :key="row.packageId"
+            tabindex="-1"
+            class="far__linkedrow"
+          >
             <td>
               <span class="far__name">{{ row.packageName }}</span>
               <span class="far__dim rs-mono">
@@ -186,14 +278,43 @@ onMounted(() => void far.load());
           @click="far.identify(far.unlinked.value.map((r) => r.packageId))"
           >Identify all by MD5</RiftButton
         >
+        <RiftButton
+          v-if="far.unlinked.value.length"
+          size="sm"
+          :busy="far.findingAll.value"
+          :title="FIND_ALL_TITLE"
+          @click="far.findAll()"
+          >Find all by name</RiftButton
+        >
+        <span class="far__busy rs-mono" role="status">{{ findAllLine ?? "" }}</span>
       </header>
       <p v-if="far.identifyNote.value" class="far__note">{{ far.identifyNote.value }}</p>
+      <p class="far__note" role="status" data-find-note>{{ findAllLine ? "" : (far.findNote.value ?? "") }}</p>
       <p v-if="!far.unlinked.value.length" class="far__dim">Every package knows where it came from.</p>
-      <ul class="far__rows">
-        <li v-for="row in far.unlinked.value" :key="row.packageId" class="far__row">
+      <ul class="far__rows" aria-label="Unlinked packages">
+        <li
+          v-for="row in far.unlinked.value"
+          :id="`far-row-${row.packageId}`"
+          :key="row.packageId"
+          class="far__row"
+          tabindex="-1"
+          :aria-label="row.packageName"
+        >
           <div class="far__rowtop">
             <span class="far__name">{{ row.packageName }}</span>
             <span class="far__dim rs-mono">{{ guess(row) }}</span>
+            <RiftButton
+              size="sm"
+              :data-find="row.packageId"
+              :busy="askingRow(row.packageId)"
+              :disabled="far.findingAll.value"
+              reason="Find all by name is asking Nexus about every row."
+              :title="
+                far.findingAll.value ? 'Find all by name is asking Nexus about every row.' : findTitle(row.packageName)
+              "
+              @click="findOne(row.packageId)"
+              >Find…</RiftButton
+            >
             <RiftButton
               v-if="far.linkingId.value !== row.packageId"
               size="sm"
@@ -202,10 +323,85 @@ onMounted(() => void far.load());
               >Link…</RiftButton
             >
           </div>
+
+          <div v-if="findOf(row.packageId)" class="far__find">
+            <template v-for="state in [findOf(row.packageId)]" :key="state?.status">
+              <p v-if="state?.status === 'asking'" class="far__asked rs-mono">
+                asking Nexus about “{{ row.packageName }}”…
+              </p>
+              <div v-else-if="state?.status === 'failed'" class="far__findfail">
+                <FailureNotice
+                  :voiced="state.failure"
+                  size="md"
+                  @recover="(kind) => recoverFind(row.packageId, kind)"
+                />
+              </div>
+              <template v-else-if="state?.status === 'found'">
+                <p v-if="!state.findings.terms" class="far__none">
+                  This package's name holds nothing to search for.
+                  <template v-if="far.linkingId.value === row.packageId">Paste its Nexus page below instead.</template>
+                  <RiftButton v-else size="sm" @click="pasteField(row.packageId)">Paste its Nexus page…</RiftButton>
+                </p>
+                <p v-else-if="!state.findings.candidates.length" class="far__none">
+                  Nexus knows no Dragon's Dogma 2 mod named like “{{ state.findings.terms }}”.
+                  <span v-if="far.linkingId.value === row.packageId" class="far__dim"
+                    >Paste its Nexus page below if you know where it lives.</span
+                  >
+                  <RiftButton v-else size="sm" @click="pasteField(row.packageId)">Paste its Nexus page…</RiftButton>
+                </p>
+                <template v-else>
+                  <p class="far__asked rs-mono">
+                    <span class="far__askedk">ASKED</span> “{{ state.findings.terms }}”
+                    <span class="far__answered">· {{ state.findings.candidates.slice(0, 5).length }} ANSWERED</span>
+                  </p>
+                  <ol class="far__cands" :aria-label="`Nexus candidates for ${row.packageName}`">
+                    <li
+                      v-for="(c, i) in state.findings.candidates.slice(0, 5)"
+                      :key="c.modId"
+                      class="far__cand"
+                      :class="{ 'is-first': i === 0 }"
+                    >
+                      <span class="far__rank rs-mono" aria-hidden="true">{{ i + 1 }}</span>
+                      <div class="far__cbody">
+                        <div class="far__cline">
+                          <button
+                            type="button"
+                            class="far__cname"
+                            :title="`Open ${c.name} on Nexus Mods`"
+                            @click="preflight.openUrl(c.pageUrl)"
+                          >
+                            <HitText :text="c.name" :tokens="termsOf(state.findings.terms)" />
+                          </button>
+                          <span v-if="c.adult" class="far__mark" title="Nexus marks this mod as adult content"
+                            >ADULT</span
+                          >
+                          <span v-if="linkedNow(state, c) > 0" class="far__also">{{ alsoLinked(state, c) }}</span>
+                        </div>
+                        <p v-if="candidateLine(c)" class="far__meta">{{ candidateLine(c) }}</p>
+                        <p v-if="c.summary" class="far__sum" :title="c.summary">{{ c.summary }}</p>
+                      </div>
+                      <RiftButton
+                        size="sm"
+                        variant="primary"
+                        :busy="far.linkingCandidate.value === `${row.packageId}:${c.modId}`"
+                        :disabled="far.linkingCandidate.value !== null"
+                        reason="Another link is on its way to Nexus."
+                        :aria-label="`Link ${row.packageName} to ${c.name}, Nexus mod ${c.modId}`"
+                        @click="pick(row.packageId, c)"
+                        >Link this</RiftButton
+                      >
+                    </li>
+                  </ol>
+                </template>
+              </template>
+            </template>
+          </div>
+
           <form v-if="far.linkingId.value === row.packageId" class="far__link" @submit.prevent="link(row.packageId)">
             <label class="far__field">
               <span class="rs-sr-only">Nexus URL or mod id for {{ row.packageName }}</span>
               <input
+                :id="`far-link-${row.packageId}`"
                 v-model="linkText"
                 type="text"
                 placeholder="nexusmods.com/dragonsdogma2/mods/1234 or 1234"
@@ -450,5 +646,153 @@ onMounted(() => void far.load());
 }
 .far__chip.is-offline {
   background: var(--rs-warn);
+}
+
+/* --- v0.2 Find on Nexus: the far world answers under the row ------------- */
+.far__linkedrow:focus-visible,
+.far__row:focus-visible {
+  outline: 2px solid var(--rs-rift);
+  outline-offset: -2px;
+}
+.far__find {
+  margin-top: var(--rs-space-2);
+}
+.far__asked {
+  margin: 0;
+  color: var(--rs-faint);
+  font-size: var(--rs-text-xs);
+  letter-spacing: 0.04em;
+}
+.far__askedk {
+  font-weight: 600;
+  color: var(--rs-muted);
+  letter-spacing: 0.12em;
+}
+.far__answered {
+  color: var(--rs-rift);
+  font-weight: 600;
+}
+.far__none {
+  margin: 0;
+  color: var(--rs-muted);
+}
+.far__none :deep(.rs-btn) {
+  margin-left: var(--rs-space-2);
+}
+/* The candidates hang from a cold seam: a rift line drawn down the gutter, the
+   ranks carved on it. Drawn at once, never staggered in (§11.1). */
+.far__cands {
+  position: relative;
+  margin: 6px 0 2px;
+  padding: 0;
+  list-style: none;
+}
+.far__cands::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 11px;
+  z-index: 1;
+  width: 2px;
+  background: var(--rs-rift);
+  opacity: 0.5;
+  pointer-events: none;
+}
+.far__cand {
+  position: relative;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--rs-space-3);
+  padding: 8px var(--rs-space-3) 8px 0;
+  background: var(--rs-void);
+  border-top: 2px solid var(--rs-mist);
+}
+.far__rank {
+  position: relative;
+  z-index: 2;
+  justify-self: center;
+  min-width: 18px;
+  padding: 1px 0;
+  background: var(--rs-void);
+  border: 1px solid var(--rs-edgehi);
+  border-radius: var(--rs-radius-chip);
+  color: var(--rs-faint);
+  font-size: var(--rs-text-xs);
+  font-weight: 600;
+  text-align: center;
+}
+.far__cand.is-first .far__rank {
+  border-color: var(--rs-rift);
+  color: var(--rs-rift);
+}
+.far__cbody {
+  min-width: 0;
+}
+.far__cline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--rs-space-2);
+}
+.far__cname {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--rs-text);
+  font: 700 var(--rs-text-md) var(--rs-font-sans);
+  line-height: 1.25;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.far__cname:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--rs-edgehi);
+  text-underline-offset: 3px;
+}
+.far__cname:focus-visible {
+  outline: 2px solid var(--rs-rift);
+  outline-offset: 2px;
+}
+.far__mark {
+  padding: 2px 6px;
+  border: 1px solid var(--rs-edgehi);
+  border-radius: var(--rs-radius-chip);
+  color: var(--rs-muted);
+  font: 600 var(--rs-text-xs) var(--rs-font-mono);
+  letter-spacing: 0.04em;
+}
+.far__also {
+  color: var(--rs-muted);
+  font-size: var(--rs-text-sm);
+  font-style: italic;
+}
+.far__meta,
+.far__sum {
+  margin: 2px 0 0;
+  font-size: var(--rs-text-sm);
+}
+.far__meta {
+  color: var(--rs-faint);
+}
+.far__sum {
+  overflow: hidden;
+  color: var(--rs-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 720px) {
+  .far__cand {
+    grid-template-columns: 24px minmax(0, 1fr);
+  }
+  .far__cand > :deep(.rs-btn) {
+    grid-column: 2;
+    justify-self: start;
+  }
+  .far__rowtop {
+    flex-wrap: wrap;
+  }
 }
 </style>

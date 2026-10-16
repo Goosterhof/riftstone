@@ -1,6 +1,9 @@
 <script setup lang="ts">
 // §7.7 — four variants, radius 0. Loading swaps the label for a mono "···"
 // at the same width (aria-busy); disabled still says why in its title.
+// Busy is aria-disabled, not disabled: a keyboard press must not drop the
+// focus to <body> while the stone works (§6.3, the ring is never removed),
+// so a busy button keeps its focus and swallows further presses.
 const {
   variant = "secondary",
   size = "md",
@@ -17,7 +20,15 @@ const {
   type?: "button" | "submit";
 }>();
 
-defineEmits<{ click: [event: MouseEvent] }>();
+const emit = defineEmits<{ click: [event: MouseEvent] }>();
+
+function press(event: MouseEvent): void {
+  if (busy) {
+    event.preventDefault();
+    return;
+  }
+  emit("click", event);
+}
 </script>
 
 <template>
@@ -25,10 +36,11 @@ defineEmits<{ click: [event: MouseEvent] }>();
     :type="type"
     class="rs-btn"
     :class="[`rs-btn--${variant}`, `rs-btn--${size}`, { 'is-busy': busy }]"
-    :disabled="disabled || busy"
+    :disabled="disabled"
+    :aria-disabled="busy && !disabled ? 'true' : undefined"
     :aria-busy="busy ? 'true' : undefined"
     :title="disabled && reason ? reason : undefined"
-    @click="$emit('click', $event)"
+    @click="press"
   >
     <span class="rs-btn__label"><slot /></span>
     <span v-if="busy" class="rs-btn__busy" aria-hidden="true">···</span>
@@ -59,10 +71,10 @@ defineEmits<{ click: [event: MouseEvent] }>();
   height: 28px;
   padding: 0 var(--rs-space-3);
 }
-.rs-btn:hover:not(:disabled) {
+.rs-btn:hover:not(:disabled, .is-busy) {
   background: var(--rs-misthi);
 }
-.rs-btn:active:not(:disabled) {
+.rs-btn:active:not(:disabled, .is-busy) {
   transform: translateY(1px);
 }
 .rs-btn:disabled {
@@ -73,7 +85,7 @@ defineEmits<{ click: [event: MouseEvent] }>();
   background: var(--rs-riftdeep);
   border-color: var(--rs-rift);
 }
-.rs-btn--primary:hover:not(:disabled) {
+.rs-btn--primary:hover:not(:disabled, .is-busy) {
   background: #256673;
 }
 .rs-btn--world {
@@ -82,20 +94,21 @@ defineEmits<{ click: [event: MouseEvent] }>();
   color: var(--rs-ongold);
   font-weight: 700;
 }
-.rs-btn--world:hover:not(:disabled) {
+.rs-btn--world:hover:not(:disabled, .is-busy) {
   background: #f1d088;
 }
 .rs-btn--danger {
   border-color: var(--rs-ember);
   color: var(--rs-ember);
 }
-.rs-btn--danger:hover:not(:disabled) {
+.rs-btn--danger:hover:not(:disabled, .is-busy) {
   background: rgba(255, 123, 102, 0.1);
 }
 /* Busy: keep the width, hide the label, show the 3-dot in the same colour. */
 .is-busy .rs-btn__label {
   visibility: hidden;
 }
+.is-busy,
 .is-busy:disabled {
   opacity: 1;
   cursor: progress;

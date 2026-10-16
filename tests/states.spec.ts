@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { useNavigation } from "@/composables/useNavigation";
-import { button, hasButton, sleep, text, textOf, until, wakeOn } from "./harness";
+import { button, hasButton, sleep, text, textOf, until, wakeOn, idle } from "./harness";
 
 afterEach(() => sleep());
 
@@ -59,7 +59,7 @@ describe("the voiced states (§9)", () => {
     button("Check now").click();
     await until(() => text().includes("THE FAR WORLD IS OUT OF REACH"), "the offline notice");
     expect(text()).toContain("We can't reach Nexus right now.");
-    await until(() => !button("Try again").disabled, "the retry to settle");
+    await until(() => idle(button("Try again")), "the retry to settle");
   });
 
   it("should say Never checked before the first Nexus check, and offer the check itself", async () => {
@@ -77,7 +77,7 @@ describe("the voiced states (§9)", () => {
     await until(() => hasButton("Check now"), "the Nexus room");
     button("Check now").click();
     await until(() => text().includes("from the last successful check"), "the dated offline notice");
-    await until(() => !button("Try again").disabled, "the retry to settle");
+    await until(() => idle(button("Try again")), "the retry to settle");
     const latest = [...document.querySelectorAll(".far__table tbody tr td:nth-child(3)")].map((td) =>
       textOf(td).trim(),
     );

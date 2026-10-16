@@ -21,7 +21,7 @@ only. Names in Downloads count only for archives that look like Dragon's
 Dogma 2 mods.
 
 `--allow` takes identifiers that are public on their own (a tool's name such
-as REFramework); they are skipped. So are single words of six letters or
+as REFramework or ReShade, which search_terms keeps whole); they are skipped. So are single words of six letters or
 fewer (`Extras`, `Tops`): too common to identify anyone, and too common not to
 appear in code.
 """
@@ -169,7 +169,7 @@ def main() -> int:
     parser.add_argument("--library", action="append", default=[], help="a library root (repeatable)")
     parser.add_argument("--downloads", action="append", default=[], help="a downloads folder (repeatable)")
     parser.add_argument("--fluffy-ini", action="append", default=[], help="Fluffy's installed.ini (repeatable)")
-    parser.add_argument("--allow", action="append", default=["RE Framework", "REFramework"], help="a public identifier to skip")
+    parser.add_argument("--allow", action="append", default=["RE Framework", "REFramework", "ReShade"], help="a public identifier to skip")
     args = parser.parse_args()
     if not (args.library or args.downloads or args.fluffy_ini):
         parser.error("name at least one --library, --downloads or --fluffy-ini")
