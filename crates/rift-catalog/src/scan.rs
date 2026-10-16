@@ -284,31 +284,26 @@ pub(crate) fn unreadable_package(
     }
 }
 
-/// The `Unreadable` sentence for each way opening can fail.
+/// The `Unreadable` why for each way opening can fail. The window says the
+/// verdict ("The stone couldn't open `x`:"), so this is only what follows its
+/// colon (Chaos #00129 D3).
 fn unreadable_problem(error: &RiftError) -> Problem {
     let message = match error {
-        RiftError::Encrypted { .. } => {
-            "This archive is password-protected, so the Riftstone cannot \
-             look inside it. Unpack it with its password and put the unpacked folder in a library \
-             folder instead."
-                .to_string()
-        }
-        RiftError::UnsupportedFormat { .. } => "This file is not a zip, 7z or rar archive the \
-             Riftstone can open, whatever its name says. It may be an incomplete or mislabelled \
-             download: download it again from its mod page."
+        RiftError::Encrypted { .. } => "it is password-protected. Unpack it with its password and \
+             put the unpacked folder in a library folder instead."
             .to_string(),
-        RiftError::CorruptArchive { detail, .. } => format!(
-            "This archive is damaged and could not be listed ({detail}). Download it again from \
+        RiftError::UnsupportedFormat { .. } => "it is not a zip, 7z or rar archive, whatever its \
+             name says. It may be an incomplete or mislabelled download: download it again from \
              its mod page."
-        ),
+            .to_string(),
+        RiftError::CorruptArchive { detail, .. } => {
+            format!("it is damaged ({detail}). Download it again from its mod page.")
+        }
         RiftError::Unreadable { detail, .. } => format!(
-            "The Riftstone could not read this package ({detail}). If another program holds it \
-             open, close that program and rescan."
+            "the disk or another program refused the read ({detail}). If another program holds \
+             it open, close that program and rescan."
         ),
-        other => format!(
-            "The Riftstone could not open this package ({other}). Download it again from its mod \
-             page."
-        ),
+        other => format!("the reader stopped ({other}). Download it again from its mod page."),
     };
     Problem {
         kind: ProblemKind::Unreadable,
@@ -1100,7 +1095,7 @@ mod tests {
             ),
             (
                 RiftError::corrupt("x", "the central directory is cut off"),
-                "damaged and could not be listed (the central directory is cut off)",
+                "it is damaged (the central directory is cut off)",
             ),
             (
                 RiftError::unreadable("x", "Permission denied"),
@@ -1112,6 +1107,28 @@ mod tests {
             assert!(
                 !message.contains("x:"),
                 "no package path in the sentence: {message}"
+            );
+        }
+    }
+
+    /// Chaos #00129 D3: the window says "The stone couldn't open `x.7z`:" and
+    /// this sentence follows the colon, so it is only the why.
+    #[test]
+    fn every_unreadable_message_is_a_why_the_window_can_follow() {
+        for error in [
+            RiftError::Encrypted { path: "x".into() },
+            RiftError::UnsupportedFormat { path: "x".into() },
+            RiftError::corrupt("x", "the central directory is cut off"),
+            RiftError::unreadable("x", "Permission denied"),
+            RiftError::EntryNotFound {
+                entry: "a/modinfo.ini".into(),
+            },
+        ] {
+            let message = unreadable_problem(&error).message;
+            crate::test_support::assert_is_a_why(&message);
+            assert!(
+                !message.contains("the Riftstone"),
+                "one narrator, and the window names it: {message}"
             );
         }
     }

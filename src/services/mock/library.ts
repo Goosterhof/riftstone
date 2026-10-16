@@ -560,7 +560,7 @@ export const MOCK_PACKAGES: MockPackage[] = [
       {
         kind: "outdatedFormats",
         message:
-          "3 files use asset formats from before the September 2026 engine update (TU 3.2); this mod may need an update or DD2 Pak Bridge.",
+          "2 loose files (mesh, tex) were made for Dragon's Dogma 2 before the September 2026 engine update (TU 3.2). DD2 Pak Bridge is the likely fix; otherwise look for an updated version of this mod.",
       },
     ],
     options: [
@@ -601,7 +601,8 @@ export const MOCK_PACKAGES: MockPackage[] = [
     problems: [
       {
         kind: "unreadable",
-        message: "The archive's table of contents is damaged — the download probably stopped early. Download it again.",
+        message:
+          "it is damaged (its table of contents ends early: the download probably stopped). Download it again from its mod page.",
       },
     ],
     options: [],
@@ -620,7 +621,7 @@ export const MOCK_PACKAGES: MockPackage[] = [
     problems: [
       {
         kind: "nothingToInstall",
-        message: "This archive holds only a readme and a picture — nothing the game loads.",
+        message: "only a readme and a picture inside.",
       },
     ],
     options: [],

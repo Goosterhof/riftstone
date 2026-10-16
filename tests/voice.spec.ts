@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import type { ProblemKind, RiftError } from "@/types/rift";
 import { RiftFailure, asRiftFailure } from "@/services/rift";
+import { MOCK_PACKAGES } from "@/services/mock/library";
 import {
   TROUBLE_KINDS,
   failureDetails,
@@ -69,7 +70,9 @@ describe("voice()", () => {
   it("should say NO WORLD ANSWERS for a missing game and lead with the folder picker", () => {
     const voiced = voice(fail("gameNotFound"), "game");
     expect(voiced.inscription).toBe("NO WORLD ANSWERS");
-    expect(voiced.voice).toBe("We searched every Steam library on this PC and found no Dragon's Dogma 2 install.");
+    expect(voiced.voice).toBe(
+      "The stone searched every Steam library on this PC and found no Dragon's Dogma 2 install.",
+    );
     expect(voiced.recovery.map((r) => r.kind)).toStrictEqual(["pickGameFolder", "retry"]);
   });
 
@@ -80,7 +83,7 @@ describe("voice()", () => {
     );
     expect(voiced.inscription).toBe("THE CROSSING FAILED");
     expect(voicedLine(voiced)).toBe(
-      "Couldn't write `pak_mods/x0004-SunwardCuirassGilded.pak`: the file is in use. Your game folder is exactly as it was: we put back the 4 files already placed. Close the game if it's running.",
+      "Couldn't write `pak_mods/x0004-SunwardCuirassGilded.pak`: the file is in use. Your game folder is exactly as it was: the stone put back the 4 files already placed. Close the game if it's running.",
     );
     expect(voiced.recovery.map((r) => r.label)).toStrictEqual(["Try again", "Copy details"]);
   });
@@ -92,7 +95,9 @@ describe("voice()", () => {
 
   it("should name a broken archive by its file name and offer the folder and a rescan", () => {
     const voiced = voice(fail("corruptArchive", { path: "D:\\Mods\\Harbour Lights.rar" }), "scan");
-    expect(voiced.voice).toBe("We couldn't open `Harbour Lights.rar`: the archive ends early (truncated download?).");
+    expect(voiced.voice).toBe(
+      "The stone couldn't open `Harbour Lights.rar`: the archive ends early (truncated download?).",
+    );
     expect(voiced.recovery.map((r) => r.kind)).toStrictEqual(["showInFolder", "rescan"]);
   });
 
@@ -154,6 +159,32 @@ describe("asRiftFailure()", () => {
 
 const problem = (kind: ProblemKind, message: string) => ({ kind, message });
 
+/** The ways a trouble card can say what is wrong. A card says one of them, once
+ *  (Chaos #00129 D3): the window owns the verdict, the spine sends only the why. */
+const VERDICT =
+  /won't load|will not load|stays? out|will not be installed|can(?:not|'t)? be installed|nothing the game loads|couldn't open|could not (?:be )?open(?:ed)?|cannot open|can(?:not|'t) look inside/gi;
+
+/** rift-catalog's own trouble messages (classify.rs, scan.rs), verbatim. */
+const SPINE_WHYS: [ProblemKind, string][] = [
+  [
+    "nothingToInstall",
+    "no natives/ or reframework/ folder, no .pak file and no file meant for the game folder. If it should be a Dragon's Dogma 2 mod, check that the download is complete, or look for a repacked version on its mod page.",
+  ],
+  [
+    "filesSkipped",
+    "2 files sit in folders the game never reads, and 2 are programs (or named like game folders). The options list them under skipped files; if they were meant for the game, the mod needs repacking.",
+  ],
+  [
+    "outdatedFormats",
+    "2 loose files (mesh, tex) were made for Dragon's Dogma 2 before the September 2026 engine update (TU 3.2). DD2 Pak Bridge is the likely fix; otherwise look for an updated version of this mod.",
+  ],
+  [
+    "unreadable",
+    "it is password-protected. Unpack it with its password and put the unpacked folder in a library folder instead.",
+  ],
+  ["unreadable", "it is damaged (the central directory is cut off). Download it again from its mod page."],
+];
+
 describe("troubleLine() — the §9 trouble cards", () => {
   it("should open on the ember line for a package that can't be opened", () => {
     const trouble = troubleLine(
@@ -165,7 +196,7 @@ describe("troubleLine() — the §9 trouble cards", () => {
     );
     expect(trouble.ember).toBe(true);
     expect(trouble.line).toBe(
-      "We couldn't open `Harbour Lights.7z`: the archive's table of contents is damaged. The other 8 packages are fine.",
+      "The stone couldn't open `Harbour Lights.7z`: the archive's table of contents is damaged. The other 8 packages are fine.",
     );
     expect(troubleLine({ fileName: "a.zip", problems: [problem("unreadable", "Gone.")] }, 1).line).toMatch(
       /The other package is fine\.$/,
@@ -174,11 +205,11 @@ describe("troubleLine() — the §9 trouble cards", () => {
 
   it("should say nothing loads only when nothing does", () => {
     const trouble = troubleLine(
-      { fileName: "Readme Only.zip", problems: [problem("nothingToInstall", "Only a readme inside.")] },
+      { fileName: "Readme Only.zip", problems: [problem("nothingToInstall", "only a readme inside.")] },
       3,
     );
     expect(trouble.ember).toBe(false);
-    expect(trouble.line).toBe("`Readme Only.zip` opened, but holds nothing the game loads: Only a readme inside.");
+    expect(trouble.line).toBe("`Readme Only.zip` opened, but holds nothing the game loads: only a readme inside.");
   });
 
   it("should word an outdated or partly skipped package as one that still opens", () => {
@@ -186,7 +217,7 @@ describe("troubleLine() — the §9 trouble cards", () => {
       {
         fileName: "Old Road Armor Pack.zip",
         problems: [
-          problem("filesSkipped", "1 file in this package will not be installed."),
+          problem("filesSkipped", "1 file sits in a folder the game never reads."),
           problem("outdatedFormats", "3 loose files (mesh, tex) were made for Dragon's Dogma 2 before the update."),
         ],
       },
@@ -200,13 +231,31 @@ describe("troubleLine() — the §9 trouble cards", () => {
     const skipped = troubleLine(
       {
         fileName: "Lantern Glow.zip",
-        problems: [problem("filesSkipped", "2 files in this package will not be installed.")],
+        problems: [problem("filesSkipped", "2 files sit in folders the game never reads.")],
       },
       3,
     );
     expect(skipped.line).toBe(
-      "`Lantern Glow.zip` opens, but some of its files stay out: 2 files in this package will not be installed.",
+      "`Lantern Glow.zip` opens, but some of its files stay out: 2 files sit in folders the game never reads.",
     );
+  });
+
+  it("should state each card's verdict once, for every troubled package the mock holds", () => {
+    const troubled = MOCK_PACKAGES.map((p) => p.summary).filter((s) => leadProblem(s) !== null);
+    expect(troubled.length).toBeGreaterThanOrEqual(3);
+    for (const pkg of troubled) {
+      const line = troubleLine(pkg, troubled.length).line;
+      expect({ line, verdicts: line.match(VERDICT)?.length }).toStrictEqual({ line, verdicts: 1 });
+    }
+  });
+
+  it("should state each card's verdict once with the spine's own whys (rift-catalog)", () => {
+    for (const [kind, why] of SPINE_WHYS) {
+      const line = troubleLine({ fileName: "Harbour Lights.zip", problems: [problem(kind, why)] }, 4).line;
+      expect({ line, verdicts: line.match(VERDICT)?.length }).toStrictEqual({ line, verdicts: 1 });
+      // one colon between the verdict and the why
+      expect(line).not.toMatch(/: [^:]*: /);
+    }
   });
 
   it("should speak for the problem that put the package on the list, not merely the first", () => {

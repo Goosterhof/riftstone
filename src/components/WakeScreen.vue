@@ -4,12 +4,17 @@
 import { computed } from "vue";
 import { useStone, type WakePhase } from "@/composables/useStone";
 import { usePreflight } from "@/composables/usePreflight";
+import { voice, voicedLine } from "@/services/voice";
 import RiftButton from "./RiftButton.vue";
 import RiftInscription from "./RiftInscription.vue";
 
 const { phase } = defineProps<{ phase: Exclude<WakePhase, "ready"> }>();
 const stone = useStone();
 const preflight = usePreflight();
+
+/** No world answered: the voice's own line, so the wake and a later failure
+ *  speak with one narrator (components never compose failure copy). */
+const noWorld = voice({ kind: "gameNotFound", detail: {} }, "game");
 
 const foundLine = computed(() => {
   const o = stone.overview.value;
@@ -31,8 +36,8 @@ const foundLine = computed(() => {
     </RiftInscription>
     <RiftInscription
       v-else-if="phase === 'nogame'"
-      inscription="NO WORLD ANSWERS"
-      body="We searched every Steam library on this PC and found no Dragon's Dogma 2 install. If it lives somewhere unusual, point the stone at it."
+      :inscription="noWorld.inscription ?? 'NO WORLD ANSWERS'"
+      :body="voicedLine(noWorld)"
     >
       <RiftButton variant="primary" :busy="preflight.busy.value === 'game'" @click="preflight.pickGameFolder()"
         >Choose game folder…</RiftButton

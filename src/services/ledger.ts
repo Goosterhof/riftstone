@@ -164,7 +164,7 @@ const KEPT_ASIDE_FOR = /^the file kept aside for /i;
 /** The World pane's note after a crash was rolled back at launch (RS-4). */
 export function recoverySentence(note: RecoveryNote): string {
   const subject = note.action === "restoreParked" ? note.optionName.replace(KEPT_ASIDE_FOR, "") : note.optionName;
-  return `The last ${RECOVERY_ACT[note.action]} of ${subject} was cut short. We rolled back ${plural(note.filesRolledBack, "file")}; your game folder is as it was before.`;
+  return `The last ${RECOVERY_ACT[note.action]} of ${subject} was cut short. The stone rolled back ${plural(note.filesRolledBack, "file")}; your game folder is as it was before.`;
 }
 
 /** The quiet line under the NEXUS facets. */
@@ -188,7 +188,7 @@ export function askNexusToast(o: AskOutcome): { tone: "ember" | "rift"; line: st
   if (o.failure) {
     const line =
       o.failure.inscription === "THE FAR WORLD IS OUT OF REACH"
-        ? "We can't reach Nexus right now, so no labels were learned. Try again when you're online."
+        ? "The stone can't reach Nexus right now, so no labels were learned. Try again when you're online."
         : `${o.failure.voice} No labels were learned this time.`;
     return { tone: "ember", line, learned: 0 };
   }

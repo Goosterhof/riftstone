@@ -11,6 +11,41 @@ use rift_core::{LibraryRoot, RootKind};
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
+/// What a trouble card's window line already says (src/services/voice.ts:
+/// `OPENS_WITH` and the unreadable line). The window owns the verdict and the
+/// spine sends only the why, so a card states its verdict once (Chaos #00129 D3).
+pub(crate) const WINDOW_VERDICTS: &[&str] = &[
+    "will not be installed",
+    "will not load",
+    "won't load",
+    "can be installed",
+    "cannot be installed",
+    "nothing the game loads",
+    "could not open",
+    "couldn't open",
+    "could not be opened",
+    "cannot open",
+    "cannot look inside",
+    "could not read",
+];
+
+/// A trouble message continues the window's sentence after its colon: it
+/// starts with a lower-case word or a count, and it repeats no verdict.
+pub(crate) fn assert_is_a_why(message: &str) {
+    let first = message.chars().next().expect("a why is never empty");
+    assert!(
+        first.is_lowercase() || first.is_ascii_digit(),
+        "a why continues the window's sentence: {message}"
+    );
+    let lower = message.to_lowercase();
+    for verdict in WINDOW_VERDICTS {
+        assert!(
+            !lower.contains(verdict),
+            "{verdict:?} is the window's to say: {message}"
+        );
+    }
+}
+
 /// A zip at `path` holding `files` (deflated), in the given order.
 pub(crate) fn zip_at(path: &Path, files: &[(&str, &[u8])]) {
     let mut writer = ZipWriter::new(File::create(path).unwrap());

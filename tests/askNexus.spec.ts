@@ -153,10 +153,10 @@ describe("Identify & check", () => {
     async () => {
       await wakeOn("offline");
       const identify = vi.spyOn(spine(), "identifyPackages");
-      await askOnce("We can't reach Nexus");
+      await askOnce("The stone can't reach Nexus");
       expect(lastToast()).toStrictEqual({
         tone: "ember",
-        line: "We can't reach Nexus right now, so no labels were learned. Try again when you're online.",
+        line: "The stone can't reach Nexus right now, so no labels were learned. Try again when you're online.",
       });
       expect(useLabels().facets.value?.unlabeledPackages).toBe(5);
       expect(useLabels().exhausted.value).toBe(false);
@@ -201,7 +201,7 @@ describe("askNexusToast()", () => {
     const offline = failure("nexus", { detail: "connection refused" });
     expect(askNexusToast({ before: 5, after: 3, hadLabels: true, failure: offline })).toStrictEqual({
       tone: "ember",
-      line: "We can't reach Nexus right now, so no labels were learned. Try again when you're online.",
+      line: "The stone can't reach Nexus right now, so no labels were learned. Try again when you're online.",
       learned: 0,
     });
     const rationed = failure("nexus", { detail: "429 rate limit" });

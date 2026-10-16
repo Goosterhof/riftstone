@@ -19,7 +19,7 @@ import { MOCK_PACKAGES } from "@/services/mock/library";
 import { useNavigation } from "@/composables/useNavigation";
 import { useToasts } from "@/composables/useToasts";
 import { useWorld } from "@/composables/useWorld";
-import { button, hasButton, sleep, textAt, textOf, until, wakeOn } from "./harness";
+import { button, hasButton, sleep, text, textAt, textOf, until, wakeOn } from "./harness";
 
 afterEach(() => sleep());
 
@@ -170,14 +170,17 @@ describe("THE RETURN's rows and heading", () => {
     ]);
 
     button("Uninstall").click();
-    await until(() => document.querySelector(".plan__note[role='status']") !== null, "the returned note", 4000);
-    expect(
-      textOf(document.querySelector(".plan__note[role='status']") ?? document.body)
-        .replace(/\s+/g, " ")
-        .trim(),
-    ).toBe(
-      "Ermine Cape - Variation 2 has returned to the Rift. 2 files removed; 1 file left in place (changed since, or the game's own).",
+    await until(() => textAt(".plan__returned .plan__carved") === "RETURNED TO THE RIFT", "the carved return", 4000);
+    // THE RETURN mirrors the crossing (Chaos #00129 D4): the plan carves the state
+    // and keeps the result's facts; the toast alone says the sentence.
+    expect(textAt(".plan__returned .plan__note")?.replace(/\s+/g, " ")).toBe(
+      "2 files removed; 1 file left in place (changed since, or the game's own).",
     );
+    // the sentence, said once
+    expect(text().split("has returned to the Rift.").length - 1).toBe(1);
+    expect(
+      useToasts().toasts.value.some((t) => t.line.startsWith("Ermine Cape - Variation 2 has returned to the Rift.")),
+    ).toBe(true);
   });
 
   it("should give the same heading on Your World, and toast what the return did", async () => {
@@ -219,7 +222,7 @@ describe("the other v0.2 sentences", () => {
         filesRolledBack: 1,
       }),
     ).toBe(
-      `The last putting-back of ${SKY} was cut short. We rolled back 1 file; your game folder is as it was before.`,
+      `The last putting-back of ${SKY} was cut short. The stone rolled back 1 file; your game folder is as it was before.`,
     );
   });
 

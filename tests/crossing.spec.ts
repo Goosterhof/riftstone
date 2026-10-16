@@ -3,7 +3,8 @@
 // Your World gold and NOT INSTALLED becomes INSTALLED.
 
 import { afterEach, describe, expect, it } from "vitest";
-import { button, hasButton, sleep, text, textOf, typeQuery, until, wakeOn, idle } from "./harness";
+import { useToasts } from "@/composables/useToasts";
+import { button, hasButton, sleep, text, textAt, textOf, typeQuery, until, wakeOn, idle } from "./harness";
 
 afterEach(() => sleep());
 
@@ -38,8 +39,14 @@ describe("the crossing", () => {
     expect(text()).toContain("nothing is written until you press Install");
 
     button("Install ▶").click();
-    await until(() => text().includes("Lantern Glow Recolor is in your world."), "the landed note");
-    expect(text()).toMatch(/\d+ files? placed\./);
+    await until(() => textAt(".plan__landed .plan__carved") === "IN YOUR WORLD", "the plan's carved landing");
+    // The crossing lands once (Chaos #00129 D4): the toast says the sentence and
+    // owns Undo; the plan only carves the state.
+    const landed = useToasts().toasts.value.find((t) => t.line.startsWith("Lantern Glow Recolor is in your world."));
+    expect(landed?.line).toMatch(/^Lantern Glow Recolor is in your world\. \d+ files? placed\./);
+    expect(landed?.actions.map((a) => a.label)).toStrictEqual(["Undo", "Show in load order"]);
+    // the sentence, said once
+    expect(text().split("is in your world.").length - 1).toBe(1);
 
     await until(() => card("Lantern Glow Recolor")?.classList.contains("rail-world") === true, "the gold rail");
     const after = card("Lantern Glow Recolor");

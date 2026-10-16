@@ -220,17 +220,16 @@ async function copyDetails(): Promise<void> {
     <p v-else-if="world.stage.value === 'returning'" class="plan__note" aria-live="polite">
       Removing {{ plural(fileCount, "file") }}…
     </p>
+    <!-- The crossing lands once (Chaos #00129 D4): the toast says the sentence and
+         owns Undo; the plan carves the state. THE RETURN mirrors it. -->
     <div v-else-if="world.stage.value === 'landed' && world.landed.value" class="plan__landed" role="status">
-      <span
-        >{{ world.plan.value?.name }} is in your world.
-        {{ plural(world.landed.value.filesWritten, "file") }} placed.</span
-      >
+      <span class="plan__carved rs-inscription">IN YOUR WORLD</span>
       <RiftButton size="sm" @click="nav.go('world')">Show in load order</RiftButton>
     </div>
-    <p v-else-if="world.stage.value === 'returned'" class="plan__note" role="status">
-      {{ world.returnPlan.value?.name }} has returned to the Rift.
-      <template v-if="world.returned.value"> {{ returnedSummary(world.returned.value) }}</template>
-    </p>
+    <div v-else-if="world.stage.value === 'returned'" class="plan__returned" role="status">
+      <span class="plan__carved rs-inscription">RETURNED TO THE RIFT</span>
+      <p v-if="world.returned.value" class="plan__note">{{ returnedSummary(world.returned.value) }}</p>
+    </div>
 
     <FailureNotice
       v-if="world.stage.value === 'failed' && world.failure.value"
@@ -307,6 +306,20 @@ async function copyDetails(): Promise<void> {
   border-left: 3px solid var(--rs-world);
   background: var(--rs-hearthhi);
   color: var(--rs-world);
+}
+/* Back to the Rift is back to the cold: the return's state carves in rift light. */
+.plan__returned {
+  margin-bottom: var(--rs-space-2);
+  padding: var(--rs-space-2) 10px;
+  border-left: 3px solid var(--rs-rift);
+  background: var(--rs-hearthhi);
+  color: var(--rs-rift);
+}
+.plan__returned .plan__note {
+  margin: var(--rs-space-1) 0 0;
+}
+.plan__carved {
+  font-size: var(--rs-text-sm);
 }
 .plan__rows {
   margin: var(--rs-space-2) 0 0;

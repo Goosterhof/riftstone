@@ -94,12 +94,12 @@ const CROSSING_INSCRIPTION: Partial<Record<VoiceContext, string>> = {
   adopt: "THE ADOPTION FAILED",
 };
 
-/** "we put back the 4 files already placed" — only when the spine says so. */
+/** "the stone put back the 4 files already placed" — only when the spine says so. */
 function rollbackSentence(d: Detail, context: VoiceContext): string {
   const undone = pick(d, "rolledBack", "restored", "placed", "filesRolledBack");
   const count = Number(undone);
   if (context === "install" && Number.isFinite(count) && count > 0) {
-    return `Your game folder is exactly as it was: we put back the ${count} ${count === 1 ? "file" : "files"} already placed.`;
+    return `Your game folder is exactly as it was: the stone put back the ${count} ${count === 1 ? "file" : "files"} already placed.`;
   }
   return "Your game folder is exactly as it was.";
 }
@@ -130,14 +130,14 @@ function archiveFailure(kind: RiftError["kind"], d: Detail): Voiced {
   const name = pathOf(d).split(/[\\/]/).at(-1) ?? pathOf(d);
   const why: Partial<Record<RiftError["kind"], string>> = {
     corruptArchive: "the archive ends early (truncated download?)",
-    unreadable: stripStop(reasonOf(d, "Windows would not let us read it")),
-    unsupportedFormat: "it isn't a zip, 7z, rar or folder the stone can read",
-    encrypted: "it is password-protected, so the stone can't look inside",
+    unreadable: stripStop(reasonOf(d, "Windows would not let it be read")),
+    unsupportedFormat: "it isn't a zip, 7z, rar or folder",
+    encrypted: "it is password-protected",
   };
   return {
     kind,
     inscription: null,
-    voice: `We couldn't open \`${name}\`: ${why[kind] ?? "it would not open"}.`,
+    voice: `The stone couldn't open \`${name}\`: ${why[kind] ?? "it would not open"}.`,
     empathy: "The rest of your library is fine, and nothing was written.",
     recovery: [SHOW, RESCAN],
   };
@@ -167,7 +167,7 @@ function noGame(): Voiced {
   return {
     kind: "gameNotFound",
     inscription: "NO WORLD ANSWERS",
-    voice: "We searched every Steam library on this PC and found no Dragon's Dogma 2 install.",
+    voice: "The stone searched every Steam library on this PC and found no Dragon's Dogma 2 install.",
     empathy: "If it lives somewhere unusual, point the stone at it.",
     recovery: [{ kind: "pickGameFolder", label: "Choose game folder…" }, RETRY],
   };
@@ -278,7 +278,7 @@ function nexusOffline(): Voiced {
   return {
     kind: "nexus",
     inscription: "THE FAR WORLD IS OUT OF REACH",
-    voice: "We can't reach Nexus right now.",
+    voice: "The stone can't reach Nexus right now.",
     empathy: "Update status below is from the last check. Everything else works offline.",
     recovery: [RETRY],
   };
@@ -340,7 +340,7 @@ function nexusFind(d: Detail, raw: string): Voiced {
   return {
     kind: "nexus",
     inscription: "THE FAR WORLD IS OUT OF REACH",
-    voice: "We can't reach Nexus right now, so it could not be asked about this package.",
+    voice: "The stone can't reach Nexus right now, so it could not be asked about this package.",
     empathy: `${UNCHANGED} Find again when you're online, or paste its Nexus page.`,
     recovery: [RETRY],
   };
@@ -424,11 +424,16 @@ const lowerFirst = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
 function unreadableLine(name: string, message: string, otherPackages: number): string {
   const why = stripStop(message) || "the archive ends early (truncated download?)";
   const others = otherPackages === 1 ? "The other package is fine." : `The other ${otherPackages} packages are fine.`;
-  return `We couldn't open ${name}: ${lowerFirst(why)}. ${others}`;
+  return `The stone couldn't open ${name}: ${lowerFirst(why)}. ${others}`;
 }
 
-/** Packages that open, worded by the trouble that put them on the list. */
+const NOTHING_LOADS = "opened, but holds nothing the game loads";
+
+/** The verdict for each package that opens, worded by the trouble that put it
+ *  on the list. The window owns the verdict and the spine's message is only the
+ *  why after the colon, so a card states its verdict once (Chaos #00129 D3). */
 const OPENS_WITH: Partial<Record<ProblemKind, string>> = {
+  nothingToInstall: NOTHING_LOADS,
   outdatedFormats: "opens, but part of it won't load",
   filesSkipped: "opens, but some of its files stay out",
 };
@@ -437,16 +442,17 @@ const OPENS_WITH: Partial<Record<ProblemKind, string>> = {
 export function troubleLine(pkg: Pick<PackageSummary, "fileName" | "problems">, otherPackages: number): TroubleLine {
   const problem = leadProblem(pkg);
   const name = `\`${pkg.fileName}\``;
-  if (!problem) return { kind: null, ember: false, line: `${name} opened, but holds nothing the game loads.` };
+  if (!problem) return { kind: null, ember: false, line: `${name} ${NOTHING_LOADS}.` };
   const message = problem.message.trim();
   if (problem.kind === "unreadable") {
     return { kind: problem.kind, ember: true, line: unreadableLine(name, message, otherPackages) };
   }
-  const opens = OPENS_WITH[problem.kind];
-  const line = opens
-    ? `${name} ${opens}: ${message}`
-    : `${name} opened, but holds nothing the game loads: ${message || "no mod files inside."}`;
-  return { kind: problem.kind, ember: false, line };
+  const verdict = OPENS_WITH[problem.kind];
+  // a kind the trouble list never leads with carries its own full sentence
+  if (!verdict)
+    return { kind: problem.kind, ember: false, line: message ? `${name}: ${message}` : `${name} ${NOTHING_LOADS}.` };
+  const why = message || (problem.kind === "nothingToInstall" ? "no mod files inside." : "");
+  return { kind: problem.kind, ember: false, line: why ? `${name} ${verdict}: ${why}` : `${name} ${verdict}.` };
 }
 
 /** Why an installed row has no package, worded for the two ways that happens. */

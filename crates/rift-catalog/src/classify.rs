@@ -547,9 +547,10 @@ fn package_problems(options: &[ModOption]) -> Vec<Problem> {
     if !has_payload && !has_menu {
         problems.push(Problem {
             kind: ProblemKind::NothingToInstall,
-            message: "Nothing in this package can be installed: it holds no natives/ or reframework/ folder, \
-                      no .pak file and no file meant for the game folder. If it should be a Dragon's Dogma 2 \
-                      mod, check that the download is complete, or look for a repacked version on its mod page."
+            // only the why: the window's card already says "holds nothing the game loads"
+            message: "no natives/ or reframework/ folder, no .pak file and no file meant for the game \
+                      folder. If it should be a Dragon's Dogma 2 mod, check that the download is complete, \
+                      or look for a repacked version on its mod page."
                 .to_string(),
         });
     }
@@ -596,40 +597,42 @@ fn package_problems(options: &[ModOption]) -> Vec<Problem> {
     problems
 }
 
-/// The `OutdatedFormats` sentence: how many loose files, which asset types,
-/// the engine update that orphaned them, and the likely fix.
+/// The `OutdatedFormats` why: how many loose files, which asset types, the
+/// engine update that orphaned them, and the likely fix. The verdict ("part of
+/// it won't load") is the window's to say (Chaos #00129 D3).
 fn outdated_formats_message(outdated: usize, assets: &BTreeSet<&str>) -> String {
-    let (verb, as_they_stand) = if outdated == 1 {
-        ("was", "as it is")
-    } else {
-        ("were", "as they are")
-    };
+    let verb = if outdated == 1 { "was" } else { "were" };
     format!(
-        "{} ({}) {verb} made for Dragon's Dogma 2 before the September 2026 engine update (TU 3.2) \
-         and will not load {as_they_stand}. DD2 Pak Bridge is the likely fix; otherwise look for \
-         an updated version of this mod.",
+        "{} ({}) {verb} made for Dragon's Dogma 2 before the September 2026 engine update (TU 3.2). \
+         DD2 Pak Bridge is the likely fix; otherwise look for an updated version of this mod.",
         count(outdated, "loose file", "loose files"),
         assets.iter().copied().collect::<Vec<_>>().join(", ")
     )
 }
 
+/// The `FilesSkipped` why: what keeps each file out, counted by cause. The
+/// verdict ("some of its files stay out") is the window's to say (Chaos #00129 D3).
 fn files_skipped_message(in_folders: usize, at_root: usize) -> String {
     let total = in_folders + at_root;
+    let programs = |n: usize| {
+        if n == 1 {
+            "is a program (or named like a game folder)"
+        } else {
+            "are programs (or named like game folders)"
+        }
+    };
     let why = match (in_folders, at_root) {
-        (1, 0) => "it sits in a folder the game never reads".to_string(),
-        (_, 0) => "they sit in folders the game never reads".to_string(),
-        (0, 1) => "it is a program (or named like a game folder), and those never go into the game folder"
-            .to_string(),
-        (0, _) => "they are programs (or named like game folders), and those never go into the game folder"
-            .to_string(),
+        (1, 0) => "1 file sits in a folder the game never reads".to_string(),
+        (_, 0) => format!("{in_folders} files sit in folders the game never reads"),
+        (0, _) => format!(
+            "{} {}, and those never go into the game folder",
+            count(at_root, "file", "files"),
+            programs(at_root)
+        ),
         _ => format!(
-            "{} in folders the game never reads, and {}",
-            count_verb(in_folders, "sits", "sit"),
-            if at_root == 1 {
-                "1 is a program (or named like a game folder)".to_string()
-            } else {
-                format!("{at_root} are programs (or named like game folders)")
-            },
+            "{} in folders the game never reads, and {at_root} {}",
+            count_verb(in_folders, "file sits", "files sit"),
+            programs(at_root)
         ),
     };
     let (subject, object) = if total == 1 {
@@ -638,9 +641,8 @@ fn files_skipped_message(in_folders: usize, at_root: usize) -> String {
         ("they were", "them")
     };
     format!(
-        "{} in this package will not be installed: {why}. The options list {object} under skipped \
-         files; if {subject} meant for the game, the mod needs repacking.",
-        count(total, "file", "files")
+        "{why}. The options list {object} under skipped files; if {subject} meant for the game, \
+         the mod needs repacking."
     )
 }
 
@@ -1183,9 +1185,9 @@ mod tests {
         assert_eq!(problems[0].kind, ProblemKind::FilesSkipped);
         assert_eq!(
             problems[0].message,
-            "1 file in this package will not be installed: it is a program (or named like a game \
-             folder), and those never go into the game folder. The options list it under skipped \
-             files; if it was meant for the game, the mod needs repacking."
+            "1 file is a program (or named like a game folder), and those never go into the game \
+             folder. The options list it under skipped files; if it was meant for the game, the mod \
+             needs repacking."
         );
     }
 
@@ -1206,9 +1208,9 @@ mod tests {
         );
         assert_eq!(
             problems[0].message,
-            "4 files in this package will not be installed: 2 sit in folders the game never reads, \
-             and 2 are programs (or named like game folders). The options list them under skipped \
-             files; if they were meant for the game, the mod needs repacking."
+            "2 files sit in folders the game never reads, and 2 are programs (or named like game \
+             folders). The options list them under skipped files; if they were meant for the game, \
+             the mod needs repacking."
         );
     }
 
@@ -1451,7 +1453,7 @@ mod tests {
             [ProblemKind::FilesSkipped]
         );
         assert!(
-            problems[0].message.starts_with("2 files in this package"),
+            problems[0].message.starts_with("2 files sit in folders"),
             "only the sketch and the variant's own stray file: {}",
             problems[0].message
         );
@@ -1636,8 +1638,8 @@ mod tests {
         assert_eq!(
             problems[0].message,
             "1 loose file (mesh) was made for Dragon's Dogma 2 before the September 2026 engine \
-             update (TU 3.2) and will not load as it is. DD2 Pak Bridge is the likely fix; \
-             otherwise look for an updated version of this mod."
+             update (TU 3.2). DD2 Pak Bridge is the likely fix; otherwise look for an updated \
+             version of this mod."
         );
 
         let two = listing(&[
@@ -1648,8 +1650,54 @@ mod tests {
         assert_eq!(
             problems[0].message,
             "2 loose files (mesh, tex) were made for Dragon's Dogma 2 before the September 2026 \
-             engine update (TU 3.2) and will not load as they are. DD2 Pak Bridge is the likely \
-             fix; otherwise look for an updated version of this mod."
+             engine update (TU 3.2). DD2 Pak Bridge is the likely fix; otherwise look for an \
+             updated version of this mod."
         );
+    }
+
+    /// Chaos #00129 D3: the window opens each trouble card with its own verdict
+    /// ("opened, but holds nothing the game loads: …"), so every message here
+    /// is only the why that follows its colon.
+    #[test]
+    fn every_trouble_message_is_a_why_the_window_can_follow() {
+        let (_, problems) = build_options(
+            &package(),
+            "Pictures",
+            &listing(&["Docs/readme.txt", "image.png"]),
+            &BTreeMap::new(),
+        );
+        assert_eq!(problems[0].kind, ProblemKind::NothingToInstall);
+        crate::test_support::assert_is_a_why(&problems[0].message);
+        assert_eq!(
+            problems[0].message,
+            "no natives/ or reframework/ folder, no .pak file and no file meant for the game \
+             folder. If it should be a Dragon's Dogma 2 mod, check that the download is complete, \
+             or look for a repacked version on its mod page."
+        );
+
+        for (in_folders, at_root) in [(1, 0), (3, 0), (0, 1), (0, 2), (2, 1), (2, 2)] {
+            crate::test_support::assert_is_a_why(&files_skipped_message(in_folders, at_root));
+        }
+        assert_eq!(
+            files_skipped_message(1, 0),
+            "1 file sits in a folder the game never reads. The options list it under skipped \
+             files; if it was meant for the game, the mod needs repacking."
+        );
+        assert_eq!(
+            files_skipped_message(3, 0),
+            "3 files sit in folders the game never reads. The options list them under skipped \
+             files; if they were meant for the game, the mod needs repacking."
+        );
+        assert_eq!(
+            files_skipped_message(2, 1),
+            "2 files sit in folders the game never reads, and 1 is a program (or named like a \
+             game folder). The options list them under skipped files; if they were meant for the \
+             game, the mod needs repacking."
+        );
+
+        let assets: BTreeSet<&str> = ["mesh", "tex"].into_iter().collect();
+        for outdated in [1, 4] {
+            crate::test_support::assert_is_a_why(&outdated_formats_message(outdated, &assets));
+        }
     }
 }

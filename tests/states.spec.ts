@@ -22,7 +22,7 @@ describe("the voiced states (§9)", () => {
     await wakeOn("nogame");
     await until(() => text().includes("NO WORLD ANSWERS"), "the no-game frame");
     expect(text()).toContain(
-      "We searched every Steam library on this PC and found no Dragon's Dogma 2 install. If it lives somewhere unusual, point the stone at it.",
+      "The stone searched every Steam library on this PC and found no Dragon's Dogma 2 install. If it lives somewhere unusual, point the stone at it.",
     );
     expect(hasButton("Choose game folder…")).toBe(true);
     expect(hasButton("Retry search")).toBe(true);
@@ -58,7 +58,7 @@ describe("the voiced states (§9)", () => {
     await until(() => hasButton("Check now"), "the Nexus room");
     button("Check now").click();
     await until(() => text().includes("THE FAR WORLD IS OUT OF REACH"), "the offline notice");
-    expect(text()).toContain("We can't reach Nexus right now.");
+    expect(text()).toContain("The stone can't reach Nexus right now.");
     await until(() => idle(button("Try again")), "the retry to settle");
   });
 

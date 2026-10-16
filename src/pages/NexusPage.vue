@@ -77,9 +77,10 @@ const quotaLine = computed(() => {
 const quotaLow = computed(() => {
   const q = far.quota.value;
   if (!q || q.hourlyRemaining > 20) return null;
-  const at = q.hourlyResetMs ? ` Checks resume at ${formatClock(q.hourlyResetMs)};` : "";
-  const then = at ? `${at} we'll` : " We'll";
-  return `${q.hourlyRemaining} requests left this hour.${then} only re-check mods you open until then.`;
+  const meanwhile = q.hourlyResetMs
+    ? ` Checks resume at ${formatClock(q.hourlyResetMs)}; until then the stone re-checks only the mods you open.`
+    : " Until the hour turns, the stone re-checks only the mods you open.";
+  return `${q.hourlyRemaining} requests left this hour.${meanwhile}`;
 });
 
 const quotaSpent = computed(() => far.quota.value?.hourlyRemaining === 0);

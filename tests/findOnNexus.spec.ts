@@ -332,7 +332,7 @@ describe("Find on Nexus", () => {
     await openFarWorld("offline");
     findButton("Ox Cart Express").click();
     await until(() => text().includes("OUT OF REACH"), "the offline notice");
-    expect(text()).toContain("We can't reach Nexus right now, so it could not be asked about this package.");
+    expect(text()).toContain("The stone can't reach Nexus right now, so it could not be asked about this package.");
     expect(text()).toContain("Nothing was linked; the package stays as it was.");
     expect(hasButton("Try again")).toBe(true);
     expect(candidatesOf("Ox Cart Express")).toBeNull();
