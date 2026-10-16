@@ -10,3 +10,7 @@ src-tauri/gen/schemas/
 *.log
 .DS_Store
 scratchpad/
+
+# Python bytecode, and the privacy sweep's real paths (they stay on the machine)
+__pycache__/
+scripts/privacy-sweep.args

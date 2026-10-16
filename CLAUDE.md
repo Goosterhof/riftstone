@@ -93,15 +93,27 @@ it ever enters this repo**: not in fixtures, tests, docs, comments or bench outp
 invented names (*Vernworth Cloaks Collection*, *Lantern Glow Recolor*, mod `2207`, sqid
 `Rk4vLmN2Q`). A bench that needs a real identifier takes it from the environment (the live Nexus
 bench reads `RIFT_BENCH_NEXUS_MOD`). **Before every push**, run the sweep. It reads the library
-read-only and greps the tree for every identifier it holds, printing locations, never names:
+read-only and greps the working tree, every file version in the history and every commit
+message for each identifier it holds, and for the library's own folder chain. It prints
+locations, never names:
 
 ```sh
-python3 -I scripts/privacy-sweep.py \
-  --library "/mnt/c/<fluffy>/Games/DragonsDogma2/Mods" \
-  --library "/mnt/c/<fluffy>/Games/DragonsDogma2" \
-  --downloads "/mnt/c/Users/<you>/Downloads" \
-  --fluffy-ini "/mnt/c/<fluffy>/Games/DragonsDogma2/installed.ini"
+python3 -I scripts/privacy-sweep.py   # reads scripts/privacy-sweep.args, which git ignores
 ```
+
+The args file keeps this machine's real paths off the public tree, one option per line:
+
+```
+--library /mnt/c/<fluffy>/Games/DragonsDogma2/Mods
+--library /mnt/c/<fluffy>/Games/DragonsDogma2
+--downloads /mnt/c/Users/<you>/Downloads
+--fluffy-ini /mnt/c/<fluffy>/Games/DragonsDogma2/installed.ini
+--private-path C:\<builds>\riftstone-releases
+```
+
+`--private-path` names any other folder of this machine's that must not appear, such as where
+builds land. The sweep reads it the way it reads the library's own folders: as a folder chain, with
+either slash.
 
 *(Written 2026-10-16, after the first sweep found a real mod id in 30 places in rift-nexus's
 tests and a real option name in BUILD-SPEC, both from before the scrub.)*

@@ -8,11 +8,28 @@ installed.ini sections, mod names and pak names, every modinfo.ini name,
 bundle, addonfor parent, author and homepage mod id — READ-ONLY, and greps the
 repo for each. It prints where a hit is, never the identifier itself.
 
+The folders it is pointed at are private too: where a player keeps their mods
+is their own disk layout. Each path's folder chain, from the drive to the first
+folder no stock install has, is swept as a "library location" with either
+slash, so the same folder in a doc, a mock and a test all count.
+
+A push publishes more than the working tree, so the sweep reads three places:
+the working tree, every file version any ref reaches in the history, and every
+commit message. A leak scrubbed from the tree but alive in history still counts.
+
     python3 -I scripts/privacy-sweep.py \\
         --library  "/mnt/c/<fluffy>/Games/DragonsDogma2/Mods" \\
         --library  "/mnt/c/<fluffy>/Games/DragonsDogma2" \\
         --downloads "/mnt/c/Users/<you>/Downloads" \\
         --fluffy-ini "/mnt/c/<fluffy>/Games/DragonsDogma2/installed.ini"
+
+With no arguments it reads them from scripts/privacy-sweep.args, which git
+ignores, so the real paths stay on the machine. One option per line, `#` for a
+comment:
+
+    --library /mnt/c/<fluffy>/Games/DragonsDogma2/Mods
+    --downloads /mnt/c/Users/<you>/Downloads
+    --private-path C:\\<builds>\\riftstone-releases
 
 Exit 0 when the repo holds none of them, 1 when it does (each hit listed as
 file:line and the identifier's kind), 2 on bad arguments. Zip archives are
@@ -29,14 +46,20 @@ appear in code.
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import subprocess
 import sys
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-SKIP_DIRS = {"node_modules", "target", "dist", ".git", "gen"}
-SKIP_FILES = {"Cargo.lock", "package-lock.json"}
+ARGS_FILE = REPO / "scripts" / "privacy-sweep.args"
+# Build output and caches are never pushed; a TRACKED file in one of these
+# folders is (a committed .pyc once carried a path), so history reads those.
+SKIP_DIRS = {"node_modules", "target", "dist", ".git", "gen", "__pycache__"}
+SKIP_FILES = {"Cargo.lock", "package-lock.json", ARGS_FILE.name}
 BINARY = {".png", ".ico", ".icns", ".jpg", ".jpeg", ".webp", ".woff", ".woff2", ".ttf", ".bin", ".pak"}
 GENERIC_OPTION = re.compile(r"(variation|variant|option|version|default|optional)\s*\d*", re.I)
 NEXUS_2026 = re.compile(r"^(?P<name>.+?) (?P<mod>\d+) (?P<ver>\S+) \d{4}-\d{2}-\d{2}T\d{2}-\d{2}Z (?P<sqid>[A-Za-z0-9]+)$")
@@ -45,12 +68,20 @@ DD2_SHAPED = re.compile(r"(^|/)(natives|reframework)/|\.pak$|(^|/)modinfo\.ini$|
 MIN_LEN = 4
 # Fluffy's own folders beside a game's Mods folder: not mods, never identifiers.
 FLUFFY_OWN = {"mods", "logo", "presets", "wallpapers"}
+# Folders every Windows, Steam or Fluffy install has: a chain made only of
+# these is nobody's layout (a default Steam library is no secret).
+STOCK_FOLDERS = {
+    "users", "program files", "program files (x86)", "programdata", "steam", "steamlibrary",
+    "steamapps", "common", "games", "mods", "downloads", "documents", "desktop",
+    "dragonsdogma2", "dragons dogma 2", "dragon's dogma 2",
+}
 
 
 class Identifiers:
     def __init__(self, allow: set[str]):
         self.words: dict[str, str] = {}
         self.ids: dict[str, str] = {}
+        self.places: dict[tuple[str, ...], str] = {}
         self.allow = {a.lower() for a in allow}
 
     def word(self, text: str, kind: str) -> None:
@@ -62,6 +93,10 @@ class Identifiers:
     def number(self, digits: str, kind: str) -> None:
         if len(digits) >= 3:  # one- and two-digit ids are everywhere in code
             self.ids.setdefault(digits, kind)
+
+    def location(self, path: str, kind: str = "library location") -> None:
+        if chain := private_chain(path):
+            self.places.setdefault(chain, kind)
 
     def name(self, file_name: str, kind: str) -> None:
         stem = re.sub(r"\.(zip|7z|rar)$", "", file_name, flags=re.I)
@@ -92,6 +127,39 @@ class Identifiers:
             elif key == "homepage" and (m := re.search(r"dragonsdogma2/mods/(\d+)", value, re.I)):
                 self.number(m[1], "modinfo homepage mod id")
 
+    def patterns(self) -> list[tuple[re.Pattern[str], str]]:
+        # Whole words only: a name is not a hit inside a longer word.
+        words = [
+            (re.compile(rf"(?<![A-Za-z0-9]){re.escape(word)}(?![A-Za-z0-9])", re.I), kind)
+            for word, kind in self.words.items()
+        ]
+        numbers = [(re.compile(rf"(?<![\d.]){digits}(?![\d.])"), kind) for digits, kind in self.ids.items()]
+        return words + numbers + [(chain_pattern(chain), kind) for chain, kind in self.places.items()]
+
+
+def private_chain(path: str) -> tuple[str, ...] | None:
+    """The folders that give a path's owner away: from the drive to the first
+    folder no stock install has, at least two deep when the path allows it.
+    `/mnt/c/<a>/<b>/Games/…` gives (<a>, <b>); `C:\\Users\\<name>\\Downloads`
+    gives (Users, <name>); a path of stock folders only gives None."""
+    parts = [p for p in re.split(r"[\\/]+", path.strip()) if p]
+    if len(parts) >= 2 and parts[0].lower() == "mnt" and len(parts[1]) == 1:
+        parts = parts[2:]
+    elif parts and re.fullmatch(r"[A-Za-z]:", parts[0]):
+        parts = parts[1:]
+    for index, part in enumerate(parts):
+        if part.lower() not in STOCK_FOLDERS and not part.startswith("<"):
+            return tuple(parts[: max(index + 1, min(2, len(parts)))])
+    return None
+
+
+def chain_pattern(chain: tuple[str, ...]) -> re.Pattern[str]:
+    """A chain with either slash (or a doubled backslash, as source code writes
+    one) between its folders; a one-folder chain only right after a drive."""
+    body = r"[\\/]+".join(re.escape(part) for part in chain)
+    lead = r"(?:\b[A-Za-z]:|/mnt/[A-Za-z])[\\/]+" if len(chain) == 1 else r"(?<![A-Za-z0-9])"
+    return re.compile(rf"{lead}{body}(?![A-Za-z0-9])", re.I)
+
 
 def read_package(path: Path, found: Identifiers) -> None:
     if path.is_dir():
@@ -120,6 +188,10 @@ def looks_like_dd2(path: Path) -> bool:
 
 def collect(args: argparse.Namespace) -> Identifiers:
     found = Identifiers(set(args.allow))
+    for given in [*args.library, *args.downloads, *args.fluffy_ini]:
+        found.location(given)
+    for given in args.private_path:
+        found.location(given, "machine path")
     for library in args.library:
         for child in sorted(Path(library).iterdir()):
             if child.name.lower() in FLUFFY_OWN or child.name.startswith("."):
@@ -150,51 +222,136 @@ def collect(args: argparse.Namespace) -> Identifiers:
     return found
 
 
+def swept(relative: Path) -> bool:
+    """A file the sweep reads: not a lockfile, not an image."""
+    return relative.name not in SKIP_FILES and relative.suffix.lower() not in BINARY
+
+
 def repo_files() -> list[Path]:
+    """The working tree, pruned of build output and caches as it is walked."""
     files = []
-    for path in REPO.rglob("*"):
-        relative = path.relative_to(REPO)
-        if (
-            path.is_file()
-            and not (set(relative.parts) & SKIP_DIRS)
-            and path.name not in SKIP_FILES
-            and path.suffix.lower() not in BINARY
-        ):
-            files.append(path)
+    for folder, dirs, names in os.walk(REPO):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        files.extend(Path(folder, name) for name in names if swept(Path(folder, name).relative_to(REPO)))
     return files
 
 
+def git(*args: str, stdin: bytes | None = None) -> bytes:
+    return subprocess.run(["git", "-C", str(REPO), *args], input=stdin, capture_output=True, check=True).stdout
+
+
+def history_files() -> list[tuple[str, str, str]]:
+    """Every file version any ref reaches, once each: (blob, path, text)."""
+    paths: dict[str, str] = {}
+    for line in git("rev-list", "--objects", "--all").decode(errors="replace").splitlines():
+        sha, _, path = line.partition(" ")
+        if path and sha not in paths:
+            paths[sha] = path
+    if not paths:
+        return []
+    kinds = git("cat-file", "--batch-check=%(objectname) %(objecttype)", stdin="\n".join(paths).encode())
+    blobs = [
+        sha
+        for sha, kind in (row.split() for row in kinds.decode().splitlines())
+        if kind == "blob" and swept(Path(paths[sha]))
+    ]
+    out = git("cat-file", "--batch", stdin="\n".join(blobs).encode())
+    versions, at = [], 0
+    for sha in blobs:
+        header_end = out.index(b"\n", at)
+        size = int(out[at:header_end].split()[2])
+        body = out[header_end + 1 : header_end + 1 + size]
+        at = header_end + 1 + size + 1
+        versions.append((sha, paths[sha], body.decode(errors="replace")))
+    return versions
+
+
+def commit_messages() -> list[tuple[str, str]]:
+    raw = git("log", "--all", "--format=%h%x00%B%x01").decode(errors="replace")
+    messages = []
+    for record in raw.split("\x01"):
+        sha, sep, body = record.lstrip("\n").partition("\x00")
+        if sep:
+            messages.append((sha, body))
+    return messages
+
+
+def first_commit_with(blob: str) -> str:
+    shas = git("log", "--all", "--format=%h", f"--find-object={blob}").decode().split()
+    return shas[-1] if shas else blob[:9]
+
+
+def hits_in(
+    text: str, patterns: list[tuple[re.Pattern[str], str]], any_of: re.Pattern[str]
+) -> Iterator[tuple[int, str]]:
+    if not any_of.search(text):
+        return
+    for number, line in enumerate(text.splitlines(), 1):
+        if any_of.search(line):
+            for pattern, kind in patterns:
+                if pattern.search(line):
+                    yield number, kind
+
+
+class ArgsFileParser(argparse.ArgumentParser):
+    """`@file` holds one `--option value` per line; blank lines and `#` lines skip."""
+
+    def convert_arg_line_to_args(self, arg_line: str) -> list[str]:
+        line = arg_line.strip()
+        if not line or line.startswith("#"):
+            return []
+        option, _, value = line.partition(" ")
+        return [option, value.strip()] if value.strip() else [option]
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = ArgsFileParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter, fromfile_prefix_chars="@"
+    )
     parser.add_argument("--library", action="append", default=[], help="a library root (repeatable)")
     parser.add_argument("--downloads", action="append", default=[], help="a downloads folder (repeatable)")
     parser.add_argument("--fluffy-ini", action="append", default=[], help="Fluffy's installed.ini (repeatable)")
+    parser.add_argument(
+        "--private-path", action="append", default=[], help="another machine path to keep out, such as a build folder (repeatable)"
+    )
     parser.add_argument("--allow", action="append", default=["RE Framework", "REFramework", "ReShade"], help="a public identifier to skip")
-    args = parser.parse_args()
+    argv = sys.argv[1:] or ([f"@{ARGS_FILE}"] if ARGS_FILE.is_file() else [])
+    args = parser.parse_args(argv)
     if not (args.library or args.downloads or args.fluffy_ini):
-        parser.error("name at least one --library, --downloads or --fluffy-ini")
+        parser.error(f"name at least one --library, --downloads or --fluffy-ini (or write them to {ARGS_FILE.relative_to(REPO)})")
 
     found = collect(args)
-    # Whole words only: a name is not a hit inside a longer word.
-    words = [
-        (re.compile(rf"(?<![A-Za-z0-9]){re.escape(word)}(?![A-Za-z0-9])", re.I), kind)
-        for word, kind in found.words.items()
-    ]
-    numbers = [(re.compile(rf"(?<![\d.]){digits}(?![\d.])"), kind) for digits, kind in found.ids.items()]
+    patterns = found.patterns()
+    # One pass decides whether a text holds anything at all; most hold nothing.
+    any_of = re.compile("|".join(f"(?:{pattern.pattern})" for pattern, _ in patterns) or r"(?!)", re.I)
     hits = 0
-    for path in repo_files():
+    files = repo_files()
+    for path in files:
         try:
             text = path.read_text(errors="replace")
         except OSError:
             continue
-        for number, line in enumerate(text.splitlines(), 1):
-            for pattern, kind in words + numbers:
-                if pattern.search(line):
-                    hits += 1
-                    print(f"{path.relative_to(REPO)}:{number}: holds a {kind}")
+        for number, kind in hits_in(text, patterns, any_of):
+            hits += 1
+            print(f"{path.relative_to(REPO)}:{number}: holds a {kind}")
+
+    try:
+        versions, messages = history_files(), commit_messages()
+    except (OSError, subprocess.CalledProcessError):
+        versions, messages = [], []
+        print("privacy sweep: not a git checkout here, so the history and the commit messages were not read")
+    for blob, path, text in versions:
+        for number, kind in hits_in(text, patterns, any_of):
+            hits += 1
+            print(f"history {first_commit_with(blob)} {path}:{number}: holds a {kind}")
+    for sha, body in messages:
+        for number, kind in hits_in(body, patterns, any_of):
+            hits += 1
+            print(f"message {sha}:{number}: holds a {kind}")
+
     print(
-        f"privacy sweep: {len(found.words)} names and {len(found.ids)} ids from the library, "
-        f"{len(repo_files())} files read, {hits} hit(s)"
+        f"privacy sweep: {len(found.words)} names, {len(found.ids)} ids and {len(found.places)} locations from the library; "
+        f"{len(files)} files, {len(versions)} file versions in history and {len(messages)} commit messages read; {hits} hit(s)"
     )
     return 1 if hits else 0
 
