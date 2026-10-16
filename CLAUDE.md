@@ -5,7 +5,7 @@
 ## What This Is
 
 **The Riftstone** is a Tauri v2 Windows desktop mod manager for **Dragon's Dogma 2**, built
-to replace Fluffy Mod Manager for one player. It reads every mod you downloaded — zip, 7z,
+to replace Fluffy Mod Manager. It reads every mod you downloaded — zip, 7z,
 rar or a plain folder, nested as deep as the modder packed it — and searches all of it at
 once: option names, descriptions, the menu trail a variant hides behind, and every file path
 inside the archives. It installs and uninstalls the way the 2026 engine expects
@@ -129,7 +129,7 @@ npm run tauri build    # on Windows: target/release/riftstone.exe (+ an unsigned
 No release pipeline and no updater: the investor ruled *"i do not really need a signed
 release for this"*. Build on the Windows side and run the exe.
 
-## Known Limitations (v0.2)
+## Known Limitations
 
 - Nexus labels reach linked packages only. MD5 identify cannot link an unpacked folder (there is no
   archive to hash) or a repack (its bytes are new). Find on Nexus searches those by name (the

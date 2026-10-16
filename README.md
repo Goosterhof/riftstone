@@ -28,4 +28,6 @@ npm run tauri build    # on Windows: target/release/riftstone.exe and an unsigne
 
 The lab journal is in [`CLAUDE.md`](CLAUDE.md): architecture contract, crate map, load rules and gates. So is the contract every crate was built to ([`docs/BUILD-SPEC.md`](docs/BUILD-SPEC.md)) and the window contract ([`docs/WINDOW-CONTRACT.md`](docs/WINDOW-CONTRACT.md)).
 
+The git log and the journals are the laboratory's working diary, kept as they were written. In them, "the investor" is the player the stone was built for, and the lenses, fixers and main session are the AI agents that built and reviewed it.
+
 Part of the [Zmuuzn laboratory](https://github.com/Goosterhof/zmuuzn). Not affiliated with Capcom, Nexus Mods or the authors of Fluffy Mod Manager and REFramework. Dragon's Dogma 2 is Capcom's; the stone only reads and places your own downloads in your own game folder.
