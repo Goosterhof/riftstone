@@ -3,7 +3,10 @@
 //! and uninstalls; after a scan, a folder package's v0.2 id becomes its v0.3
 //! id in the journal and in `nexus.json` (exactly), and an install whose
 //! package moved — the whole mods folder moved, or an adopted stand-in — is
-//! found again by its files (the relink pass), in one journal save.
+//! found again by its files (the relink pass), in one journal save. Where
+//! the stone fingerprinted what it installed, the candidate's bytes are
+//! read and must match: a newer version that kept every size never takes an
+//! install over.
 //!
 //! The schema-1 journals here are written by hand with INVENTED legacy kinds:
 //! the lift recognises only the kinds that stay.
@@ -178,6 +181,11 @@ fn an_adopted_stand_in_whose_files_fit_one_option_is_found_again() {
     );
     assert_eq!(world.installs[0].origin, InstallOrigin::Adopted);
     assert!(!world.installs[0].package_missing);
+    assert_eq!(
+        state.relink_checks_read(),
+        0,
+        "no fingerprint recorded: its sizes are all there is, and nothing is read"
+    );
     let hit = &library::search_impl(
         &state,
         &SearchQuery {
@@ -332,6 +340,11 @@ fn a_moved_mods_folder_is_found_again_by_its_files() {
         "relinked by its files"
     );
     assert!(!world.installs[0].package_missing);
+    assert_eq!(
+        state.relink_checks_read(),
+        1,
+        "the stone fingerprinted the banner: the moved folder's bytes were read and matched"
+    );
     let store: Value = serde_json::from_slice(&fs::read(dirs.nexus_file()).unwrap()).unwrap();
     assert_eq!(
         store["packages"][&PackageId::for_folder(BANNERS).0]["link"]["modId"],
@@ -501,6 +514,219 @@ fn a_newer_archive_with_other_files_never_takes_over_an_install() {
         .checks
         .iter()
         .any(|c| c.id == "relinked"));
+}
+
+/// The recheck's probe: Lantern Glow Recolor 2.1 installed (a pak of two
+/// entries, 112 bytes); 2.2 lands beside it, the same option and layout, a
+/// pak of two OTHER entries at the very same 112 bytes; then 2.1 is deleted.
+/// The sizes fit; the bytes do not.
+#[test]
+fn a_newer_archive_of_the_same_size_never_takes_over_an_install() {
+    let bench = Bench::new();
+    let (state, events, lantern) = installed_lantern(&bench);
+    let older = support::pak(&[
+        rift_pak::path_hash(support::ERMINE_MESH),
+        rift_pak::path_hash("natives/stm/effect/lantern/lantern_glow.tex.251211553"),
+    ]);
+    let newer = support::pak(&[
+        rift_pak::path_hash("natives/stm/effect/lantern/lantern_glow_amber.tex.251211553"),
+        rift_pak::path_hash("natives/stm/effect/lantern/lantern_glow_ember.tex.251211553"),
+    ]);
+    assert_eq!(newer.len(), older.len(), "the same size");
+    assert_ne!(newer, older, "other bytes");
+    support::write_zip(
+        &bench.mods.join("Lantern Glow Recolor 2.2.zip"),
+        &[
+            (
+                "Lantern Glow/modinfo.ini",
+                b"name=Lantern Glow Recolor\r\nversion=2.2\r\n",
+            ),
+            ("Lantern Glow/LanternGlow.pak", &newer),
+        ],
+    );
+    fs::remove_file(bench.mods.join("Lantern Glow Recolor.zip")).unwrap();
+    assert!(state.scan_blocking());
+
+    let world = deploy::get_installed_impl(&state).unwrap();
+    assert_eq!(world.installs.len(), 1);
+    assert_eq!(world.installs[0].option_id, lantern, "keeps its id");
+    assert!(world.installs[0].package_missing, "its own archive is gone");
+    assert_eq!(world.installs[0].version.as_deref(), Some("2.1"));
+    let in_game: Vec<Vec<u8>> = fs::read_dir(bench.game.join("pak_mods"))
+        .unwrap()
+        .map(|entry| fs::read(entry.unwrap().path()).unwrap())
+        .collect();
+    assert_eq!(in_game, vec![older], "the game folder holds 2.1's pak");
+    assert!(events.named(GAME_CHANGED).is_empty(), "nothing moved");
+    assert!(!overview::get_overview_impl(&state)
+        .unwrap()
+        .checks
+        .iter()
+        .any(|c| c.id == "relinked"));
+    assert_eq!(state.relink_checks_read(), 1, "2.2's pak was read once");
+    assert!(
+        !DataDirs::under(&bench.data_home())
+            .relink_scratch()
+            .exists(),
+        "the scratch folder went with the scan"
+    );
+
+    // The verdict holds for the session: the next scan reads nothing again.
+    assert!(state.scan_blocking());
+    assert_eq!(state.relink_checks_read(), 1);
+    assert_eq!(
+        deploy::get_installed_impl(&state).unwrap().installs[0].option_id,
+        lantern
+    );
+    assert!(events.named(GAME_CHANGED).is_empty());
+}
+
+/// The bench's Vernworth Cloaks Collection, every entry as the bench writes
+/// it, the Ermine Cape's mesh given.
+fn cloaks_collection(path: &Path, ermine_mesh: &[u8]) {
+    let screenshot = support::png(640, 360);
+    support::write_zip(
+        path,
+        &[
+            ("Vernworth Cloaks Collection/README.txt", b"Read me by the fire."),
+            (
+                "Vernworth Cloaks Collection/Cloaks/modinfo.ini",
+                b"name=Cloaks\r\nDummyMod=True\r\n",
+            ),
+            (
+                "Vernworth Cloaks Collection/Cloaks/Ermine Cape/modinfo.ini",
+                b"name=Ermine Cape\r\naddonfor=Cloaks\r\nauthor=Vern\r\nversion=2\r\ndescription=A white cape   with black tips,\tfor the cold roads north of Vernworth.\r\nscreenshot=screenshot.png\r\n",
+            ),
+            (
+                "Vernworth Cloaks Collection/Cloaks/Ermine Cape/screenshot.png",
+                &screenshot,
+            ),
+            (
+                &format!(
+                    "Vernworth Cloaks Collection/Cloaks/Ermine Cape/{}",
+                    support::ERMINE_MESH
+                ),
+                ermine_mesh,
+            ),
+            (
+                "Vernworth Cloaks Collection/Cloaks/Wool Hood/modinfo.ini",
+                b"name=Wool Hood\r\naddonfor=Cloaks\r\n",
+            ),
+            (
+                &format!("Vernworth Cloaks Collection/Cloaks/Wool Hood/{WOOL_MESH}"),
+                b"wool hood mesh bytes",
+            ),
+        ],
+    );
+}
+
+/// The same probe with a loose file: the Ermine Cape installed from the
+/// collection; version 2 of the collection lands with the same layout and
+/// the cape's mesh at the very same 22 bytes, other ones; the first copy is
+/// deleted.
+#[test]
+fn a_newer_collection_whose_mesh_kept_its_size_never_takes_over_an_install() {
+    let bench = Bench::new();
+    let dirs = DataDirs::under(&bench.data_home());
+    let (state, events) = bench.open(bench.config(dirs));
+    assert!(state.scan_blocking());
+    let ermine = option_named(&state, "Ermine Cape");
+    deploy::install_impl(&state, &ermine).unwrap();
+    events.clear();
+    let installed = fs::read(bench.game.join(support::ERMINE_MESH)).unwrap();
+    let recut = b"ERMINE CAPE MESH BYTES";
+    assert_eq!(recut.len(), installed.len(), "the same size");
+    cloaks_collection(&bench.mods.join("Vernworth Cloaks Collection 2.zip"), recut);
+    fs::remove_file(bench.mods.join("Vernworth Cloaks Collection.zip")).unwrap();
+    assert!(state.scan_blocking());
+
+    let world = deploy::get_installed_impl(&state).unwrap();
+    assert_eq!(world.installs.len(), 1);
+    assert_eq!(world.installs[0].option_id, ermine, "keeps its id");
+    assert!(world.installs[0].package_missing);
+    assert_eq!(
+        fs::read(bench.game.join(support::ERMINE_MESH)).unwrap(),
+        installed,
+        "the game folder holds the first cut"
+    );
+    assert!(events.named(GAME_CHANGED).is_empty(), "nothing moved");
+    assert!(!overview::get_overview_impl(&state)
+        .unwrap()
+        .checks
+        .iter()
+        .any(|c| c.id == "relinked"));
+    assert_eq!(state.relink_checks_read(), 1);
+}
+
+#[test]
+fn the_same_archive_under_another_name_is_found_again_by_its_bytes() {
+    let bench = Bench::new();
+    let (state, events, lantern) = installed_lantern(&bench);
+    fs::rename(
+        bench.mods.join("Lantern Glow Recolor.zip"),
+        bench.mods.join("Lantern Glow Recolor (kept).zip"),
+    )
+    .unwrap();
+    assert!(state.scan_blocking());
+
+    let kept = option_named(&state, "Lantern Glow Recolor");
+    assert_ne!(kept, lantern, "another file name, another package id");
+    let world = deploy::get_installed_impl(&state).unwrap();
+    assert_eq!(world.installs[0].option_id, kept, "relinked by its bytes");
+    assert!(!world.installs[0].package_missing);
+    assert_eq!(
+        state.relink_checks_read(),
+        1,
+        "its pak was read and matched"
+    );
+    assert_eq!(events.named(GAME_CHANGED).len(), 1);
+    assert_relinked(&state, 1);
+    assert!(!DataDirs::under(&bench.data_home())
+        .relink_scratch()
+        .exists());
+}
+
+#[test]
+fn a_relink_read_while_a_change_holds_the_game_folder_lands_when_it_lets_go() {
+    // The bytes are read before the migration asks for the deploy lock: a
+    // change holding it never delays the read, and the change's end applies
+    // the verdict without reading again.
+    let bench = Bench::new();
+    let (state, events, lantern) = installed_lantern(&bench);
+    fs::rename(
+        bench.mods.join("Lantern Glow Recolor.zip"),
+        bench.mods.join("Lantern Glow Recolor (kept).zip"),
+    )
+    .unwrap();
+    let turn = state.turn();
+    let scan = {
+        let state = std::sync::Arc::clone(&state);
+        std::thread::spawn(move || state.scan_blocking())
+    };
+    wait_for(&events, LIBRARY_CHANGED, 1);
+    assert!(scan.join().unwrap());
+    assert_eq!(
+        state.relink_checks_read(),
+        1,
+        "read with the lock held elsewhere"
+    );
+    assert!(
+        events.named(GAME_CHANGED).is_empty(),
+        "the migration waited"
+    );
+    drop(turn);
+    let world = deploy::get_installed_impl(&state).unwrap();
+    assert_ne!(world.installs[0].option_id, lantern);
+    assert!(
+        !world.installs[0].package_missing,
+        "and landed when it let go"
+    );
+    assert_eq!(
+        state.relink_checks_read(),
+        1,
+        "on the verdict, unread again"
+    );
+    assert_eq!(events.named(GAME_CHANGED).len(), 1);
 }
 
 fn assert_relinked(state: &AppState, count: usize) {

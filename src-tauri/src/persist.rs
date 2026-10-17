@@ -126,6 +126,13 @@ impl DataDirs {
     pub fn thumbs_dir(&self) -> PathBuf {
         self.cache.join("thumbs")
     }
+
+    /// v0.3: where the relink's content check unpacks the entries it
+    /// fingerprints, one scan at a time. Emptied after every scan and at
+    /// every launch; nothing else is ever written there.
+    pub fn relink_scratch(&self) -> PathBuf {
+        self.cache.join("relink-check")
+    }
 }
 
 /// `settings.json`: the window's [`Settings`] plus what only the spine needs.

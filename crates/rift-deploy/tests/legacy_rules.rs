@@ -1,8 +1,9 @@
 //! The data older builds left behind keeps working (WINDOW-CONTRACT § v0.3
 //! Legacy data): a schema-1 journal is lifted in memory as it loads and never
-//! saved at load; installs take new ids in one save (`rekey`); and the relink
+//! saved at load; installs take new ids in one save (`rekey`); the relink
 //! matcher finds the library option an install whose package left the mods
-//! folder came from.
+//! folder came from; and the content check holds that option to the very
+//! bytes the install wrote, wherever the journal fingerprinted them.
 //!
 //! The schema-1 journals below are written by hand. Their legacy kinds are
 //! INVENTED (`adoptedFromElsewhere`, `takenOverByHand`, owner `elsewhere`) —
@@ -11,7 +12,7 @@
 
 mod common;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 
@@ -20,7 +21,7 @@ use rift_core::{
     DeployTarget, ModOption, OptionId, Package, PackageId, PayloadFile, PayloadKinds, Problem,
     ProblemKind, RiftError,
 };
-use rift_deploy::relink::{propose, propose_on_shelf};
+use rift_deploy::relink::{content_check, propose, propose_on_shelf, read_fingerprints};
 use rift_deploy::{
     journal_path, read_game_state, rekey, rekey_with_files, uninstall, Below, BelowOwner,
     DeployKind, DeployedFile, InstalledOption, Intent, IntentAction, IntentStep, Journal, Origin,
@@ -1146,4 +1147,224 @@ fn an_install_whose_package_is_on_the_shelf_but_unreadable_stays_put() {
         propose_on_shelf(&journal.installs, &[on_shelf(&copy)]),
         BTreeMap::from([(one.id(), copy.option.id.clone())])
     );
+}
+
+// ---------------------------------------------------------------------------
+// The content check: the bytes behind the sizes
+// ---------------------------------------------------------------------------
+
+/// Nothing is left in a scratch folder once its parts are read.
+fn assert_empty(scratch: &Path) {
+    let left: Vec<String> = fs::read_dir(scratch)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(left.is_empty(), "parts left behind: {left:?}");
+}
+
+#[test]
+fn a_newer_archive_of_the_same_size_is_told_apart_by_its_bytes() {
+    // 1.0 is installed; 1.1 recut the mesh at the very same 17 bytes and
+    // kept the script. The sizes fit; the content check does not.
+    let bench = Bench::new();
+    let scratch = tempfile::tempdir().unwrap();
+    let mut journal = bench.journal();
+    let one = lantern_glow("Lantern Glow Recolor 1.0.zip", b"version one bytes");
+    one.install(&bench, &mut journal);
+    let recut = lantern_glow("Lantern Glow Recolor 1.1.zip", b"VERSION ONE BYTES");
+    assert_eq!(
+        propose_on_shelf(&journal.installs, &[on_shelf(&recut)]),
+        BTreeMap::from([(one.id(), recut.option.id.clone())]),
+        "the sizes alone fit 1.1"
+    );
+    let install = journal.find(&one.id()).unwrap();
+    let check = content_check(install, &recut.option).expect("the install fingerprinted its files");
+    assert_eq!(check.install(), &one.id());
+    assert_eq!(check.option(), &recut.option.id);
+    assert_eq!(
+        check.entries().collect::<Vec<_>>(),
+        vec![
+            (
+                "Lantern Glow/natives/stm/effect/lantern/lantern_glow.mesh",
+                17
+            ),
+            ("Lantern Glow/reframework/autorun/lantern_glow.lua", 20),
+        ],
+        "each recorded file's entry, once"
+    );
+    assert_eq!(check.bytes(), 37);
+    let prints = read_fingerprints(&check, &mut recut.source(), scratch.path()).unwrap();
+    assert_eq!(prints.len(), 2);
+    assert!(
+        !check.confirms(&prints),
+        "1.1's mesh is not the one installed"
+    );
+    assert_empty(scratch.path());
+
+    // The very bytes under another name (1.0 moved) confirm.
+    let moved = lantern_glow("Lantern Glow Recolor (moved).zip", b"version one bytes");
+    let check = content_check(install, &moved.option).unwrap();
+    let prints = read_fingerprints(&check, &mut moved.source(), scratch.path()).unwrap();
+    assert!(check.confirms(&prints));
+    assert!(
+        !check.confirms(&HashMap::new()),
+        "nothing read confirms nothing"
+    );
+    assert_empty(scratch.path());
+    assert_eq!(
+        bench
+            .read("natives/stm/effect/lantern/lantern_glow.mesh")
+            .unwrap(),
+        b"version one bytes",
+        "reading never touches the game folder"
+    );
+    assert_no_temporaries(&bench);
+}
+
+#[test]
+fn paks_are_held_to_their_bytes_in_any_order() {
+    let bench = Bench::new();
+    let scratch = tempfile::tempdir().unwrap();
+    let mut journal = bench.journal();
+    let cloaks: &[u8] = b"KPKA cloaks one";
+    let hoods: &[u8] = b"KPKA hoods one!";
+    assert_eq!(cloaks.len(), hoods.len(), "two paks of one size");
+    let paks = |first: &[u8], second: &[u8]| {
+        TestMod::new("Vernworth Cloaks")
+            .pak("cloaks.pak", first)
+            .pak("hoods.pak", second)
+    };
+    let installed = paks(cloaks, hoods);
+    installed.install(&bench, &mut journal);
+    let install = journal.find(&installed.id()).unwrap();
+    assert_eq!(install.pak_files().count(), 2);
+
+    let read = |option: &TestMod| {
+        let check = content_check(install, &option.option).unwrap();
+        assert_eq!(check.entries().count(), 2, "every pak of the size is read");
+        let prints = read_fingerprints(&check, &mut option.source(), scratch.path()).unwrap();
+        check.confirms(&prints)
+    };
+    assert!(read(&installed), "the same paks");
+    assert!(
+        read(&paks(hoods, cloaks)),
+        "the same bytes under each other's names: a pak's name in pak_mods/ is the stone's own"
+    );
+    assert!(
+        !read(&paks(cloaks, b"KPKA hoods two!")),
+        "one pak recut at its size"
+    );
+    assert!(
+        !read(&paks(cloaks, cloaks)),
+        "each entry holds one of the install's paks, never two"
+    );
+    assert_empty(scratch.path());
+}
+
+#[test]
+fn a_file_without_a_fingerprint_is_held_to_its_size_alone() {
+    let bench = Bench::new();
+    let scratch = tempfile::tempdir().unwrap();
+
+    // An install the journal took over by hand recorded no fingerprint: its
+    // sizes are all there is, and nothing is read.
+    let mut journal = Journal::new(Path::new("/g"));
+    let older = adopted(
+        &mut journal,
+        "adopted#Lantern Glow",
+        "Lantern Glow Recolor",
+        "Lantern Glow",
+        &[(
+            "natives/stm/effect/lantern/lantern_glow.mesh",
+            DeployKind::Loose,
+            17,
+            Below::Nothing,
+        )],
+    );
+    let recut = lantern_glow("Lantern Glow Recolor 1.1.zip", b"VERSION ONE BYTES");
+    assert_eq!(content_check(&older, &recut.option), None);
+
+    // One file fingerprinted, one not: only the fingerprinted one is read.
+    let mut journal = bench.journal();
+    let one = lantern_glow("Lantern Glow Recolor 1.0.zip", b"version one bytes");
+    one.install(&bench, &mut journal);
+    let mut install = journal.find(&one.id()).unwrap().clone();
+    let script = install
+        .files
+        .iter_mut()
+        .find(|file| file.kind == DeployKind::Reframework)
+        .unwrap();
+    script.fingerprint = None;
+    let mut new_script = lantern_glow("Lantern Glow Recolor 1.0b.zip", b"version one bytes");
+    new_script.files[1].1 = b"-- the lantern swing".to_vec();
+    let check = content_check(&install, &new_script.option).unwrap();
+    assert_eq!(check.entries().count(), 1, "the mesh only");
+    let prints = read_fingerprints(&check, &mut new_script.source(), scratch.path()).unwrap();
+    assert!(
+        check.confirms(&prints),
+        "the script keeps the size rule; the mesh is the one installed"
+    );
+    let check = content_check(&install, &recut.option).unwrap();
+    let prints = read_fingerprints(&check, &mut recut.source(), scratch.path()).unwrap();
+    assert!(!check.confirms(&prints));
+    assert_empty(scratch.path());
+}
+
+#[test]
+fn the_later_entry_for_a_path_is_the_one_read() {
+    let bench = Bench::new();
+    let scratch = tempfile::tempdir().unwrap();
+    let mut journal = bench.journal();
+    let single = TestMod::new("Glow").loose("natives/stm/glow.mesh", b"second cut");
+    single.install(&bench, &mut journal);
+    let install = journal.find(&single.id()).unwrap();
+    let doubled = |first: &[u8], second: &[u8]| {
+        TestMod::new("Glow")
+            .target("first/glow.mesh", loose("natives/stm/glow.mesh"), first)
+            .target("second/glow.mesh", loose("natives/STM/Glow.mesh"), second)
+    };
+    let later = doubled(b"first copy", b"second cut");
+    let check = content_check(install, &later.option).unwrap();
+    assert_eq!(
+        check.entries().collect::<Vec<_>>(),
+        vec![("Glow/second/glow.mesh", 10)],
+        "an install of the option writes the later entry"
+    );
+    let prints = read_fingerprints(&check, &mut later.source(), scratch.path()).unwrap();
+    assert!(check.confirms(&prints));
+
+    let earlier = doubled(b"second cut", b"first copy");
+    let check = content_check(install, &earlier.option).unwrap();
+    let prints = read_fingerprints(&check, &mut earlier.source(), scratch.path()).unwrap();
+    assert!(!check.confirms(&prints));
+    assert_empty(scratch.path());
+}
+
+#[test]
+fn an_option_without_a_fingerprinted_path_confirms_nothing_and_reads_nothing() {
+    let bench = Bench::new();
+    let mut journal = bench.journal();
+    let one = lantern_glow("Lantern Glow Recolor 1.0.zip", b"version one bytes");
+    one.install(&bench, &mut journal);
+    let install = journal.find(&one.id()).unwrap();
+    let elsewhere = TestMod::new("Lantern Glow").loose("natives/stm/other.mesh", b"x");
+    let check = content_check(install, &elsewhere.option).unwrap();
+    assert_eq!(check.entries().count(), 0);
+    assert!(!check.confirms(&HashMap::new()));
+}
+
+#[test]
+fn a_read_that_fails_names_it_and_leaves_no_part_behind() {
+    let bench = Bench::new();
+    let scratch = tempfile::tempdir().unwrap();
+    let mut journal = bench.journal();
+    let one = lantern_glow("Lantern Glow Recolor 1.0.zip", b"version one bytes");
+    one.install(&bench, &mut journal);
+    let install = journal.find(&one.id()).unwrap();
+    let check = content_check(install, &one.option).unwrap();
+    // The second entry of the pass is damaged: the first part was written.
+    let err =
+        read_fingerprints(&check, &mut one.source().failing_at(2), scratch.path()).unwrap_err();
+    assert!(matches!(err, RiftError::CorruptArchive { .. }), "{err:?}");
+    assert_empty(scratch.path());
 }

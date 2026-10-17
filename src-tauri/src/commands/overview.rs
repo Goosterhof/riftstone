@@ -231,7 +231,7 @@ fn checks(
             "relinked",
             CheckLevel::Info,
             format!("{relinked} install(s) found again in the mods folder"),
-            "Each was known by an id the mods folder no longer answers to (an id from before v0.3, a folder or archive renamed), and was matched to the one option there that installs the same files, each at its game path and with its size. So it shows, updates and uninstalls as before. Nothing in the game folder changed.".into(),
+            "Each was known by an id the mods folder no longer answers to (an id from before v0.3, a folder or archive renamed), and was matched to the one option there that installs the same files: each at its game path, the same size, and the same bytes wherever the Riftstone recorded them. So it shows, updates and uninstalls as before. Nothing in the game folder changed.".into(),
             None,
         );
     }

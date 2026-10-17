@@ -2213,6 +2213,7 @@ impl NexusCandidate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rift_core::{NexusReason, RiftError};
     use serde::de::DeserializeOwned;
     use serde_json::{json, Value};
 
@@ -4333,5 +4334,188 @@ mod tests {
         // Every other check passes through as rift-deploy names it.
         assert_eq!(window_check_id("paksLoaded"), "paksLoaded");
         assert_eq!(window_check_id("parkedBackups"), "parkedBackups");
+    }
+
+    // -- the error literals: rift-core's own types, read off the wire ------
+
+    /// The window's types, as it is built.
+    const WIRE: &str = include_str!("../../src/types/rift.ts");
+
+    /// `text` without its comments — block comments (the TSDoc between a
+    /// union's members) and lines that are only a `//` comment — so a quoted
+    /// word in a comment is never read as a literal. (A `//` after code is
+    /// left alone: `"rift://…"` is a literal.)
+    fn without_comments(text: &str) -> String {
+        let mut blocks_out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(start) = rest.find("/*") {
+            blocks_out.push_str(&rest[..start]);
+            let comment = &rest[start..];
+            rest = comment.find("*/").map_or("", |end| &comment[end + 2..]);
+        }
+        blocks_out.push_str(rest);
+        blocks_out
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The string literals between `head` and the first `;` after it, in
+    /// `wire`, sorted: the members of a union of literals.
+    fn union_after(wire: &str, head: &str) -> Vec<String> {
+        let start = wire
+            .find(head)
+            .unwrap_or_else(|| panic!("rift.ts declares {head}"))
+            + head.len();
+        let body = &wire[start..];
+        let body = &body[..body
+            .find(';')
+            .unwrap_or_else(|| panic!("{head} closes with a ;"))];
+        let mut literals: Vec<String> = body
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect();
+        literals.sort();
+        literals
+    }
+
+    /// Every `RiftError` kind, each once. The match has no wildcard arm: a
+    /// kind added to rift-core does not build here until it is listed.
+    fn every_rift_error() -> Vec<RiftError> {
+        let text = String::new;
+        let all = vec![
+            RiftError::Unreadable {
+                path: text(),
+                detail: text(),
+            },
+            RiftError::UnsupportedFormat { path: text() },
+            RiftError::Encrypted { path: text() },
+            RiftError::CorruptArchive {
+                path: text(),
+                detail: text(),
+            },
+            RiftError::UnsafeEntryPath { entry: text() },
+            RiftError::EntryNotFound { entry: text() },
+            RiftError::GameNotFound,
+            RiftError::Refused { reason: text() },
+            RiftError::Journal { detail: text() },
+            RiftError::Nexus {
+                detail: text(),
+                reason: None,
+            },
+            RiftError::Io { detail: text() },
+        ];
+        for err in &all {
+            match err {
+                RiftError::Unreadable { .. }
+                | RiftError::UnsupportedFormat { .. }
+                | RiftError::Encrypted { .. }
+                | RiftError::CorruptArchive { .. }
+                | RiftError::UnsafeEntryPath { .. }
+                | RiftError::EntryNotFound { .. }
+                | RiftError::GameNotFound
+                | RiftError::Refused { .. }
+                | RiftError::Journal { .. }
+                | RiftError::Nexus { .. }
+                | RiftError::Io { .. } => {}
+            }
+        }
+        all
+    }
+
+    /// Every `NexusReason`, each once. As above, a reason added to
+    /// rift-core does not build here until it is listed.
+    fn every_nexus_reason() -> Vec<NexusReason> {
+        use NexusReason as R;
+        let all = vec![
+            R::Offline,
+            R::RateLimited,
+            R::NoKey,
+            R::KeyRejected,
+            R::PremiumRequired,
+            R::LinkExpired,
+            R::LinkNotYours,
+            R::LinkRefused,
+            R::FileGone,
+            R::SizeMismatch,
+            R::NotTheFile,
+            R::EndorseNotDownloaded,
+            R::EndorseTooSoon,
+            R::EndorseOwnMod,
+        ];
+        for reason in &all {
+            match reason {
+                R::Offline
+                | R::RateLimited
+                | R::NoKey
+                | R::KeyRejected
+                | R::PremiumRequired
+                | R::LinkExpired
+                | R::LinkNotYours
+                | R::LinkRefused
+                | R::FileGone
+                | R::SizeMismatch
+                | R::NotTheFile
+                | R::EndorseNotDownloaded
+                | R::EndorseTooSoon
+                | R::EndorseOwnMod => {}
+            }
+        }
+        all
+    }
+
+    #[test]
+    fn error_kinds_and_nexus_reasons_are_the_literals_the_window_reads() {
+        let wire = without_comments(WIRE);
+        let interface = &wire[wire
+            .find("export interface RiftError {")
+            .expect("rift.ts declares RiftError")..];
+        let mut kinds: Vec<String> = every_rift_error()
+            .iter()
+            .map(|err| {
+                serde_json::to_value(err).unwrap()["kind"]
+                    .as_str()
+                    .expect("every RiftError crosses with a kind")
+                    .to_string()
+            })
+            .collect();
+        kinds.sort();
+        assert_eq!(
+            kinds,
+            union_after(interface, "kind:"),
+            "rift-core's RiftError kinds and rift.ts's RiftError.kind are one list"
+        );
+
+        let mut reasons: Vec<String> = every_nexus_reason()
+            .iter()
+            .map(|reason| {
+                serde_json::to_value(reason)
+                    .unwrap()
+                    .as_str()
+                    .expect("a reason crosses as a string")
+                    .to_string()
+            })
+            .collect();
+        reasons.sort();
+        assert_eq!(
+            reasons,
+            union_after(&wire, "export type NexusReason ="),
+            "rift-core's NexusReason and rift.ts's NexusReason are one list"
+        );
+    }
+
+    #[test]
+    fn the_literal_reader_skips_comments_and_stops_at_the_union_s_end() {
+        let wire = without_comments(
+            "export type Mood =\n  | \"calm\"\n  /** not \"stormy\" */\n  // nor \"wild\"\n  | \"grim\";\nconst x = \"after\";",
+        );
+        assert_eq!(union_after(&wire, "export type Mood ="), ["calm", "grim"]);
+        assert_eq!(
+            without_comments("const e = \"rift://scan-progress\";"),
+            "const e = \"rift://scan-progress\";"
+        );
     }
 }

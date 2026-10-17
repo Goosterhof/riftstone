@@ -18,7 +18,11 @@
 //! ([`SpineConfig::library_dir`]): made at launch when it is missing, cleared
 //! of the stone's own leftover partial downloads, scanned, and watched.
 //! After every scan the migration ([`AppState::migrate`]) gives the journal
-//! and `nexus.json` the v0.3 ids of what they knew under older ones.
+//! and `nexus.json` the v0.3 ids of what they knew under older ones. Its
+//! relinks stand on the bytes: before the migration takes the deploy lock,
+//! the scan reads, with no lock held, the package entries that confirm them
+//! ([`AppState::confirm_relinks`], bounded per scan), and the migration
+//! applies only what they confirmed.
 //!
 //! **The game (v0.3).** [`GameWord`] holds what the spine believes about the
 //! game: the game watcher ([`AppState::watch_game`]) samples [`GameWatch`]
@@ -42,7 +46,7 @@
 //! Every lock is taken through [`lock`], [`read`] or [`write()`], which recover
 //! from poisoning: a panic in one command must not wedge every command after it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::panic::{self, AssertUnwindSafe};
@@ -275,6 +279,15 @@ pub struct AppState {
     migration_due: AtomicBool,
     /// Installs found again in the mods folder this session (`relinked`).
     relinked: AtomicUsize,
+    /// v0.3: what the bytes said of each relink the scans read for
+    /// ([`AppState::confirm_relinks`]), for the session. Held only for a
+    /// lookup or an update, never across a read.
+    relink_verdicts: Mutex<HashMap<migrate::Confirmation, bool>>,
+    /// A scan is reading for the relink pass right now (one at a time: they
+    /// share the scratch folder).
+    relink_reading: AtomicBool,
+    /// How many relink confirmations read a package this session.
+    relink_reads: AtomicUsize,
     pub(crate) recovered: Mutex<Option<RecoveryNote>>,
     snapshot: Fresh<Snapshot>,
     pub(crate) paks: PakHashCache,
@@ -317,6 +330,8 @@ impl AppState {
         keys: Box<dyn KeyStore>,
     ) -> Arc<AppState> {
         let dirs = &config.dirs;
+        // A relink check a quit cut short leaves its parts behind.
+        clear_relink_scratch(&dirs.relink_scratch());
         let settings_loaded: Loaded<StoredSettings> = persist::load_json(&dirs.settings_file());
         let settings_file = SavedFile::new(dirs.settings_file(), settings_loaded.unreadable());
         let settings = settings_loaded.found().unwrap_or_default();
@@ -385,6 +400,9 @@ impl AppState {
             installing: AtomicUsize::new(0),
             migration_due: AtomicBool::new(false),
             relinked: AtomicUsize::new(0),
+            relink_verdicts: Mutex::new(HashMap::new()),
+            relink_reading: AtomicBool::new(false),
+            relink_reads: AtomicUsize::new(0),
             recovered: Mutex::new(None),
             snapshot: Fresh::default(),
             paks: PakHashCache::default(),
@@ -562,21 +580,27 @@ impl AppState {
     /// its journal, recover it, remember the choice, and find its installs
     /// in the mods folder again.
     pub fn switch_game(&self, game: GameInstall) {
-        let _turn = self.turn();
-        let journal = load_journal(self.config.dirs.state_dir(), Some(&game));
         {
-            let mut world = write(&self.world);
-            world.game = Some(game.clone());
-            world.journal = journal;
+            let _turn = self.turn();
+            let journal = load_journal(self.config.dirs.state_dir(), Some(&game));
+            {
+                let mut world = write(&self.world);
+                world.game = Some(game.clone());
+                world.journal = journal;
+            }
+            if game.source == GameSource::Manual {
+                write(&self.settings).manual_game_root = Some(game.root.clone());
+                self.save_settings();
+            }
+            *lock(&self.recovered) = None;
+            self.recover_locked();
+            self.invalidate_snapshot();
+            self.migrate_guarded();
         }
-        if game.source == GameSource::Manual {
-            write(&self.settings).manual_game_root = Some(game.root.clone());
-            self.save_settings();
-        }
-        *lock(&self.recovered) = None;
-        self.recover_locked();
-        self.invalidate_snapshot();
-        self.migrate_guarded();
+        // This journal's relinks that its bytes must confirm: read with the
+        // game folder let go, then the migration once more with the verdicts.
+        self.confirm_relinks();
+        self.migrate();
     }
 
     // -- settings ------------------------------------------------------------
@@ -817,6 +841,7 @@ impl AppState {
                 *lock(&self.last_scan_ms) = Some(persist::now_ms());
                 self.sources.clear();
                 self.invalidate_snapshot();
+                self.confirm_relinks();
                 self.migrate();
             }
             Err(_) => log::error!(
@@ -858,9 +883,12 @@ impl AppState {
 
     /// (1) Every folder package's v0.2 id becomes its v0.3 id, exactly; (2)
     /// installs whose package is not in the mods folder are matched to a
-    /// library option (rift-deploy's relink pass). One journal save, one
-    /// `nexus.json` save (a link record follows its package), and the window
-    /// hears what changed. Never while a change is pending.
+    /// library option (rift-deploy's relink pass), each one whose install
+    /// recorded fingerprints only once its bytes confirmed it (the verdicts
+    /// [`AppState::confirm_relinks`] read; one with none yet waits, and
+    /// nothing is read here). One journal save, one `nexus.json` save (a
+    /// link record follows its package), and the window hears what changed.
+    /// Never while a change is pending.
     fn migrate_locked(&self) {
         let shelf = self.shelf();
         let mut moves = migrate::folder_moves(shelf.packages());
@@ -868,7 +896,11 @@ impl AppState {
         let world = self.world();
         if let (Some(_), Some(journal)) = (&world.game, world.journal.ready()) {
             if journal.pending.is_none() {
-                let plan = migrate::plan_rekey(journal, &moves, shelf.packages());
+                let known = lock(&self.relink_verdicts).clone();
+                let plan =
+                    migrate::plan_rekey(journal, &moves, shelf.packages(), &|confirmation| {
+                        known.get(confirmation).copied()
+                    });
                 if !plan.map.is_empty() {
                     match self.deploy_unlocked(|ctx, journal| {
                         rift_deploy::rekey_with_files(ctx, journal, &plan.map, &plan.files)
@@ -907,6 +939,131 @@ impl AppState {
     /// Installs found again in the mods folder this session.
     pub fn relinked_count(&self) -> usize {
         self.relinked.load(Ordering::SeqCst)
+    }
+
+    // -- the relink's bytes (v0.3) ---------------------------------------------
+
+    /// Before the migration, with no lock held: read what the relink pass
+    /// needs confirmed. The sizes propose; for every proposal whose install
+    /// recorded fingerprints and that has no verdict yet, the candidate's
+    /// package is opened as an install opens it (`rift_archive::open`), the
+    /// entries the check names are unpacked into the scratch folder
+    /// ([`DataDirs::relink_scratch`]) and fingerprinted with the engine's own
+    /// fingerprint (rift-deploy's [`rift_deploy::relink::read_fingerprints`]),
+    /// and the verdict is kept for the session. The migration applies only
+    /// what the bytes confirmed; it never reads.
+    ///
+    /// Bounded: a scan unpacks at most [`migrate::RELINK_READ_BUDGET`] bytes
+    /// (as the packages list them). What does not fit waits for the next
+    /// scan; a check that needs more than the whole budget on its own is
+    /// never read, and its install keeps its id. A package that cannot be
+    /// read confirms nothing. One reader at a time: a second one finds the
+    /// first one's verdicts at its next scan.
+    pub fn confirm_relinks(&self) {
+        if panic::catch_unwind(AssertUnwindSafe(|| self.confirm_relinks_now())).is_err() {
+            log::error!("reading what the relink pass asked stopped unexpectedly; those installs keep their ids until the next scan");
+        }
+    }
+
+    fn confirm_relinks_now(&self) {
+        let shelf = self.shelf();
+        let world = self.world();
+        let (Some(_), Some(journal)) = (&world.game, world.journal.ready()) else {
+            return;
+        };
+        if journal.pending.is_some() {
+            return;
+        }
+        let moves = migrate::folder_moves(shelf.packages());
+        let known = lock(&self.relink_verdicts).clone();
+        let plan = migrate::plan_rekey(journal, &moves, shelf.packages(), &|confirmation| {
+            known.get(confirmation).copied()
+        });
+        let mut verdicts: HashMap<migrate::Confirmation, bool> = HashMap::new();
+        let reading = if plan.unconfirmed.is_empty() {
+            None
+        } else {
+            ScratchReader::begin(&self.relink_reading)
+        };
+        if let Some(_reader) = reading {
+            let scratch = self.config.dirs.relink_scratch();
+            let (read, too_large) =
+                migrate::within_budget(&plan.unconfirmed, migrate::RELINK_READ_BUDGET);
+            for confirmation in too_large {
+                log::warn!(
+                    "{} keeps its id: confirming {} would unpack {} bytes of {}, more than a scan reads",
+                    confirmation.check.install(),
+                    confirmation.check.option(),
+                    confirmation.check.bytes(),
+                    confirmation.package.display()
+                );
+                verdicts.insert(confirmation.clone(), false);
+            }
+            for confirmation in read {
+                verdicts.insert(
+                    confirmation.clone(),
+                    self.read_confirmation(confirmation, &scratch),
+                );
+            }
+            clear_relink_scratch(&scratch);
+        }
+        // The verdicts the journal still asks for, and the new ones.
+        let asked: HashSet<&migrate::Confirmation> = plan.asked.iter().collect();
+        let mut memo = lock(&self.relink_verdicts);
+        memo.retain(|confirmation, _| asked.contains(confirmation));
+        memo.extend(verdicts);
+    }
+
+    /// Read one confirmation's entries: are they the bytes the install
+    /// wrote? `false` when the package cannot be opened or read, or the parts
+    /// cannot be written (logged).
+    fn read_confirmation(&self, confirmation: &migrate::Confirmation, scratch: &Path) -> bool {
+        let check = &confirmation.check;
+        if check.entries().next().is_none() {
+            return check.confirms(&HashMap::new());
+        }
+        self.relink_reads.fetch_add(1, Ordering::SeqCst);
+        let read = || -> Result<HashMap<String, String>, RiftError> {
+            clear_relink_scratch(scratch);
+            fs::create_dir_all(scratch).map_err(|err| {
+                RiftError::io(format!("could not make {}", scratch.display()), err)
+            })?;
+            let mut source = rift_archive::open(&confirmation.package)?;
+            rift_deploy::relink::read_fingerprints(check, source.as_mut(), scratch)
+        };
+        match panic::catch_unwind(AssertUnwindSafe(read)) {
+            Ok(Ok(prints)) => {
+                let same = check.confirms(&prints);
+                if !same {
+                    log::info!(
+                        "{} keeps its id: {} holds other bytes than the ones it installed",
+                        check.install(),
+                        confirmation.package.display()
+                    );
+                }
+                same
+            }
+            Ok(Err(err)) => {
+                log::warn!(
+                    "{} keeps its id: {} could not be read to confirm the match ({err})",
+                    check.install(),
+                    confirmation.package.display()
+                );
+                false
+            }
+            Err(_) => {
+                log::error!(
+                    "reading {} to confirm a relink stopped unexpectedly",
+                    confirmation.package.display()
+                );
+                false
+            }
+        }
+    }
+
+    /// How many relink confirmations read a package this session.
+    pub fn relink_checks_read(&self) -> usize {
+        self.relink_reads.load(Ordering::SeqCst)
     }
 
     // -- the game, believed ---------------------------------------------------
@@ -1221,6 +1378,23 @@ impl Drop for Installing<'_> {
     }
 }
 
+/// The relink scratch folder's one reader ([`AppState::confirm_relinks`]);
+/// dropping it, an unwinding panic too, lets the next one read.
+struct ScratchReader<'a>(&'a AtomicBool);
+
+impl ScratchReader<'_> {
+    /// The reader's turn, unless another reader holds it.
+    fn begin(flag: &AtomicBool) -> Option<ScratchReader<'_>> {
+        (!flag.swap(true, Ordering::SeqCst)).then_some(ScratchReader(flag))
+    }
+}
+
+impl Drop for ScratchReader<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Find the game: the fixed folder (tests), or `RIFTSTONE_GAME_ROOT`, then a
 /// hand-picked folder, then Steam.
 fn find_game(discovery: &Discovery, manual: Option<&Path>) -> Option<GameInstall> {
@@ -1283,6 +1457,17 @@ pub fn is_partial_download(name: &str) -> bool {
     name.len() > ".riftstone-.part".len()
         && name.starts_with(".riftstone-")
         && name.ends_with(".part")
+}
+
+/// Empty the relink's scratch folder ([`DataDirs::relink_scratch`]), the
+/// folder itself included. A link at its name goes as a link, never
+/// followed. A folder that is not there is fine.
+fn clear_relink_scratch(scratch: &Path) {
+    match fs::remove_dir_all(scratch) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => log::warn!("could not empty {}: {err}", scratch.display()),
+    }
 }
 
 /// Remove the stone's own partial downloads a quit cut short: files directly

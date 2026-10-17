@@ -16,7 +16,9 @@
 //!   re-key of moved installs and crash recovery; [`plan`] holds the shapes
 //!   it reports.
 //! - [`relink`] finds the library option an install whose package left the
-//!   mods folder came from, by its files' paths and sizes.
+//!   mods folder came from, by its files' paths and sizes, and says which
+//!   entries of that option's package to read to confirm their bytes (the
+//!   fingerprints the journal recorded).
 //! - [`state`] reads what is in the game right now; [`preflight`] turns that
 //!   into checks for the home frame.
 //! - [`launch`] is Play: the route that starts the game, its warnings and its
