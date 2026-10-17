@@ -33,8 +33,7 @@ pub fn normalize_entry_path(raw: &str) -> Result<String, RiftError> {
 }
 
 /// The case-folded comparison key for a normalized path or a name — how the
-/// Windows filesystem (and Fluffy) treat `natives/STM` and `natives/stm` as
-/// one place.
+/// Windows filesystem treats `natives/STM` and `natives/stm` as one place.
 pub fn lower_key(path: &str) -> String {
     path.to_lowercase()
 }

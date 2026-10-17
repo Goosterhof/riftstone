@@ -9,7 +9,6 @@
 // ---------------------------------------------------------------------------
 
 export type PackageFormat = "zip" | "sevenZip" | "rar" | "folder";
-export type RootKind = "fluffy" | "downloads" | "custom";
 export type DeployKind = "pak" | "loose" | "reframework" | "root";
 
 export interface PayloadKinds {
@@ -19,12 +18,15 @@ export interface PayloadKinds {
   root: number;
 }
 
-export interface LibraryRoot {
-  id: string;
+/** v0.3: the one library. Every zip, 7z, rar or folder directly inside it is
+ *  one package. It sits beside the installed riftstone.exe (`<install dir>\mods`);
+ *  a bench may point it elsewhere with RIFTSTONE_MODS_DIR. The spine creates it
+ *  at launch. The stone adds downloads to it and never changes, renames or
+ *  deletes what is already there (RS-2). */
+export interface ModsFolderView {
   path: string;
-  label: string;
-  kind: RootKind;
-  dd2ShapedOnly: boolean;
+  /** False only when the folder is missing and could not be made. */
+  exists: boolean;
 }
 
 export type ProblemKind =
@@ -93,7 +95,8 @@ export interface ModOption {
   trail: string[];
 }
 
-export type LinkSource = "filename" | "homepage" | "md5" | "manual";
+/** v0.3: "download" — the stone fetched this exact file from Nexus itself. */
+export type LinkSource = "filename" | "homepage" | "md5" | "manual" | "download";
 
 export interface NexusLink {
   modId: number;
@@ -124,18 +127,60 @@ export interface RiftError {
     | "journal"
     | "nexus"
     | "io";
+  /** For kind "nexus" (v0.3): `{ detail: <sentence>, reason?: NexusReason }`.
+   *  The window voices by `reason` first and reads the sentence only as a fallback. */
   detail?: Record<string, string>;
 }
+
+/** v0.3: why Nexus said no, as a code the window can voice without reading
+ *  the sentence. Absent on a plain "nexus" failure (an odd answer). */
+export type NexusReason =
+  | "offline"
+  | "rateLimited"
+  | "noKey"
+  | "keyRejected"
+  /** download_link.json without a site link: only premium accounts may. */
+  | "premiumRequired"
+  /** The site's Mod Manager Download link has expired (HTTP 410). */
+  | "linkExpired"
+  /** The link was made for another account than the stored key's. */
+  | "linkNotYours"
+  /** Nexus refused the link's key/expiry for this file (HTTP 400). */
+  | "linkRefused"
+  /** The file or mod is gone from Nexus (HTTP 404). */
+  | "fileGone"
+  /** The bytes that arrived are not the size Nexus stated. */
+  | "sizeMismatch"
+  /** The bytes that arrived hash to another file than the one asked for. */
+  | "notTheFile"
+  /** Endorsing: this account has not downloaded the mod from Nexus. */
+  | "endorseNotDownloaded"
+  /** Endorsing: Nexus wants 15 minutes between a download and an endorsement. */
+  | "endorseTooSoon"
+  /** Endorsing: authors cannot endorse their own mods. */
+  | "endorseOwnMod";
 
 // ---------------------------------------------------------------------------
 // get_overview — the home frame
 // ---------------------------------------------------------------------------
 
+/** v0.3: how Play starts the game. "steam" opens steam://rungameid/2054970
+ *  (the game was found through Steam); "exe" starts DD2.exe in the game folder
+ *  (a folder picked by hand or set by RIFTSTONE_GAME_ROOT). */
+export type LaunchRoute = "steam" | "exe";
+
 export interface GameSummary {
   root: string;
   buildId: string | null;
   source: "steam" | "env" | "manual";
+  /** DD2.exe is in the process list. v0.3: kept current by the spine's game
+   *  watcher, which emits rift://game-changed when the game starts or stops. */
   running: boolean;
+  /** v0.3: when the stone first saw this run of the game (ms since the epoch);
+   *  null while the game is not running. */
+  startedMs: number | null;
+  /** v0.3: the route Play takes. */
+  launch: LaunchRoute;
   /** The build recorded at the newest install differs from the build now. */
   buildChanged: { recorded: string; now: string } | null;
 }
@@ -147,13 +192,6 @@ export interface ReframeworkSummary {
   looseFileLoader: boolean | null;
   pakDirectory: boolean | null;
   faultyFiles: string[];
-}
-
-export interface FluffySummary {
-  root: string;
-  modsDir: string;
-  installedCount: number;
-  unadoptedCount: number;
 }
 
 export interface LibraryStats {
@@ -171,17 +209,18 @@ export type ScanState = { state: "idle" } | { state: "scanning"; done: number; t
 export type CheckLevel = "ok" | "info" | "warn" | "error";
 
 export type CheckAction =
-  | { kind: "adoptFluffy" }
   | { kind: "enableSwitch"; switch: "looseFileLoader" | "pakDirectory" }
   | { kind: "pickGameFolder" }
   | { kind: "openUrl"; url: string }
   | { kind: "rescan" }
   /** v0.2: open the parked-backup review (InstalledView.parked). */
-  | { kind: "reviewParked" };
+  | { kind: "reviewParked" }
+  /** v0.3: open the mods folder in Explorer (open_mods_folder). */
+  | { kind: "openModsFolder" };
 
 export interface Check {
   /** Stable id (WINDOW-CONTRACT § Check ids). PreflightPage draws `game`,
-   * `build`, `reframework`, `pakdir`, `loose` and `fluffy` as rows of its own
+   * `build`, `reframework`, `pakdir`, `loose` and `mods` as rows of its own
    * (OWN_CHECKS) and lists every other check below them; a spine test reads
    * OWN_CHECKS from PreflightPage.vue, so the two cannot drift apart. */
   id: string;
@@ -191,6 +230,27 @@ export interface Check {
   action: CheckAction | null;
 }
 
+/** v0.3: who the stored key belongs to, from /v1/users/validate.json (which
+ *  spends no quota). The name is private: never logged, never in the repo;
+ *  mocks and screenshots use an invented one. Never the key, never the e-mail. */
+export interface NexusAccountView {
+  name: string;
+  /** Premium accounts download in the stone; free accounts go through the
+   *  site's Mod Manager Download button (an nxm:// link) — Nexus's rule. */
+  premium: boolean;
+  supporter: boolean;
+  /** When the key was last validated, ms since the epoch. */
+  checkedMs: number;
+}
+
+/** v0.3: the stored key's standing.
+ *  - "none": no key; everything anonymous still works.
+ *  - "connected": validated this session; `account` is set.
+ *  - "unchecked": a key is stored but not validated this session yet (the
+ *    launch validation is pending, or Nexus was out of reach).
+ *  - "rejected": Nexus refused the stored key at its last validation. */
+export type NexusKeyStanding = "none" | "connected" | "unchecked" | "rejected";
+
 export interface NexusSummary {
   lastCheckMs: number | null;
   checking: boolean;
@@ -198,6 +258,10 @@ export interface NexusSummary {
   unlinked: number;
   updates: number;
   hasApiKey: boolean;
+  /** v0.3 */
+  key: NexusKeyStanding;
+  /** v0.3: set exactly when `key` is "connected". */
+  account: NexusAccountView | null;
 }
 
 export interface RecoveryNote {
@@ -209,8 +273,8 @@ export interface RecoveryNote {
 export interface Overview {
   game: GameSummary | null;
   reframework: ReframeworkSummary | null;
-  fluffy: FluffySummary | null;
-  roots: LibraryRoot[];
+  /** v0.3: the one library folder (replaces v0.2's `roots`). */
+  mods: ModsFolderView;
   library: LibraryStats;
   scan: ScanState;
   checks: Check[];
@@ -237,7 +301,6 @@ export type MatchedField =
 
 export interface SearchFilters {
   installed: boolean | null;
-  rootIds: string[];
   includeMenuOnly: boolean;
   /** v0.2: Nexus categories, ANY-of (a mod has one category). Empty = no filter. */
   categories: string[];
@@ -248,11 +311,13 @@ export interface SearchFilters {
 export interface SearchQuery {
   text: string;
   filters: SearchFilters;
-  /** 0 = backend default (200). */
+  /** 0 = no cap: every match (v0.3; v0.2 capped 0 at 200). */
   limit: number;
 }
 
-export type InstallOrigin = "riftstone" | "fluffy" | "fluffyUnadopted";
+/** v0.3: "adopted" — an install the journal took over from files already in
+ *  the game (it has no archive entries of its own; it uninstalls like any other). */
+export type InstallOrigin = "riftstone" | "adopted";
 
 export interface InstallBadge {
   origin: InstallOrigin;
@@ -270,7 +335,6 @@ export interface SearchResult {
   bundle: string | null;
   packageName: string;
   packageFormat: PackageFormat;
-  rootId: string;
   author: string | null;
   version: string | null;
   category: string | null;
@@ -367,7 +431,6 @@ export interface NexusFindings {
 
 export interface PackageSummary {
   id: string;
-  rootId: string;
   path: string;
   fileName: string;
   displayName: string;
@@ -399,7 +462,7 @@ export interface InstalledInfo {
   installedAt: string;
   version: string | null;
   gameBuild: string | null;
-  origin: "riftstone" | "fluffy";
+  origin: InstallOrigin;
   files: InstalledFile[];
 }
 
@@ -457,8 +520,6 @@ export interface OptionDetail {
   parentName: string | null;
   children: OptionRef[];
   installed: InstalledInfo | null;
-  /** Installed by Fluffy and not adopted yet (matched by name). */
-  fluffyInstalled: boolean;
   conflicts: ConflictView[];
   update: UpdateRow | null;
   /** v0.2: null when Nexus has not labelled the package: unlinked, never
@@ -474,7 +535,10 @@ export interface TreeNode {
   kind: "option" | "bundle";
   menuOnly: boolean;
   hasScreenshot: boolean;
+  /** A bundle: any child is installed. */
   installed: boolean;
+  /** v0.3: the option takes part in a conflict (a bundle: any child does). */
+  conflicted: boolean;
   kinds: PayloadKinds;
   children: TreeNode[];
 }
@@ -486,13 +550,47 @@ export interface PackageDetail {
 }
 
 // ---------------------------------------------------------------------------
+// v0.3 — the library tree (get_library): the Rift's idle view
+// ---------------------------------------------------------------------------
+
+/** One package of the mods folder with its options nested the way their menus
+ *  nest them. The tree is today's PackageDetail.tree shape (addonfor children
+ *  under a parent in the same package, NameAsBundle siblings under a bundle
+ *  node, an option whose parent sits in another package as a top node of its
+ *  own package), built by rift-catalog `tree::nest` — without the entry list. */
+export interface LibraryPackage {
+  package: PackageSummary;
+  /** Options that install something (not menu-only). */
+  installable: number;
+  /** Options of this package in your world now (journal installs). */
+  installed: number;
+  /** Package-level update state; null when the package is not linked to Nexus. */
+  update: UpdateBadge | null;
+  /** Null when Nexus has not labelled the package (see OptionDetail.labels). */
+  labels: NexusLabels | null;
+  /** Nexus flags the linked mod adult. */
+  adult: boolean;
+  /** At least one option of it takes part in a conflict. */
+  conflicted: boolean;
+  /** Empty for a package that yielded no options (its `problems` say why). */
+  tree: TreeNode[];
+}
+
+export interface LibraryView {
+  mods: ModsFolderView;
+  /** Every package in the mods folder — troubled ones too, carrying their
+   *  problems — ordered by display name (case-blind), then file name. */
+  packages: LibraryPackage[];
+}
+
+// ---------------------------------------------------------------------------
 // install / uninstall
 // ---------------------------------------------------------------------------
 
 export type WriteAction =
   | { kind: "create" }
+  /** Over a file an install in the journal owns (adopted installs too). */
   | { kind: "overwriteRiftstone"; optionName: string }
-  | { kind: "overwriteFluffy"; section: string }
   | { kind: "overwriteUnowned" }
   | { kind: "reinstall" };
 
@@ -572,23 +670,21 @@ export interface UninstallResultView {
 // get_installed — what is in the game now
 // ---------------------------------------------------------------------------
 
-/** Option ids starting with this name a Fluffy install no library option
- * matched: `fluffy#<section>` — an adopted install's InstalledRow.optionId, or an
- * un-adopted install's LayerRef.optionId in a conflict. get_option answers
- * entryNotFound for them; plan_uninstall works on an adopted one. */
-export const FLUFFY_STAND_IN_PREFIX = "fluffy#";
-
 export interface InstalledRow {
+  /** Opaque: the window never parses it. An adopted install that matched no
+   *  library option carries a stand-in id; get_option answers entryNotFound
+   *  for it and plan_uninstall works on it. */
   optionId: string;
   name: string;
   packageName: string;
-  /** The library holds no package for this install: its package left the
-   * library, or (a `fluffy#` stand-in id) it never had one. */
+  /** The mods folder holds no package for this install: its package left the
+   * folder, or (an adopted stand-in) it never had one. Uninstall still works:
+   * the journal knows every file. */
   packageMissing: boolean;
   version: string | null;
   installedAt: string;
   gameBuild: string | null;
-  origin: "riftstone" | "fluffy";
+  origin: InstallOrigin;
   kinds: PayloadKinds;
   fileCount: number;
   /** The paks in pak_mods/ this install owns, in load order. */
@@ -623,14 +719,6 @@ export interface MissingFile {
   gamePath: string;
 }
 
-export interface FluffyModView {
-  section: string;
-  name: string;
-  fileCount: number;
-  /** The library option it matches, when one does. */
-  matchedOptionId: string | null;
-}
-
 export interface PakLoadReport {
   /** Timestamp of the log's first line — when the game last started. */
   logStarted: string | null;
@@ -646,7 +734,6 @@ export interface InstalledView {
   conflicts: ConflictView[];
   strays: StrayFile[];
   missing: MissingFile[];
-  fluffyUnadopted: FluffyModView[];
   pakLoad: PakLoadReport | null;
   /** pak_mods/ count above which REFramework's slot table is at risk (100). */
   pakCountWarning: number;
@@ -660,9 +747,10 @@ export interface ParkedFileView {
   store: string;
   /** Where it belongs in the game folder. */
   gamePath: string;
-  /** Whose bytes it holds: "the file that was there before", a Fluffy mod's name, or an install's. */
+  /** Whose bytes it holds: "the file that was there before", or an install's name. */
   owner: string;
-  ownerKind: "unowned" | "fluffy" | "riftstone";
+  /** v0.3: "adopted" — the owner is an adopted install. */
+  ownerKind: "unowned" | "adopted" | "riftstone";
   /** Its size in the store; null when the kept file is gone from it. */
   size: number | null;
   /** RFC 3339, UTC. */
@@ -670,8 +758,8 @@ export interface ParkedFileView {
   /** Why it was kept aside, one sentence. */
   reason: string;
   /** Something sits at gamePath now. Putting it back swaps that out, unless
-   *  an install or an un-adopted Fluffy mod owns the occupant: then the engine
-   *  refuses and names the owner (rift-deploy engine.rs restore_parked). */
+   *  an install owns the occupant: then the engine refuses and names the
+   *  owner (rift-deploy engine.rs restore_parked). */
   occupied: boolean;
 }
 
@@ -682,18 +770,6 @@ export interface ParkedRestoreReport {
   /** The store handle of the file that sat at gamePath, now kept aside in its turn. */
   swappedOut: string | null;
   restartNeeded: boolean;
-}
-
-export interface AdoptResultView {
-  adopted: number;
-  alreadyAdopted: number;
-  missingFiles: number;
-  /** v0.2: files left to Fluffy (outside the places the stone manages). */
-  refusedFiles: number;
-  /** v0.2: files whose bytes belong to another layer. */
-  sharedFiles: number;
-  /** Fluffy sections no library option matched (adopted under their Fluffy name). */
-  unmatched: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -720,6 +796,186 @@ export interface Md5Result {
   packageId: string;
   matched: boolean;
   link: NexusLink | null;
+}
+
+// ---------------------------------------------------------------------------
+// v0.3 — a mod's files on Nexus (get_mod_files), browsing Nexus (browse_nexus)
+// ---------------------------------------------------------------------------
+
+/** Nexus's file categories. Retired: oldVersion, removed, archived. */
+export type NexusFileCategory =
+  | "main"
+  | "update"
+  | "optional"
+  | "oldVersion"
+  | "miscellaneous"
+  | "removed"
+  | "archived"
+  | "unknown";
+
+export interface NexusFileEntry {
+  fileId: number;
+  /** The file's name on its Nexus page (not the archive's file name). */
+  name: string;
+  version: string | null;
+  category: NexusFileCategory;
+  /** Bytes; null when Nexus does not say. */
+  size: number | null;
+  uploadedMs: number;
+  /** The file's description on Nexus, whitespace-collapsed, at most 400 characters. */
+  description: string | null;
+  /** The file's own patch notes on Nexus (ModFile.changelogText), one line
+   *  each, as Nexus wrote them. Anonymous: no key needed. */
+  changelog: string[];
+  /** A package in the mods folder is pinned to this exact file. */
+  inLibrary: boolean;
+  /** The newest file of its group that is not retired: what an update fetches. */
+  newest: boolean;
+}
+
+export interface NexusModFiles {
+  modId: number;
+  /** The mod's name on Nexus; null when Nexus did not say. */
+  modName: string | null;
+  /** https://www.nexusmods.com/dragonsdogma2/mods/<modId> */
+  pageUrl: string;
+  adult: boolean;
+  /** Main, update, optional, miscellaneous, then the retired ones; newest
+   *  upload first within a category. */
+  files: NexusFileEntry[];
+}
+
+/** How browse_nexus orders Dragon's Dogma 2 mods. "relevance" needs text. */
+export type NexusBrowseSort = "endorsements" | "downloads" | "updated" | "relevance";
+
+export interface NexusBrowseQuery {
+  /** Words the player typed; "" browses the whole game by `sort`. Sent to
+   *  Nexus only when the player asks (privacy: nothing from the library). */
+  text: string;
+  sort: NexusBrowseSort;
+  /** Paging: 0, 20, 40 … (20 per page; Nexus caps a page at 80). */
+  offset: number;
+}
+
+export interface NexusBrowsePage {
+  /** Every match Nexus counts, across pages. */
+  total: number;
+  offset: number;
+  /** The same card shape as Find on Nexus. */
+  mods: NexusCandidate[];
+}
+
+// ---------------------------------------------------------------------------
+// v0.3 — the key's extras: tracked mods and endorsements (get_nexus_standings)
+// ---------------------------------------------------------------------------
+
+export type EndorseStatus = "endorsed" | "abstained";
+
+export interface NexusStandings {
+  /** Dragon's Dogma 2 mods this account tracks on Nexus, as cards
+   *  (`linkedPackages` says which are in the mods folder already). */
+  tracked: NexusCandidate[];
+  /** This account's decided endorsements; a mod absent here is undecided. */
+  endorsements: { modId: number; status: EndorseStatus }[];
+  /** When the spine last asked Nexus (ms). */
+  checkedMs: number;
+}
+
+// ---------------------------------------------------------------------------
+// v0.3 — downloads into the mods folder
+// ---------------------------------------------------------------------------
+
+/** - waiting: a free account's download, parked until the site's Mod Manager
+ *    Download link (nxm://) for the same mod and file arrives.
+ *  - queued → linking (asking Nexus for a download link) → downloading →
+ *    verifying (size, then the MD5 round trip) → landed (in the mods folder).
+ *  - failed / cancelled: nothing was left in the mods folder. */
+export type DownloadPhase =
+  | "waiting"
+  | "queued"
+  | "linking"
+  | "downloading"
+  | "verifying"
+  | "landed"
+  | "failed"
+  | "cancelled";
+
+export interface DownloadView {
+  id: string;
+  modId: number;
+  fileId: number;
+  /** The mod's name on Nexus, when known. */
+  modName: string | null;
+  /** The file's name on its Nexus page, when known. */
+  fileName: string | null;
+  version: string | null;
+  /** The package this download updates, when it started from an update row. */
+  forPackageId: string | null;
+  phase: DownloadPhase;
+  bytesDone: number;
+  /** Null until Nexus or the server states it. */
+  bytesTotal: number | null;
+  /** The archive's file name in the mods folder once landed. */
+  landedAs: string | null;
+  /** The new package's id once landed. */
+  packageId: string | null;
+  /** The same file was in the mods folder already: nothing new was written. */
+  alreadyHad: boolean;
+  /** For phase "failed": the failure the window voices (kind "nexus" carries a reason). */
+  failure: RiftError | null;
+  /** For phase "waiting": the file's page on Nexus, where Mod Manager Download
+   *  sends the link back to the stone. The window opens it. */
+  nexusPageUrl: string | null;
+  startedMs: number;
+  finishedMs: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// v0.3 — the nxm:// handler (Nexus's Mod Manager Download button)
+// ---------------------------------------------------------------------------
+
+/** - ours: Windows sends nxm:// links to this riftstone.exe.
+ *  - none: no program answers them.
+ *  - other: another program answers them (`other` names its exe).
+ *  - unsupported: not on Windows (the bench). */
+export type NxmHandlerState = "ours" | "none" | "other" | "unsupported";
+
+export interface NxmHandlerView {
+  state: NxmHandlerState;
+  /** The other program's file name only, e.g. "Vortex.exe"; never a path. */
+  other: string | null;
+  /** Turning the stone off gives the link back to this program's file name
+   *  (the handler the stone replaced), or to nobody. */
+  givesBackTo: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// v0.3 — Play (plan_launch, launch_game)
+// ---------------------------------------------------------------------------
+
+/** Reasons a launch may not go as the player expects; never blockers. */
+export type LaunchWarning =
+  /** Pak installs exist but REFramework's dinput8.dll is missing: they won't load. */
+  | { kind: "reframeworkMissing"; paks: number }
+  /** REFramework's pak folder switch is off: the installed paks won't load. */
+  | { kind: "pakFolderOff"; paks: number }
+  /** The loose file loader is off: installed loose files won't load. */
+  | { kind: "looseLoaderOff"; files: number }
+  /** Steam updated the game since the newest install. */
+  | { kind: "buildChanged"; recorded: string; now: string };
+
+export interface LaunchPlanView {
+  launch: LaunchRoute;
+  warnings: LaunchWarning[];
+  /** A full sentence when Play cannot start now: the game already runs, no
+   *  game is found, a change is being made, or one was cut short. */
+  refused: string | null;
+}
+
+export interface LaunchReport {
+  launch: LaunchRoute;
+  /** When the stone asked Steam or Windows to start the game (ms). */
+  launchedMs: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -765,13 +1021,41 @@ export interface UpdatesProgressEvent {
   total: number;
 }
 
+/** v0.3: throttled to one per 200 ms per download, plus the last. */
+export interface DownloadProgressEvent {
+  id: string;
+  phase: DownloadPhase;
+  bytesDone: number;
+  bytesTotal: number | null;
+}
+
+/** v0.3: an nxm:// link reached the stone (the site's Mod Manager Download
+ *  button, through Windows). `accepted`: a download was started or a waiting
+ *  one resumed (`downloadId`); otherwise `refusal` says why (an expired link,
+ *  another account's link, another game, no key). The window brings itself
+ *  forward on THE FAR WORLD. Ids are null when the link could not be read. */
+export interface NxmReceivedEvent {
+  modId: number | null;
+  fileId: number | null;
+  accepted: boolean;
+  downloadId: string | null;
+  refusal: RiftError | null;
+}
+
 export const EVENTS = {
   scanProgress: "rift://scan-progress",
   libraryChanged: "rift://library-changed",
   installProgress: "rift://install-progress",
+  /** Also when the game starts or stops (v0.3, the spine's game watcher). */
   gameChanged: "rift://game-changed",
   updatesProgress: "rift://updates-progress",
   updatesChanged: "rift://updates-changed",
+  /** v0.3: a download row appeared, changed phase or was cleared. */
+  downloadsChanged: "rift://downloads-changed",
+  /** v0.3 */
+  downloadProgress: "rift://download-progress",
+  /** v0.3 */
+  nxmReceived: "rift://nxm-received",
 } as const;
 
 export type ThumbnailSize = "card" | "full";

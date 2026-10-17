@@ -12,8 +12,9 @@ use crate::path::{fnv1a64, lower_key};
 // ---------------------------------------------------------------------------
 
 /// A package's identity: 16 hex chars. Archives are identified by file name +
-/// size (moving a zip between roots keeps its id; a new version of the same
-/// file is a new package), folders by their lower-cased absolute path.
+/// size (moving the mods folder keeps its id; a new version of the same file
+/// is a new package), folders by their lower-cased name in the mods folder
+/// (v0.3: v0.2 hashed the absolute path, see [`PackageId::legacy_folder`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PackageId(pub String);
@@ -24,7 +25,17 @@ impl PackageId {
         PackageId(format!("{:016x}", fnv1a64(key.as_bytes())))
     }
 
-    pub fn for_folder(absolute_path: &std::path::Path) -> Self {
+    /// A folder package, by its name in the mods folder. Moving the whole
+    /// mods folder keeps every id.
+    pub fn for_folder(folder_name: &str) -> Self {
+        let key = format!("folder|{}", lower_key(folder_name));
+        PackageId(format!("{:016x}", fnv1a64(key.as_bytes())))
+    }
+
+    /// The id v0.2 gave a folder package: its lower-cased absolute path. Kept
+    /// for one job only: re-keying a journal and a link store written by v0.2
+    /// onto [`PackageId::for_folder`] (the spine's migration).
+    pub fn legacy_folder(absolute_path: &std::path::Path) -> Self {
         let key = format!("folder|{}", lower_key(&absolute_path.to_string_lossy()));
         PackageId(format!("{:016x}", fnv1a64(key.as_bytes())))
     }
@@ -77,30 +88,6 @@ impl std::fmt::Display for OptionId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum RootKind {
-    /// Fluffy Mod Manager's `Games/DragonsDogma2/Mods` folder.
-    Fluffy,
-    /// The user's Downloads folder — only DD2-shaped archives are listed.
-    Downloads,
-    /// Any folder the user added.
-    Custom,
-}
-
-/// A folder the Riftstone reads packages from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LibraryRoot {
-    /// Stable id (`fluffy`, `downloads`, or `custom-<hash>`).
-    pub id: String,
-    pub path: PathBuf,
-    pub label: String,
-    pub kind: RootKind,
-    /// Downloads-style roots list only archives that look like DD2 mods.
-    pub dd2_shaped_only: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub enum PackageFormat {
     Zip,
     SevenZip,
@@ -147,14 +134,13 @@ pub enum ProblemKind {
     OutdatedFormats,
 }
 
-/// One thing you downloaded: an archive or a plain folder in a library root.
+/// One thing you downloaded: an archive or a plain folder in the mods folder.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Package {
     pub id: PackageId,
-    pub root_id: String,
     pub path: PathBuf,
-    /// File or folder name as it sits in the root.
+    /// File or folder name as it sits in the mods folder.
     pub file_name: String,
     /// A human name: the file name without extension and without a Nexus
     /// download suffix (`Vernworth Cloaks 2207 8 2026-10-14T14-23Z Rk4vLmN2Q.zip`
@@ -175,7 +161,7 @@ pub struct Package {
 // Options
 // ---------------------------------------------------------------------------
 
-/// Fluffy's `modinfo.ini`, parsed. Keys are case-insensitive in the file;
+/// A mod's `modinfo.ini`, parsed. Keys are case-insensitive in the file;
 /// `key=value` and `key: value` are both accepted. Unknown keys land in `extra`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -188,7 +174,7 @@ pub struct ModInfo {
     /// File name of the preview image, relative to the option root.
     pub screenshot: Option<String>,
     pub homepage: Option<String>,
-    /// `addonfor=` — the NAME of the option this one hangs under in Fluffy's menus.
+    /// `addonfor=` — the NAME of the option this one hangs under in the menus.
     pub addon_for: Option<String>,
     /// `NameAsBundle=` — options sharing this value collapse into one bundle.
     pub name_as_bundle: Option<String>,
@@ -196,7 +182,7 @@ pub struct ModInfo {
     pub requires: Vec<String>,
     /// `DummyMod=true` — a pure menu entry, nothing to install.
     pub dummy: bool,
-    /// `MenuPriority=` — higher sorts first among siblings (Fluffy default 0).
+    /// `MenuPriority=` — higher sorts first among siblings (default 0).
     pub menu_priority: i32,
     pub extra: BTreeMap<String, String>,
 }
@@ -345,6 +331,8 @@ pub enum LinkSource {
     Md5,
     /// Pasted by the user.
     Manual,
+    /// The stone downloaded this exact file from Nexus itself (v0.3).
+    Download,
 }
 
 /// What links a package to a mod page on Nexus Mods.
@@ -400,6 +388,27 @@ mod tests {
             PackageId::for_archive("RE Framework.zip", 10),
             PackageId::for_archive("RE Framework.zip", 11)
         );
+    }
+
+    #[test]
+    fn folder_ids_follow_the_name_so_moving_the_mods_folder_keeps_them() {
+        assert_eq!(
+            PackageId::for_folder("Lantern Glow Recolor"),
+            PackageId::for_folder("lantern glow recolor")
+        );
+        assert_ne!(
+            PackageId::for_folder("Lantern Glow Recolor"),
+            PackageId::for_folder("Vernworth Cloaks Collection")
+        );
+        // The v0.2 id hashed the absolute path: two places, two ids, and
+        // neither is the v0.3 id. The spine re-keys v0.2 ids onto v0.3 ones.
+        let here =
+            PackageId::legacy_folder(std::path::Path::new("/games/a/mods/Lantern Glow Recolor"));
+        let there =
+            PackageId::legacy_folder(std::path::Path::new("/games/b/mods/Lantern Glow Recolor"));
+        assert_ne!(here, there);
+        assert_ne!(here, PackageId::for_folder("Lantern Glow Recolor"));
+        assert_eq!(here.0.len(), 16);
     }
 
     #[test]

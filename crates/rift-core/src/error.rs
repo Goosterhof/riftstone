@@ -48,8 +48,13 @@ pub enum RiftError {
     Journal { detail: String },
 
     /// Nexus Mods could not be reached, refused the key, or answered oddly.
+    /// `reason` (v0.3) names the case for the window; `None` for an odd answer.
     #[error("Nexus Mods: {detail}")]
-    Nexus { detail: String },
+    Nexus {
+        detail: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<NexusReason>,
+    },
 
     /// Any other filesystem failure while writing.
     #[error("{detail}")]
@@ -84,6 +89,55 @@ impl RiftError {
     }
 }
 
+/// Why Nexus said no (v0.3), so the window can voice it without reading the
+/// sentence. Serialized camelCase into `RiftError::Nexus`'s detail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NexusReason {
+    Offline,
+    RateLimited,
+    NoKey,
+    KeyRejected,
+    /// `download_link.json` without the site's link: premium accounts only.
+    PremiumRequired,
+    /// The site's Mod Manager Download link has expired (HTTP 410).
+    LinkExpired,
+    /// The link was made for another account than the stored key's.
+    LinkNotYours,
+    /// Nexus refused the link's key and expiry for this file (HTTP 400).
+    LinkRefused,
+    /// The mod or file is gone from Nexus (HTTP 404).
+    FileGone,
+    /// The bytes that arrived are not the size Nexus stated.
+    SizeMismatch,
+    /// The bytes that arrived hash to another file than the one asked for.
+    NotTheFile,
+    /// Endorsing a mod this account never downloaded from Nexus.
+    EndorseNotDownloaded,
+    /// Endorsing within 15 minutes of the download.
+    EndorseTooSoon,
+    /// Endorsing one's own mod.
+    EndorseOwnMod,
+}
+
+impl RiftError {
+    /// A Nexus failure with no particular reason (an odd answer).
+    pub fn nexus(detail: impl Into<String>) -> Self {
+        RiftError::Nexus {
+            detail: detail.into(),
+            reason: None,
+        }
+    }
+
+    /// A Nexus failure the window can voice by its reason.
+    pub fn nexus_because(reason: NexusReason, detail: impl Into<String>) -> Self {
+        RiftError::Nexus {
+            detail: detail.into(),
+            reason: Some(reason),
+        }
+    }
+}
+
 pub type RiftResult<T> = Result<T, RiftError>;
 
 #[cfg(test)]
@@ -98,6 +152,20 @@ mod tests {
         let json = serde_json::to_value(&err).unwrap();
         assert_eq!(json["kind"], "entryNotFound");
         assert_eq!(json["detail"]["entry"], "natives/stm/a.mesh");
+    }
+
+    #[test]
+    fn a_nexus_failure_carries_its_reason_only_when_it_has_one() {
+        let json = serde_json::to_value(RiftError::nexus_because(
+            NexusReason::PremiumRequired,
+            "only premium accounts may",
+        ))
+        .unwrap();
+        assert_eq!(json["kind"], "nexus");
+        assert_eq!(json["detail"]["reason"], "premiumRequired");
+        assert_eq!(json["detail"]["detail"], "only premium accounts may");
+        let plain = serde_json::to_value(RiftError::nexus("an odd answer")).unwrap();
+        assert!(plain["detail"].get("reason").is_none());
     }
 
     #[test]

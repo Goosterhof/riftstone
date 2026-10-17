@@ -7,16 +7,24 @@
 // vitest suite. The mock is a separate chunk, loaded only when needed.
 
 import type {
-  AdoptResultView,
+  DownloadView,
+  EndorseStatus,
   GameSummary,
   InstallPlanView,
   InstallResultView,
   InstalledView,
-  LibraryRoot,
+  LaunchPlanView,
+  LaunchReport,
+  LibraryView,
   Md5Result,
   LabelFacets,
+  NexusBrowsePage,
+  NexusBrowseQuery,
   NexusFindings,
+  NexusModFiles,
   NexusQuota,
+  NexusStandings,
+  NxmHandlerView,
   ParkedRestoreReport,
   NexusSummary,
   OptionDetail,
@@ -106,11 +114,16 @@ export interface RiftBackend {
   uninstall(optionId: string): Promise<UninstallResultView>;
   getInstalled(): Promise<InstalledView>;
   reorderPaks(order: string[]): Promise<void>;
-  adoptFluffy(): Promise<AdoptResultView>;
   setReframeworkSwitch(which: "looseFileLoader" | "pakDirectory", on: boolean): Promise<void>;
-  addRoot(path: string): Promise<LibraryRoot>;
-  removeRoot(rootId: string): Promise<void>;
   setGameRoot(path: string): Promise<GameSummary>;
+  /** v0.3: every package in the mods folder with its option tree (the Rift's idle view). */
+  getLibrary(): Promise<LibraryView>;
+  /** v0.3: open the mods folder in Explorer (made first if it is missing). */
+  openModsFolder(): Promise<void>;
+  /** v0.3: what Play would do now: its route, warnings, or a refusal. Pure. */
+  planLaunch(): Promise<LaunchPlanView>;
+  /** v0.3: start Dragon's Dogma 2 (through Steam, or DD2.exe). */
+  launchGame(): Promise<LaunchReport>;
   getUpdates(): Promise<UpdatesView>;
   checkUpdates(): Promise<UpdatesView>;
   identifyPackages(packageIds: string[]): Promise<Md5Result[]>;
@@ -119,6 +132,31 @@ export interface RiftBackend {
   linkPackage(packageId: string, urlOrId: string): Promise<UpdateRow>;
   unlinkPackage(packageId: string): Promise<void>;
   setNexusKey(key: string | null): Promise<NexusSummary>;
+  /** v0.3: validate the stored key again (no quota spent); the summary carries the account. */
+  refreshNexusAccount(): Promise<NexusSummary>;
+  /** v0.3: one mod's files on Nexus, with each file's patch notes. Anonymous. */
+  getModFiles(modId: number): Promise<NexusModFiles>;
+  /** v0.3: Dragon's Dogma 2 mods on Nexus, by words and an order. Anonymous; sends only `query.text`. */
+  browseNexus(query: NexusBrowseQuery): Promise<NexusBrowsePage>;
+  /** v0.3 (key): tracked mods and endorsements; cached by the spine unless `refresh`. */
+  getNexusStandings(refresh: boolean): Promise<NexusStandings>;
+  /** v0.3 (key): track or untrack a mod on Nexus. */
+  setTracked(modId: number, tracked: boolean): Promise<NexusStandings>;
+  /** v0.3 (key): endorse a mod, or abstain. Nexus may refuse (see NexusReason). */
+  setEndorsement(modId: number, status: EndorseStatus): Promise<NexusStandings>;
+  /** v0.3: this session's downloads, newest first. */
+  getDownloads(): Promise<DownloadView[]>;
+  /** v0.3 (key): fetch one file of a mod into the mods folder. A free account's
+   *  download waits for the site's link (phase "waiting", `nexusPageUrl` to open). */
+  startDownload(modId: number, fileId: number, forPackageId: string | null): Promise<DownloadView>;
+  /** v0.3: stop a waiting, queued, linking or downloading download; nothing is left behind. */
+  cancelDownload(id: string): Promise<void>;
+  /** v0.3: forget the landed, failed and cancelled rows. */
+  clearDownloads(): Promise<void>;
+  /** v0.3: who answers nxm:// links on this PC. */
+  getNxmHandler(): Promise<NxmHandlerView>;
+  /** v0.3: make the stone answer nxm:// links (on), or give them back (off). */
+  setNxmHandler(on: boolean): Promise<NxmHandlerView>;
   getSettings(): Promise<Settings>;
   setSettings(settings: Settings): Promise<Settings>;
   /** Packages with problems, including those that yielded zero options. */
@@ -166,11 +204,12 @@ async function tauriBackend(): Promise<RiftBackend> {
     uninstall: (optionId) => invoke("uninstall", { optionId }),
     getInstalled: () => invoke("get_installed"),
     reorderPaks: (order) => invoke("reorder_paks", { order }),
-    adoptFluffy: () => invoke("adopt_fluffy"),
     setReframeworkSwitch: (which, on) => invoke("set_reframework_switch", { switch: which, on }),
-    addRoot: (path) => invoke("add_root", { path }),
-    removeRoot: (rootId) => invoke("remove_root", { rootId }),
     setGameRoot: (path) => invoke("set_game_root", { path }),
+    getLibrary: () => invoke("get_library"),
+    openModsFolder: () => invoke("open_mods_folder"),
+    planLaunch: () => invoke("plan_launch"),
+    launchGame: () => invoke("launch_game"),
     getUpdates: () => invoke("get_updates"),
     checkUpdates: () => invoke("check_updates"),
     identifyPackages: (packageIds) => invoke("identify_packages", { packageIds }),
@@ -178,6 +217,18 @@ async function tauriBackend(): Promise<RiftBackend> {
     linkPackage: (packageId, urlOrId) => invoke("link_package", { packageId, urlOrId }),
     unlinkPackage: (packageId) => invoke("unlink_package", { packageId }),
     setNexusKey: (key) => invoke("set_nexus_key", { key }),
+    refreshNexusAccount: () => invoke("refresh_nexus_account"),
+    getModFiles: (modId) => invoke("get_mod_files", { modId }),
+    browseNexus: (query) => invoke("browse_nexus", { query }),
+    getNexusStandings: (refresh) => invoke("get_nexus_standings", { refresh }),
+    setTracked: (modId, tracked) => invoke("set_tracked", { modId, tracked }),
+    setEndorsement: (modId, status) => invoke("set_endorsement", { modId, status }),
+    getDownloads: () => invoke("get_downloads"),
+    startDownload: (modId, fileId, forPackageId) => invoke("start_download", { modId, fileId, forPackageId }),
+    cancelDownload: (id) => invoke("cancel_download", { id }),
+    clearDownloads: () => invoke("clear_downloads"),
+    getNxmHandler: () => invoke("get_nxm_handler"),
+    setNxmHandler: (on) => invoke("set_nxm_handler", { on }),
     getSettings: () => invoke("get_settings"),
     setSettings: (settings) => invoke("set_settings", { settings }),
     troubledPackages: () => invoke("get_troubled_packages"),
