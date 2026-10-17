@@ -237,20 +237,6 @@ mark{background:none;color:inherit}
 .C .hint{flex:none;padding:8px 32px;font:12px "JetBrains Mono",monospace;color:#A8A39A;border-top:1px solid #262626}
 .C .empty{grid-column:1/-1;padding:40px 0}.C .empty h3{font-family:Cinzel,Georgia,serif;font-size:28px;letter-spacing:.08em;margin:0 0 8px}
 
-/* ================= 0 — THE INCUMBENT (schematic) ================= */
-.F{position:absolute;inset:0;background:#F0F0F0;color:#000;font-family:"Segoe UI",Tahoma,sans-serif;font-size:12px;display:grid;grid-template-rows:28px 34px 1fr 22px;grid-template-columns:1fr 360px}
-.F .menu{grid-column:1/-1;background:#fff;border-bottom:1px solid #ccc;display:flex;gap:14px;align-items:center;padding:0 8px}
-.F .tool{grid-column:1/-1;display:flex;gap:6px;align-items:center;padding:0 8px;border-bottom:1px solid #ccc}
-.F .tool input{border:1px solid #7a7a7a;height:22px;width:220px;background:#fff;padding:0 4px;font-size:12px}
-.F .tool span{color:#6D6D6D}
-.F .lst{background:#fff;border-right:1px solid #ccc;overflow:auto}
-.F .lst div{height:22px;display:flex;align-items:center;gap:6px;padding:0 6px;border-bottom:1px solid #f2f2f2}
-.F .lst div.selx{background:#0078D7;color:#fff}
-.F .lst .none{height:auto;padding:30px;color:#6D6D6D;border:0;display:block}
-.F .prev{padding:10px}
-.F .prev .thumb{height:200px}
-.F .stat{grid-column:1/-1;background:#e5e5e5;border-top:1px solid #ccc;padding:0 8px;display:flex;align-items:center;color:#333}
-.F .schem{position:absolute;right:8px;bottom:28px;background:#fff3cd;border:1px solid #c9a227;padding:6px 8px;font-size:12px;max-width:340px;color:#3d2e00}
 </style>
 </head>
 <body>
@@ -293,7 +279,7 @@ const ITEMS = [
  {id:13,name:"Harbour Lights Reshade",pkg:"Harbour Lights Reshade",trail:["Harbour Lights Reshade"],kinds:["ROOT"],inst:false,conf:false,ver:"v3.0",size:"9.8 MB",root:"Downloads",author:"Seafort Optics",cat:"Visuals",desc:"Colour grade for coastal towns.",paths:["dxgi.dll","harbour_lights.ini"],shape:"lantern",h:200},
  {id:14,name:"Vernworth Cloaks Collection",pkg:"Vernworth Cloaks Collection",trail:["Vernworth Cloaks Collection"],menu:true,kinds:[],desc:"Menu entry for the collection.",paths:[],shape:"cloak",h:0},
 ];
-const S = {spec:1, w:1320, q:"0477", sel:1, look:false};
+const S = {spec:0, w:1320, q:"0477", sel:1, look:false};
 const ICO = '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10 10l4 4" stroke="currentColor" stroke-width="1.6"/></svg>';
 const esc = s => String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const hl = (t,q) => { t=String(t); if(!q) return esc(t); const i=t.toLowerCase().indexOf(q.toLowerCase()); if(i<0) return esc(t); return esc(t.slice(0,i))+"<mark>"+esc(t.slice(i,i+q.length))+"</mark>"+esc(t.slice(i+q.length)); };
@@ -377,16 +363,7 @@ function renderC(){
   <div class="chipsrow"><span class="on">MODS 181</span><span class="on">DOWNLOADS 22</span><span>D:\\MODS\\KEPT 9</span><span class="on">ALL STATES</span><span>NOT INSTALLED</span><span>INSTALLED</span><span>CONFLICT</span><span>+ MENU-ONLY</span></div>
   <div class="hall">${tiles}</div><div class="hint">↑↓←→ move · Enter opens the option full-window (detail + install plan) · Esc returns to the hall</div></div>`;
 }
-/* ---------- 0 the incumbent, schematic ---------- */
-function renderF(){
-  const q=S.q.trim(); const res=search(q,true);
-  const tree = ["☑ RE Framework","☑ Lantern Glow Recolor","☑ Pawn Banter Quieter","☑ Dragonforged Tops Overhaul","☐ Harbour Lights Reshade","☐ Bakbattahl Armor Set Collection  ▸ (addonfor menus)","☐ Battahli Hunter Tops Pack  ▸","☑ Vernworth Cloaks Collection  ▸"];
-  const list = q ? (res.length ? res.map(r=>`<div>☐ ${esc(r.it.name)}</div>`).join("") : `<div class="none">No mods found.<br><br>(title search only: “${esc(q)}” lives in a file path inside an archive, 3 menus deep)</div>`) : tree.map((t,i)=>`<div class="${i===5?"selx":""}">${esc(t)}</div>`).join("");
-  return `<div class="F"><div class="menu"><b>The incumbent mod manager</b><span>Dragon's Dogma 2 ▾</span><span>Settings</span><span>Mods folder</span></div><div class="tool"><span>Search:</span><input class="q" value="${esc(S.q)}" aria-label="Search"><span>${q?res.length+" result(s)":""}</span></div><div class="lst">${list}</div><div class="prev">${thumb(ITEMS[0])}<p>Select a mod to see its preview. Variants open through nested right-click menus.</p></div><div class="stat">Mods installed: 14</div><div class="schem">SCHEMATIC of the incumbent, drawn from its behaviour (title-only search, nested addonfor menus). Not a screenshot.</div></div>`;
-}
-
 const SPECS = [
- {k:"0",label:"0 · The incumbent",render:renderF,leg:"INCUMBENT",name:"The incumbent manager — what you had",arg:"Title-only search. Type 0477 and it finds nothing, because the mesh id lives in a file path inside an archive, three addonfor menus deep. Shown so every direction is judged against the thing it replaces."},
  {k:"1",label:"1 · A The Monolith",star:true,render:renderA,leg:"RECOMMENDATION",name:"A — The Monolith · Rift-Lit Basalt",arg:"The layout is the metaphor, read left to right in the order you act: you search at the STONE (a full-height basalt pillar carrying search, facets, nav and game state), the cold RIFT answers with slab cards that show why they matched, and YOUR WORLD (warm, right) shows what the option becomes and the exact install plan. Temperature is state: cold = not installed, gold = in your game. Press R for the signature: the seam on the stone's edge answers your search. Press L for the lookbook posture (Your World folds to a sliver)."},
  {k:"2",label:"2 · B Guild Register",render:renderB,leg:"OPPOSITION",name:"B — The Pawn Guild Register · Vernworth Guild Ledger",arg:"Inverts A's temperament completely: light parchment, ink, small caps, a ruled full-width search bar, results as dense table rows grouped under package headings, and a permanent facing page for detail. No atmosphere, no glow. Its honest case: the most answers per screen and the fastest scan through a 281-variant hunt. Character lives in the ledger's typography, not in a scene."},
  {k:"3",label:"3 · C Hiring Hall",render:renderC,leg:"KINSHIP",name:"C — The Hiring Hall · Iron Hiring Hall",arg:"Kin to the lab's dark Tauri family (#00013's iron grounds, zero radius, hard offset shadow, mono labels). Search sits on a stone lintel across the top, filters are chips, and results stand as big portrait screenshots like the game's pawn-hire screen. Its honest case: for armour you choose with your eyes, so the lookbook is the default and the screenshot is the card. Detail is a full-window takeover."},
@@ -415,16 +392,16 @@ function fire(){
   if(!f||!A||A.dataset.seam!=="answered") return;
   f.classList.remove("go"); void f.offsetWidth; f.classList.add("go");
 }
-SPECS.forEach((sp,i)=>{const b=document.createElement("button");b.type="button";b.innerHTML=esc(sp.label)+(sp.star?' <span class="star">★ RECOMMENDED</span>':"");b.onclick=()=>{S.spec=i;draw();if(i===1)fire()};document.getElementById("specs").appendChild(b);
+SPECS.forEach((sp,i)=>{const b=document.createElement("button");b.type="button";b.innerHTML=esc(sp.label)+(sp.star?' <span class="star">★ RECOMMENDED</span>':"");b.onclick=()=>{S.spec=i;draw();if(i===0)fire()};document.getElementById("specs").appendChild(b);
  const r=document.createElement("label"); r.innerHTML=`<input type="radio" name="pick" value="${esc(sp.label)}"> ${esc(sp.label)}`; if(i>0) document.getElementById("pick").appendChild(r);});
 [[1320,"1320×860 default"],[1024,"1024×680 minimum"]].forEach(([w,l])=>{const b=document.createElement("button");b.type="button";b.dataset.w=w;b.textContent=l;b.onclick=()=>{S.w=w;draw()};document.getElementById("widths").appendChild(b)});
 ["fit","veil","rmo"].forEach(id=>document.getElementById(id).addEventListener("change",draw));
-document.getElementById("replay").onclick=()=>{ if(S.spec!==1){S.spec=1;draw();} fire(); };
-document.getElementById("look").onclick=()=>{ S.look=!S.look; if(S.spec!==1) S.spec=1; draw(); };
+document.getElementById("replay").onclick=()=>{ if(S.spec!==0){S.spec=0;draw();} fire(); };
+document.getElementById("look").onclick=()=>{ S.look=!S.look; if(S.spec!==0) S.spec=0; draw(); };
 window.addEventListener("resize",draw);
 document.addEventListener("keydown",e=>{
   if(e.target.matches("input,textarea")) { if(e.key==="Escape") e.target.blur(); return; }
-  if("0123".includes(e.key)&&e.key.length===1){S.spec=+e.key;draw();if(S.spec===1)fire();}
+  if("123".includes(e.key)&&e.key.length===1){S.spec=+e.key-1;draw();if(S.spec===0)fire();}
   else if(e.key==="w"||e.key==="W"){S.w=S.w===1320?1024:1320;draw();}
   else if(e.key==="r"||e.key==="R"){document.getElementById("replay").click();}
   else if(e.key==="l"||e.key==="L"){document.getElementById("look").click();}
