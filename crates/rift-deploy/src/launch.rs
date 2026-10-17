@@ -23,10 +23,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rift_core::error::RiftResult;
-use rift_core::RiftError;
+use rift_core::{lower_key, RiftError};
 use serde::Serialize;
 
-use crate::fsops::child_ci;
 use crate::game::{GameInstall, GameSource, DD2_STEAM_APP_ID, GAME_EXE};
 use crate::journal::{DeployKind, Journal};
 use crate::reframework::RefStatus;
@@ -142,9 +141,16 @@ pub fn launch_route(game: &GameInstall) -> LaunchRoute {
     route_with(game, game_exe(game).as_deref())
 }
 
-/// The game's executable as it is spelled on disk, when it is a file.
+/// The game's executable as it is spelled on disk, when it is a file. The
+/// folder is read rather than asked: Windows answers `DD2.exe` for any
+/// spelling, and Play is rare enough that one listing costs nothing.
 fn game_exe(game: &GameInstall) -> Option<PathBuf> {
-    child_ci(&game.root, GAME_EXE)
+    let wanted = lower_key(GAME_EXE);
+    fs::read_dir(&game.root)
+        .ok()?
+        .flatten()
+        .find(|entry| lower_key(&entry.file_name().to_string_lossy()) == wanted)
+        .map(|entry| entry.path())
         .filter(|path| fs::metadata(path).is_ok_and(|meta| meta.is_file()))
 }
 
