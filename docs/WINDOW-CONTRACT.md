@@ -281,7 +281,8 @@ the stone itself; a Play button starts the game; the name stays.
   toggles; on a troubled package with nothing to open it opens the trouble fold and focuses that
   package's card. Space zooms an option's screenshot when it has one, else acts as Enter. `*` opens
   every sibling branch of the focused row. No type-ahead: any other printable key goes to the search
-  well and starts a search, except the window's hotkeys (`1`–`4`, `l`, `i`, `/`). ↑ on the first
+  well and starts a search, except the room keys `1`–`4` and `/` (so a word that starts with `l` or
+  `i` is a search, never the lookbook or Install…; those stay on Ctrl+L and the detail pane). ↑ on the first
   row returns to the well; ↓ from the well lands on the row the tree last held, else the first.
   Opening an answer from the flat list reveals that option's ancestors, so clearing the well shows
   it in the tree. The trouble fold stays above the tree, outside its role.
