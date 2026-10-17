@@ -11,9 +11,11 @@
 //!
 //! An arriving link is untrusted input: it is parsed strictly, its ids must
 //! be ones Nexus can hold, its `key` must be printable ASCII of a sane
-//! length, and a key without its expiry (or the other way round), or a
-//! `user_id` that is not a number, makes the link unreadable rather than
-//! quietly weaker. Unknown parameters are ignored.
+//! length, and a key without its expiry (or the other way round), a
+//! `user_id` that is not a number (a blank one included), or one of the
+//! three given twice with two different values, makes the link unreadable
+//! rather than quietly weaker. A blank `key` with a blank `expires` claims
+//! nothing: that is no grant. Unknown parameters are ignored.
 //!
 //! The grant's `key` is a secret. It is never logged, never in an error,
 //! never sent to the window: [`NxmGrant`]'s `Debug` shows `<redacted>`, and
@@ -120,8 +122,10 @@ pub enum NxmRefusal {
 /// - another game → [`NxmRefusal::OtherGame`]; a collection of this game →
 ///   [`NxmRefusal::Collection`]; anything else (another scheme, another path,
 ///   a key without its expiry or the other way round, an expiry or `user_id`
-///   that is no number, a key that is blank, too long or not printable ASCII)
-///   → [`NxmRefusal::Unreadable`].
+///   that is no number (a blank `user_id` is none), a key that is too long
+///   or not printable ASCII, a `key`, `expires` or `user_id` given twice with
+///   two values) → [`NxmRefusal::Unreadable`]. A blank `key` and `expires`
+///   together are no grant.
 ///
 /// Surrounding whitespace, quotes and angle brackets are trimmed (Windows
 /// hands the link over as `"%1"`).
@@ -163,7 +167,11 @@ pub fn parse_nxm(text: &str) -> Result<NxmMessage, NxmRefusal> {
         _ => return Err(NxmRefusal::Unreadable),
     };
     let params = Params::read(url.query().unwrap_or(""))?;
-    let grant = match (params.key, params.expires) {
+    // A blank key or expiry claims nothing: a blank pair is no grant, and
+    // half a grant is unreadable.
+    let key = params.key.filter(|key| !key.is_empty());
+    let expires = params.expires.filter(|expires| !expires.is_empty());
+    let grant = match (key, expires) {
         (None, None) => None,
         (Some(key), Some(expires)) => Some(NxmGrant {
             key: usable_key(key)?,
@@ -171,6 +179,8 @@ pub fn parse_nxm(text: &str) -> Result<NxmMessage, NxmRefusal> {
         }),
         _ => return Err(NxmRefusal::Unreadable),
     };
+    // A user_id that is there must name an account: a blank one is no
+    // number, and reading it as absent would switch the account check off.
     let user_id = params
         .user_id
         .map(|id| {
@@ -188,7 +198,9 @@ pub fn parse_nxm(text: &str) -> Result<NxmMessage, NxmRefusal> {
     }))
 }
 
-/// The three parameters the Riftstone reads; the first of each counts.
+/// The three parameters the Riftstone reads, each as its decoded, trimmed
+/// value, a blank one included (`key=`, or a bare `key`): what a blank value
+/// means is [`parse_nxm`]'s to say.
 #[derive(Default)]
 struct Params {
     key: Option<String>,
@@ -198,7 +210,9 @@ struct Params {
 
 impl Params {
     /// Read `a=b&c=d`, percent-decoding each side. A `+` stays a `+`: a key
-    /// is not form text, and reading `+` as a space would break one.
+    /// is not form text, and reading `+` as a space would break one. One of
+    /// the three given twice must carry one value both times: two values
+    /// make the link unreadable, since which one counts would be a guess.
     fn read(query: &str) -> Result<Self, NxmRefusal> {
         let mut params = Params::default();
         for pair in query.split('&').filter(|pair| !pair.is_empty()) {
@@ -209,11 +223,11 @@ impl Params {
                 "user_id" => &mut params.user_id,
                 _ => continue,
             };
-            if slot.is_none() {
-                let value = percent_decode(value)?;
-                if !value.trim().is_empty() {
-                    *slot = Some(value.trim().to_string());
-                }
+            let value = percent_decode(value)?.trim().to_string();
+            match slot {
+                Some(first) if *first != value => return Err(NxmRefusal::Unreadable),
+                Some(_) => {}
+                None => *slot = Some(value),
             }
         }
         Ok(params)
@@ -322,17 +336,20 @@ mod tests {
         assert_eq!(grant.key, "a+b/c+d", "a + is a + and %XX decodes");
         assert_eq!(grant.expires_s, 1_791_987_830);
         assert_eq!(link.user_id, Some(4242));
-        // The first of a repeated parameter counts.
-        let twice = file(&format!(
-            "nxm://dragonsdogma2/mods/2207/files/9001?key={KEY}&key=other&expires=5&expires=6"
-        ));
+        // A parameter given twice with one value (any spelling of its name,
+        // any encoding of its value) reads as once.
+        let twice = file(
+            "nxm://dragonsdogma2/mods/2207/files/9001?key=a%2Bb&KEY=a+b&expires=5&expires=5\
+             &user_id=4242&User_Id=4242",
+        );
         assert_eq!(
             twice.grant,
             Some(NxmGrant {
-                key: KEY.into(),
+                key: "a+b".into(),
                 expires_s: 5
             })
         );
+        assert_eq!(twice.user_id, Some(4242));
     }
 
     #[test]
@@ -388,6 +405,19 @@ mod tests {
             "nxm://dragonsdogma2/mods/2207/files/9001?user_id=me",
             "nxm://dragonsdogma2/mods/2207/files/9001?user_id=0",
             "nxm://drag%20onsdogma2/mods/2207/files/9001",
+            // A user_id that is there but blank names no account: the
+            // account check must not quietly fall away.
+            "nxm://dragonsdogma2/mods/2207/files/9001?user_id=",
+            "nxm://dragonsdogma2/mods/2207/files/9001?user_id=%20",
+            "nxm://dragonsdogma2/mods/2207/files/9001?key=abc&expires=1&user_id",
+            // A parameter given twice with two values: which one counts is
+            // anyone's guess, so neither does.
+            "nxm://dragonsdogma2/mods/2207/files/9001?user_id=4242&user_id=5150",
+            "nxm://dragonsdogma2/mods/2207/files/9001?user_id=4242&USER_ID=",
+            "nxm://dragonsdogma2/mods/2207/files/9001?key=abc&key=xyz&expires=1",
+            "nxm://dragonsdogma2/mods/2207/files/9001?key=&key=xyz&expires=1",
+            "nxm://dragonsdogma2/mods/2207/files/9001?key=abc&expires=1&Expires=2",
+            "nxm://dragonsdogma2/mods/2207/files/9001?key=abc&expires=1&expires=",
         ] {
             assert_eq!(parse_nxm(text), Err(NxmRefusal::Unreadable), "{text:?}");
         }
@@ -398,11 +428,11 @@ mod tests {
             )),
             Err(NxmRefusal::Unreadable)
         );
-        // Blank values count as absent: no key and no expiry is no grant.
-        assert_eq!(
-            file("nxm://dragonsdogma2/mods/2207/files/9001?key=&expires=").grant,
-            None
-        );
+        // A blank key and a blank expiry claim nothing: no grant (a file
+        // link without one is the spine's to refuse).
+        let blank = file("nxm://dragonsdogma2/mods/2207/files/9001?key=&expires=&user_id=4242");
+        assert_eq!(blank.grant, None);
+        assert_eq!(blank.user_id, Some(4242));
     }
 
     #[test]

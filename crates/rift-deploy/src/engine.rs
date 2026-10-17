@@ -2373,12 +2373,21 @@ fn undo_reorder(root: &Path, steps: &[&IntentStep], phase: u8, outcome: &mut Und
 /// and superseded backups), and the folders the Riftstone created that this
 /// empties — never a folder it did not create. Failures stay listed for the
 /// next try.
+///
+/// The journal is saved only when this changed it. A leftover that cannot go
+/// yet changes nothing, and saving anyway would rewrite the journal at every
+/// launch for nothing: one an older build wrote, lifted in memory, would come
+/// back as schema 2 although nothing happened (WINDOW-CONTRACT § v0.3 Legacy
+/// data: schema 2 is saved at the next write, never at load). Every caller
+/// saved its own changes before calling this.
 fn process_cleanup(ctx: &DeployContext, journal: &mut Journal) {
     if journal.cleanup.is_empty() {
         return;
     }
     let root = &ctx.game.root;
     let backups = ctx.state_dir.join("backups");
+    let listed = journal.cleanup.len();
+    let created_before = journal.created_dirs.clone();
     let mut remaining = Vec::new();
     for item in std::mem::take(&mut journal.cleanup) {
         let path = match &item {
@@ -2404,7 +2413,13 @@ fn process_cleanup(ctx: &DeployContext, journal: &mut Journal) {
             }
         }
     }
+    // `remaining` keeps entries of the list in their order, and pruning only
+    // takes folders out of `created_dirs`: equal lengths and equal folders
+    // mean nothing changed.
     journal.cleanup = remaining;
+    if journal.cleanup.len() == listed && journal.created_dirs == created_before {
+        return;
+    }
     if let Err(err) = journal.save(ctx.state_dir) {
         log::warn!("could not save the journal after cleaning up: {err}");
     }

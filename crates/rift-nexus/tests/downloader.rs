@@ -7,8 +7,9 @@
 //! breaks off, a size that disagrees, a cancel, a stall, a refusal, a
 //! redirect that breaks the rules, a panic in the progress callback) leaves
 //! no file behind; an existing file is never touched; a slow download has no
-//! total timeout; no error carries the link. Archive bytes, names and links
-//! are invented.
+//! total timeout; a body nobody sized is bounded by a cap and lands
+//! unvouched; no error carries the link. Archive bytes, names and links are
+//! invented.
 
 mod support;
 
@@ -100,6 +101,7 @@ fn a_binary_archive_lands_whole_with_its_md5() {
         Downloaded {
             bytes: body.len() as u64,
             md5: md5_hex(&body),
+            size_vouched: true,
         }
     );
     assert_eq!(std::fs::read(&dest).unwrap(), body, "every byte, in order");
@@ -254,6 +256,82 @@ fn a_body_running_past_the_stated_size_is_stopped() {
         other => panic!("expected a size mismatch, got {other:?}"),
     }
     assert!(!dest.exists());
+}
+
+#[test]
+fn a_length_the_server_states_vouches_on_its_own() {
+    let body = archive(4096);
+    let served = body.clone();
+    let cdn = TestServer::start(move |_| Reply::bytes(served.clone()));
+    let dir = tempfile::tempdir().unwrap();
+    let dest = part_in(&dir);
+    let (result, seen) = fetch(&downloader(), &link(&cdn, "/cdn/lantern.zip"), &dest, None);
+    let downloaded = result.unwrap();
+    assert_eq!(downloaded.bytes, 4096);
+    assert!(
+        downloaded.size_vouched,
+        "the server's Content-Length was met"
+    );
+    assert_eq!(seen.first(), Some(&(0, Some(4096))));
+}
+
+#[test]
+fn a_body_nobody_sized_lands_unvouched() {
+    // Nexus stated no size and the CDN sends no Content-Length: the bytes
+    // stream until the server closes, and nothing vouches for their count.
+    let body = archive(35_000);
+    let served = body.clone();
+    let cdn = TestServer::start(move |_| Reply::bytes(served.clone()).unstated_length());
+    let dir = tempfile::tempdir().unwrap();
+    let dest = part_in(&dir);
+    let (result, seen) = fetch(&downloader(), &link(&cdn, "/cdn/lantern.zip"), &dest, None);
+    assert_eq!(
+        result.unwrap(),
+        Downloaded {
+            bytes: 35_000,
+            md5: md5_hex(&body),
+            size_vouched: false,
+        },
+        "only the MD5 lookup can vouch for it now (NexusClient::verify_download)"
+    );
+    assert!(seen.iter().all(|(_, total)| total.is_none()), "{seen:?}");
+}
+
+#[test]
+fn a_body_nobody_sized_is_stopped_at_the_cap() {
+    let cdn = TestServer::start(|_| Reply::bytes(archive(35_000)).unstated_length());
+    let dir = tempfile::tempdir().unwrap();
+    let dest = part_in(&dir);
+    let capped = downloader().with_unstated_cap(20_000);
+    let (result, seen) = fetch(&capped, &link(&cdn, "/cdn/lantern.zip"), &dest, None);
+    match result {
+        Err(err @ NexusError::BadResponse(_)) => {
+            let sentence = err.to_string();
+            assert!(
+                sentence.contains("20000 bytes") && sentence.contains("no size"),
+                "{sentence}"
+            );
+            assert_no_secret(&err);
+        }
+        other => panic!("expected the endless body to be stopped, got {other:?}"),
+    }
+    assert!(
+        seen.iter().all(|(done, _)| *done <= 20_000),
+        "no byte past the cap was taken in: {seen:?}"
+    );
+    assert!(!dest.exists(), "and nothing was left behind");
+
+    // A stated size is the bound when there is one: the cap is not.
+    let cdn = TestServer::start(|_| Reply::bytes(archive(35_000)).unstated_length());
+    let dir = tempfile::tempdir().unwrap();
+    let dest = part_in(&dir);
+    let (result, _) = fetch(
+        &capped,
+        &link(&cdn, "/cdn/lantern.zip"),
+        &dest,
+        Some(35_000),
+    );
+    assert_eq!(result.unwrap().bytes, 35_000);
 }
 
 #[test]

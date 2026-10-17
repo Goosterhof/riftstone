@@ -1,6 +1,7 @@
 //! § rift-deploy rule 3, the uninstall half: an uninstall a crash cut short
 //! is rolled back at the next launch, and the journal's cleanup list only
-//! ever deletes the Riftstone's own leftovers.
+//! ever deletes the Riftstone's own leftovers (a leftover that cannot go yet
+//! stays listed, and a launch that changed nothing saves nothing).
 
 mod common;
 
@@ -8,7 +9,10 @@ use std::fs;
 
 use common::{assert_no_temporaries, Bench, TestMod};
 use rift_core::RiftError;
-use rift_deploy::{recover, Below, Intent, IntentAction, IntentStep, Journal, Leftover};
+use rift_deploy::{
+    journal_path, recover, Below, Intent, IntentAction, IntentStep, Journal, Leftover,
+};
+use serde_json::json;
 
 const DELETE: &str = "natives/stm/delete.mesh";
 const RESTORE: &str = "natives/stm/restore.mesh";
@@ -163,6 +167,62 @@ fn the_cleanup_list_deletes_only_the_riftstones_own_leftovers() {
     );
     assert!(bench.dir.path().join("outside.txt").exists());
     assert!(bench.journal().cleanup.is_empty());
+}
+
+#[test]
+fn a_leftover_that_cannot_go_yet_saves_nothing_at_launch() {
+    let bench = Bench::new();
+    // A folder sits where the leftover trash file should be: deleting a file
+    // there fails on every platform, so the entry stays for the next try.
+    let stuck = "natives/stm/x.mesh.riftstone-trash-2";
+    bench.write(
+        &format!("{stuck}/inside.txt"),
+        b"a folder, not the trash file",
+    );
+    // A journal an older build wrote (schema 1), listing that leftover.
+    let journal_file = journal_path(bench.state(), bench.root());
+    let written = serde_json::to_string_pretty(&json!({
+        "schema": 1,
+        "gameRoot": bench.root(),
+        "installs": [],
+        "pakOrder": [],
+        "pending": null,
+        "nextSeq": 3,
+        "cleanup": [{ "place": "game", "path": stuck }],
+        "parked": [],
+        "createdDirs": []
+    }))
+    .unwrap();
+    fs::write(&journal_file, &written).unwrap();
+
+    for launch in 1..=2 {
+        let mut relaunched = bench.journal();
+        assert_eq!(recover(&bench.ctx(), &mut relaunched).unwrap(), None);
+        assert_eq!(
+            relaunched.cleanup,
+            vec![Leftover::Game { path: stuck.into() }],
+            "launch {launch}: still listed for the next try"
+        );
+        assert_eq!(
+            fs::read_to_string(&journal_file).unwrap(),
+            written,
+            "launch {launch}: nothing changed, so nothing was saved (schema 1 stays as written)"
+        );
+    }
+    assert!(
+        bench.root().join(stuck).is_dir(),
+        "the folder was left alone"
+    );
+
+    // Once the leftover is gone, the next launch drops it, and that change is
+    // the journal's next write: schema 2.
+    fs::remove_dir_all(bench.root().join(stuck)).unwrap();
+    let mut relaunched = bench.journal();
+    assert_eq!(recover(&bench.ctx(), &mut relaunched).unwrap(), None);
+    let on_disk: serde_json::Value =
+        serde_json::from_slice(&fs::read(&journal_file).unwrap()).unwrap();
+    assert_eq!(on_disk["schema"], 2);
+    assert_eq!(on_disk["cleanup"], json!([]));
 }
 
 #[test]

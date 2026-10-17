@@ -24,8 +24,10 @@
 //!    [`NexusClient::endorse`], [`NexusClient::abstain`]).
 //! 7. **Download** (v0.3) — [`Downloader::download_to`] streams one archive
 //!    from a mirror into a new file, the MD5 on the way, and
-//!    [`NexusClient::confirm_download`] asks Nexus whether those bytes are the
-//!    file asked for. A free account's download goes through the site's Mod
+//!    [`NexusClient::verify_download`] checks what arrived: Nexus must know
+//!    those bytes as the file asked for, or not know them yet while a stated
+//!    size vouched for their count ([`NexusClient::confirm_download`] is its
+//!    MD5 half alone). A free account's download goes through the site's Mod
 //!    Manager Download button: [`parse_nxm`] reads the `nxm://` link it hands
 //!    over, whose grant ([`NxmGrant`]) unlocks the download link.
 //!
@@ -201,3 +203,7 @@ pub const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 pub const DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// The most redirects a download follows (v0.3).
 pub const MAX_DOWNLOAD_REDIRECTS: usize = 5;
+/// The most a download's body may bring when neither Nexus nor the server
+/// stated its size (v0.3): 32 GiB. A stated size is always the bound when
+/// there is one; this only keeps a body nobody sized from streaming forever.
+pub const MAX_UNSTATED_DOWNLOAD_BYTES: u64 = 32 << 30;

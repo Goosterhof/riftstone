@@ -263,6 +263,17 @@ impl V1FileList {
         self.file_names.get(&file_id).map(String::as_str)
     }
 
+    /// The size in bytes Nexus states for `file_id` (v1 `size_in_bytes`), if
+    /// the answer said: the size a download is checked against when v2 did
+    /// not state one. The kilobyte sizes beside it are never used: they are
+    /// no byte count.
+    pub fn size_of(&self, file_id: u64) -> Option<u64> {
+        self.files
+            .iter()
+            .find(|file| file.file_id == file_id)
+            .and_then(|file| file.size_bytes)
+    }
+
     /// Follow the replacement chain from `file_id` to its newest successor —
     /// the fallback when group ids mislead. `None` when nothing replaced it.
     /// Cycle-safe; when a file was replaced twice, the later replacement wins.
@@ -323,8 +334,9 @@ impl std::fmt::Debug for DownloadMirror {
 pub enum DownloadCheck {
     /// Nexus names this exact mod and file for the MD5.
     Confirmed,
-    /// Nexus knows no Dragon's Dogma 2 file with this MD5 yet: the size
-    /// alone vouches for the archive.
+    /// Nexus knows no Dragon's Dogma 2 file with this MD5 yet: only a
+    /// stated size can vouch for the archive
+    /// ([`crate::NexusClient::verify_download`] refuses it without one).
     Unknown,
 }
 

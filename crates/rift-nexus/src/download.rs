@@ -24,7 +24,12 @@
 //!   deleted, even when the progress callback panics.
 //! - **The size.** The byte count must match the server's `Content-Length`
 //!   and the size Nexus stated ([`NexusError::SizeMismatch`]); a body that
-//!   runs past either is stopped as soon as it does.
+//!   runs past either is stopped as soon as it does. When neither states a
+//!   size, the body is still bounded: past
+//!   [`crate::MAX_UNSTATED_DOWNLOAD_BYTES`] it is stopped
+//!   ([`NexusError::BadResponse`]), and an archive that lands under it says
+//!   that no size vouched for it ([`Downloaded::size_vouched`]), so only its
+//!   MD5 can ([`crate::NexusClient::verify_download`]).
 //! - **Secrets.** The link never appears in an error, a log line or `Debug`
 //!   output: errors are built from fixed words and the innermost transport
 //!   reason, with the link scrubbed out of even that.
@@ -49,7 +54,7 @@ use crate::error::NexusError;
 use crate::hash::hex;
 use crate::{
     APP_NAME, DOWNLOAD_CHUNK_BYTES, DOWNLOAD_CONNECT_TIMEOUT, DOWNLOAD_IDLE_TIMEOUT,
-    MAX_DOWNLOAD_REDIRECTS,
+    MAX_DOWNLOAD_REDIRECTS, MAX_UNSTATED_DOWNLOAD_BYTES,
 };
 
 /// What a finished download wrote.
@@ -58,8 +63,13 @@ pub struct Downloaded {
     /// Bytes written, equal to every size that was stated.
     pub bytes: u64,
     /// The archive's MD5, lower-case hex, computed while it streamed: what the
-    /// verifying step asks Nexus about ([`crate::NexusClient::confirm_download`]).
+    /// verifying step asks Nexus about ([`crate::NexusClient::verify_download`]).
     pub md5: String,
+    /// Did a stated size vouch for `bytes`: the size Nexus stated, or the
+    /// server's `Content-Length` (when both were stated, both were met)?
+    /// `false` when neither stated one: only Nexus knowing the MD5 can vouch
+    /// for the archive then.
+    pub size_vouched: bool,
 }
 
 /// Fetches archives from Nexus's mirrors. Cheap to make and to clone: each
@@ -68,6 +78,7 @@ pub struct Downloaded {
 pub struct Downloader {
     app_version: String,
     idle_timeout: Duration,
+    unstated_cap: u64,
 }
 
 /// A link the downloader will follow, and whether it talks to a loopback
@@ -98,6 +109,7 @@ impl Downloader {
         Downloader {
             app_version: clean_version(app_version),
             idle_timeout: DOWNLOAD_IDLE_TIMEOUT,
+            unstated_cap: MAX_UNSTATED_DOWNLOAD_BYTES,
         }
     }
 
@@ -106,6 +118,14 @@ impl Downloader {
     /// benches shorten it; there is never a total timeout.
     pub fn with_idle_timeout(mut self, idle: Duration) -> Self {
         self.idle_timeout = idle;
+        self
+    }
+
+    /// How many bytes a body may bring when neither Nexus nor the server
+    /// stated its size (default [`MAX_UNSTATED_DOWNLOAD_BYTES`]). Tests
+    /// lower it; a stated size is always the bound when there is one.
+    pub fn with_unstated_cap(mut self, bytes: u64) -> Self {
+        self.unstated_cap = bytes;
         self
     }
 
@@ -124,8 +144,10 @@ impl Downloader {
     /// stops the download at the next check.
     ///
     /// On success `dest` holds exactly the bytes that arrived, flushed to
-    /// disk. On every failure and on cancel `dest` is deleted (an existing
-    /// file at `dest` is refused first and never touched).
+    /// disk, and [`Downloaded::size_vouched`] says whether a stated size
+    /// vouched for their count. On every failure and on cancel `dest` is
+    /// deleted (an existing file at `dest` is refused first and never
+    /// touched).
     ///
     /// Errors: [`NexusError::Cancelled`]; [`NexusError::Disk`] (the file
     /// exists or cannot be written); [`NexusError::SizeMismatch`];
@@ -133,7 +155,8 @@ impl Downloader {
     /// off); [`NexusError::LinkExpired`] (the mirror answered 401, 403 or
     /// 410: its signed link no longer serves); [`NexusError::FileGone`]
     /// (404); [`NexusError::RateLimited`] (429); [`NexusError::BadResponse`]
-    /// (the link is not https, or the redirects broke the rules);
+    /// (the link is not https, the redirects broke the rules, or a body
+    /// nobody sized ran past the cap, [`Downloader::with_unstated_cap`]);
     /// [`NexusError::Http`] for any other status.
     pub fn download_to(
         &self,
@@ -217,11 +240,20 @@ impl Downloader {
                 Err(err) => return Err(self.read_error(&err)),
             };
             done += read as u64;
-            if let Some(limit) = total.filter(|limit| done > *limit) {
-                return Err(NexusError::SizeMismatch {
-                    expected: limit,
-                    got: done,
-                });
+            match total {
+                Some(limit) if done > limit => {
+                    return Err(NexusError::SizeMismatch {
+                        expected: limit,
+                        got: done,
+                    });
+                }
+                None if done > self.unstated_cap => {
+                    return Err(NexusError::BadResponse(format!(
+                        "the download ran past {} with no size stated by Nexus Mods or the server, so it was stopped",
+                        spoken_bytes(self.unstated_cap)
+                    )));
+                }
+                _ => {}
             }
             hasher.update(&buffer[..read]);
             part.write(&buffer[..read])?;
@@ -242,6 +274,7 @@ impl Downloader {
         Ok(Downloaded {
             bytes: done,
             md5: hex(&hasher.finalize()),
+            size_vouched: total.is_some(),
         })
     }
 
@@ -372,6 +405,16 @@ fn spoken(duration: Duration) -> String {
     }
 }
 
+/// `32 GiB`, `20000 bytes`.
+fn spoken_bytes(bytes: u64) -> String {
+    const GIB: u64 = 1 << 30;
+    if bytes >= GIB && bytes % GIB == 0 {
+        format!("{} GiB", bytes / GIB)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
 /// The error with every trace of the link replaced: the whole link, its
 /// query (the signature) and its path. Belt and braces: the URL is stripped
 /// from reqwest's errors already.
@@ -468,6 +511,27 @@ mod tests {
         assert_eq!(spoken(Duration::from_secs(60)), "60 seconds");
         assert_eq!(spoken(Duration::from_secs(1)), "1 second");
         assert_eq!(spoken(Duration::from_millis(250)), "250 ms");
+    }
+
+    #[test]
+    fn sizes_are_spoken() {
+        assert_eq!(spoken_bytes(MAX_UNSTATED_DOWNLOAD_BYTES), "32 GiB");
+        assert_eq!(spoken_bytes(20_000), "20000 bytes");
+        assert_eq!(spoken_bytes((1 << 30) + 1), "1073741825 bytes");
+    }
+
+    #[test]
+    fn a_new_downloader_caps_a_body_nobody_sized() {
+        assert_eq!(
+            Downloader::new("0.3.0").unstated_cap,
+            MAX_UNSTATED_DOWNLOAD_BYTES
+        );
+        assert_eq!(
+            Downloader::new("0.3.0")
+                .with_unstated_cap(20_000)
+                .unstated_cap,
+            20_000
+        );
     }
 
     #[test]

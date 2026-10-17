@@ -15,8 +15,8 @@ mod support;
 
 use rift_core::NexusReason;
 use rift_nexus::{
-    parse_nxm, BrowseQuery, BrowseSort, DownloadCheck, EndorseRefusal, EndorseStatus, FileCategory,
-    NexusClient, NexusError, NxmGrant, NxmMessage,
+    parse_nxm, BrowseQuery, BrowseSort, DownloadCheck, Downloaded, EndorseRefusal, EndorseStatus,
+    FileCategory, NexusClient, NexusError, NxmGrant, NxmMessage,
 };
 use serde_json::{json, Value};
 use support::{Recorded, Reply, TestServer};
@@ -497,6 +497,19 @@ fn files_v1_names_each_files_archive() {
     assert_eq!(list.successor_of(801), Some(802), "the chain still reads");
 }
 
+#[test]
+fn files_v1_states_a_files_size_only_in_bytes() {
+    let server = TestServer::start(|_| Reply::fixture(V1_FILES));
+    let list = keyed(&server).files_v1(5150).unwrap();
+    assert_eq!(list.size_of(802), Some(30_703_184), "size_in_bytes");
+    assert_eq!(
+        list.size_of(801),
+        None,
+        "a size in kilobytes alone is no byte count to check a download against"
+    );
+    assert_eq!(list.size_of(803), None, "a file the list does not hold");
+}
+
 // ---------------------------------------------------------------------------
 // A mod's files with their patch notes (v2, anonymous)
 // ---------------------------------------------------------------------------
@@ -793,4 +806,55 @@ fn confirm_download_names_the_file_or_refuses_it() {
     for request in server.requests() {
         assert_eq!(request.header("apikey"), None, "the check is anonymous");
     }
+}
+
+#[test]
+fn verify_download_takes_an_unknown_hash_only_on_a_stated_size() {
+    // As above: 9e107d9d… is mod 4242's file 901, every other hash unknown.
+    let server = TestServer::start(|request| {
+        let asked = request.json()["variables"]["md5s"][0]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if asked == "9e107d9d372bb6826bd81d3542a419d6" {
+            Reply::fixture(FILE_HASHES)
+        } else {
+            Reply::json(json!({ "data": { "fileHashes": [] } }))
+        }
+    });
+    let client = keyed(&server);
+    let arrived = |md5: &str, size_vouched: bool| Downloaded {
+        bytes: 35_000,
+        md5: md5.into(),
+        size_vouched,
+    };
+    const KNOWN: &str = "9e107d9d372bb6826bd81d3542a419d6";
+    const UNKNOWN: &str = "d41d8cd98f00b204e9800998ecf8427e";
+
+    assert_eq!(
+        client.verify_download(&arrived(UNKNOWN, true), 4242, 901),
+        Ok(DownloadCheck::Unknown),
+        "a hash Nexus has not seen yet: the stated size vouches"
+    );
+    match client.verify_download(&arrived(UNKNOWN, false), 4242, 901) {
+        Err(err @ NexusError::BadResponse(_)) => {
+            let sentence = err.to_string();
+            assert!(
+                sentence.contains("size") && sentence.contains("MD5"),
+                "{sentence}"
+            );
+            assert!(sentence.ends_with('.'), "{sentence}");
+        }
+        other => panic!("nothing vouched for the archive, yet: {other:?}"),
+    }
+    assert_eq!(
+        client.verify_download(&arrived(KNOWN, false), 4242, 901),
+        Ok(DownloadCheck::Confirmed),
+        "Nexus names the file: its hash vouches without a size"
+    );
+    assert_eq!(
+        client.verify_download(&arrived(KNOWN, true), 4242, 902),
+        Err(NexusError::NotTheFile),
+        "a stated size never vouches for another file's bytes"
+    );
 }

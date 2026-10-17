@@ -515,13 +515,15 @@ impl NexusClient {
         Ok(wire::read_browse_page(data, offset))
     }
 
-    /// v0.3's verifying step for a download: does Nexus know the archive
-    /// with this MD5 (from [`crate::Downloaded::md5`]) as exactly this mod's
-    /// file? One anonymous `fileHashes` lookup.
+    /// The MD5 half of v0.3's verifying step for a download: does Nexus know
+    /// the archive with this MD5 (from [`crate::Downloaded::md5`]) as exactly
+    /// this mod's file? One anonymous `fileHashes` lookup. A download is
+    /// verified whole by [`verify_download`](Self::verify_download), which
+    /// also asks whether a size vouched.
     ///
     /// - A hit for `(mod_id, file_id)` → [`DownloadCheck::Confirmed`].
     /// - No Dragon's Dogma 2 hit at all → [`DownloadCheck::Unknown`]: Nexus
-    ///   has not hashed the file yet, and the size alone vouches for it.
+    ///   has not hashed the file yet, and only a stated size can vouch for it.
     /// - Hits for other files only → [`NexusError::NotTheFile`].
     ///
     /// A hash that is not 32 hexadecimal digits is refused
@@ -550,6 +552,37 @@ impl NexusClient {
         } else {
             Err(NexusError::NotTheFile)
         }
+    }
+
+    /// v0.3's whole verifying step for an archive [`Downloader::download_to`]
+    /// brought in: [`confirm_download`](Self::confirm_download) on its MD5,
+    /// and a hash Nexus does not know yet ([`DownloadCheck::Unknown`]) is
+    /// taken only when a stated size vouched for the byte count
+    /// ([`Downloaded::size_vouched`](crate::Downloaded::size_vouched)).
+    ///
+    /// - Nexus names this file for the MD5 → [`DownloadCheck::Confirmed`],
+    ///   with or without a size.
+    /// - Nexus knows the MD5 for no file, and a size vouched →
+    ///   [`DownloadCheck::Unknown`].
+    /// - Nexus knows the MD5 for no file, and no size was stated →
+    ///   [`NexusError::BadResponse`]: nothing vouches for the archive, and
+    ///   the caller lets it go.
+    /// - Nexus names other files only → [`NexusError::NotTheFile`].
+    pub fn verify_download(
+        &self,
+        downloaded: &crate::Downloaded,
+        mod_id: u64,
+        file_id: u64,
+    ) -> Result<DownloadCheck, NexusError> {
+        let check = self.confirm_download(&downloaded.md5, mod_id, file_id)?;
+        if check == DownloadCheck::Unknown && !downloaded.size_vouched {
+            return Err(NexusError::BadResponse(
+                "neither Nexus Mods nor the download server stated the file's size, and Nexus \
+                 Mods does not know the archive's MD5 yet, so nothing vouched for the download"
+                    .to_string(),
+            ));
+        }
+        Ok(check)
     }
 
     /// A [`Downloader`] announcing this client's version. It shares nothing

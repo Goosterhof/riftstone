@@ -17,9 +17,10 @@ use std::path::Path;
 
 use common::{adopted, assert_no_temporaries, Bench, TestMod};
 use rift_core::{
-    DeployTarget, ModOption, OptionId, PackageId, PayloadFile, PayloadKinds, RiftError,
+    DeployTarget, ModOption, OptionId, Package, PackageId, PayloadFile, PayloadKinds, Problem,
+    ProblemKind, RiftError,
 };
-use rift_deploy::relink::propose;
+use rift_deploy::relink::{propose, propose_on_shelf};
 use rift_deploy::{
     journal_path, read_game_state, rekey, rekey_with_files, uninstall, Below, BelowOwner,
     DeployKind, DeployedFile, InstalledOption, Intent, IntentAction, IntentStep, Journal, Origin,
@@ -529,15 +530,22 @@ fn rekey_ignores_what_the_journal_does_not_hold_and_saves_nothing() {
 // ---------------------------------------------------------------------------
 
 /// A library option of the package `package` (its display name, as the
-/// catalog's trail starts), at `root`, named `name`, installing `targets`.
+/// catalog's trail starts), at `root`, named `name`, installing `targets`,
+/// each 1 byte (what [`record`] records).
 fn option(package: &str, root: &str, name: &str, targets: &[DeployTarget]) -> ModOption {
+    let files: Vec<(DeployTarget, u64)> = targets.iter().map(|t| (t.clone(), 1)).collect();
+    sized_option(package, root, name, &files)
+}
+
+/// [`option`] with each payload file's size given.
+fn sized_option(package: &str, root: &str, name: &str, files: &[(DeployTarget, u64)]) -> ModOption {
     let package_id = PackageId::for_folder(package);
-    let payload: Vec<PayloadFile> = targets
+    let payload: Vec<PayloadFile> = files
         .iter()
-        .map(|target| PayloadFile {
+        .map(|(target, size)| PayloadFile {
             entry: format!("{root}/{}", target.game_path().unwrap_or("x.pak")),
             target: target.clone(),
-            size: 1,
+            size: *size,
         })
         .collect();
     ModOption {
@@ -576,12 +584,27 @@ fn pak(name: &str) -> DeployTarget {
     }
 }
 
-/// An install the Riftstone made, as the journal recorded it.
+/// An install the Riftstone made, as the journal recorded it, each file 1
+/// byte (what [`option`] carries).
 fn record(
     option_id: &str,
     name: &str,
     root: &str,
     files: &[(&str, DeployKind)],
+) -> InstalledOption {
+    let files: Vec<(&str, DeployKind, u64)> = files
+        .iter()
+        .map(|(game_path, kind)| (*game_path, *kind, 1))
+        .collect();
+    sized_record(option_id, name, root, &files)
+}
+
+/// [`record`] with each file's recorded size given.
+fn sized_record(
+    option_id: &str,
+    name: &str,
+    root: &str,
+    files: &[(&str, DeployKind, u64)],
 ) -> InstalledOption {
     InstalledOption {
         seq: 1,
@@ -597,10 +620,10 @@ fn record(
         origin: Origin::Riftstone,
         files: files
             .iter()
-            .map(|(game_path, kind)| DeployedFile {
+            .map(|(game_path, kind, size)| DeployedFile {
                 game_path: (*game_path).into(),
                 kind: *kind,
-                size: 1,
+                size: *size,
                 entry: None,
                 below: Below::Nothing,
                 fingerprint: None,
@@ -841,11 +864,12 @@ fn the_relink_pass_finds_a_lifted_stand_in_and_one_save_rekeys_it() {
     let stand_in = id("adopted#Lantern Glow-v2");
     assert!(journal.is_installed(&stand_in));
 
-    let library = option(
+    // The archive holds the very bytes the game folder does (4 of them).
+    let library = sized_option(
         "Lantern Glow Recolor",
         "Lantern Glow-v2",
         "Lantern Glow Recolor",
-        &[loose("natives/stm/glow.mesh")],
+        &[(loose("natives/stm/glow.mesh"), 4)],
     );
     let map = propose(&journal.installs, &[&library]);
     assert_eq!(
@@ -889,17 +913,18 @@ fn an_adopted_install_built_by_hand_relinks_like_a_lifted_one() {
             Below::Nothing,
         )],
     );
-    let library = option(
+    // The archive's pak is the 10 bytes the adopted pak in pak_mods/ holds.
+    let library = sized_option(
         "Older Armour",
         "Older Armour-v1",
         "Older Armour",
-        &[pak("Older Armour.pak")],
+        &[(pak("Older Armour.pak"), 10)],
     );
-    let renamed = option(
+    let renamed = sized_option(
         "Older Armour",
         "Older Armour-v1",
         "Armour, Older",
-        &[pak("Older Armour.pak")],
+        &[(pak("Older Armour.pak"), 10)],
     );
     assert_eq!(
         propose(std::slice::from_ref(&older), &[&library]),
@@ -909,5 +934,216 @@ fn an_adopted_install_built_by_hand_relinks_like_a_lifted_one() {
         propose(std::slice::from_ref(&older), &[&renamed]).len(),
         1,
         "the package's name still matches"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The relink keeps an install on the bytes the game folder holds
+// ---------------------------------------------------------------------------
+
+/// Lantern Glow Recolor as the archive `file_name` ships it: one mesh (its
+/// bytes given) and one script, under the option root `Lantern Glow`. Two
+/// archives of it differ in name, so in package id.
+fn lantern_glow(file_name: &str, mesh: &[u8]) -> TestMod {
+    let mut glow = TestMod::new("Lantern Glow")
+        .loose("natives/stm/effect/lantern/lantern_glow.mesh", mesh)
+        .script(
+            "reframework/autorun/lantern_glow.lua",
+            b"-- the lantern sways",
+        );
+    glow.package.file_name = file_name.into();
+    glow.package.display_name = "Lantern Glow Recolor".into();
+    glow.package.id = PackageId::for_archive(file_name, glow.package.size);
+    glow.option.package_id = glow.package.id.clone();
+    glow.option.id = OptionId::new(&glow.package.id, &glow.option.root);
+    glow.option.name = "Lantern Glow Recolor".into();
+    glow.option.trail = vec!["Lantern Glow Recolor".into()];
+    glow
+}
+
+/// The package as a scan lists it: its option inside.
+fn on_shelf(glow: &TestMod) -> Package {
+    let mut package = glow.package.clone();
+    package.options = vec![glow.option.clone()];
+    package
+}
+
+#[test]
+fn a_newer_archive_never_takes_over_the_install_of_an_older_one() {
+    // 1.0 is installed; 1.1 lands beside it with the same root and the same
+    // game paths but other bytes; then the player deletes 1.0.
+    let bench = Bench::new();
+    let mut journal = bench.journal();
+    let one = lantern_glow("Lantern Glow Recolor 1.0.zip", b"version one bytes");
+    one.install(&bench, &mut journal);
+    let newer = lantern_glow(
+        "Lantern Glow Recolor 1.1.zip",
+        b"version one point one bytes",
+    );
+    assert!(
+        propose(&journal.installs, &[&newer.option]).is_empty(),
+        "the game folder holds 1.0's bytes: the install is not 1.1's"
+    );
+    assert!(propose_on_shelf(&journal.installs, &[on_shelf(&newer)]).is_empty());
+    assert_eq!(
+        bench
+            .read("natives/stm/effect/lantern/lantern_glow.mesh")
+            .unwrap(),
+        b"version one bytes"
+    );
+
+    // The same bytes under another name (1.0 moved, or copied back) are found.
+    let moved = lantern_glow("Lantern Glow Recolor (moved).zip", b"version one bytes");
+    assert_eq!(
+        propose_on_shelf(&journal.installs, &[on_shelf(&newer), on_shelf(&moved)]),
+        BTreeMap::from([(one.id(), moved.option.id.clone())])
+    );
+}
+
+#[test]
+fn relink_holds_every_recorded_file_to_its_size() {
+    let install = sized_record(
+        "0000000000000f08#Glow",
+        "Lantern Glow Recolor",
+        "Glow",
+        &[
+            ("natives/stm/glow.mesh", DeployKind::Loose, 17),
+            ("reframework/autorun/glow.lua", DeployKind::Reframework, 9),
+        ],
+    );
+    let sized = |mesh: u64, lua: u64| {
+        sized_option(
+            "Lantern Glow Recolor",
+            "Glow",
+            "Lantern Glow Recolor",
+            &[
+                (loose("natives/stm/glow.mesh"), mesh),
+                (script("reframework/autorun/glow.lua"), lua),
+            ],
+        )
+    };
+    let fitting = sized(17, 9);
+    assert_eq!(
+        propose(std::slice::from_ref(&install), &[&fitting]),
+        BTreeMap::from([(install.option_id.clone(), fitting.id.clone())]),
+        "the same paths at the same sizes: the same files"
+    );
+    for (mesh, lua) in [(27, 9), (17, 8), (0, 9)] {
+        assert!(
+            propose(std::slice::from_ref(&install), &[&sized(mesh, lua)]).is_empty(),
+            "{mesh} + {lua} bytes: another version of the files"
+        );
+    }
+
+    // Two entries for one game path (any case): the later one is what an
+    // install of the option writes, so it is the one that must match.
+    let later = |first: u64, second: u64| {
+        sized_option(
+            "Lantern Glow Recolor",
+            "Glow",
+            "Lantern Glow Recolor",
+            &[
+                (loose("natives/stm/glow.mesh"), first),
+                (loose("natives/STM/Glow.mesh"), second),
+                (script("reframework/autorun/glow.lua"), 9),
+            ],
+        )
+    };
+    assert_eq!(
+        propose(std::slice::from_ref(&install), &[&later(27, 17)]).len(),
+        1
+    );
+    assert!(propose(std::slice::from_ref(&install), &[&later(17, 27)]).is_empty());
+}
+
+#[test]
+fn relink_holds_paks_to_their_sizes_and_their_count() {
+    let install = sized_record(
+        "0000000000000f09#Cloaks",
+        "Vernworth Cloaks Collection",
+        "Cloaks",
+        &[
+            ("pak_mods/zrift-0005-cloaks.pak", DeployKind::Pak, 300),
+            ("pak_mods/zrift-0005-hoods.pak", DeployKind::Pak, 120),
+        ],
+    );
+    let with_paks = |sizes: &[u64]| {
+        let files: Vec<(DeployTarget, u64)> = sizes
+            .iter()
+            .enumerate()
+            .map(|(n, size)| (pak(&format!("part{n}.pak")), *size))
+            .collect();
+        sized_option(
+            "Vernworth Cloaks Collection",
+            "Cloaks",
+            "Vernworth Cloaks Collection",
+            &files,
+        )
+    };
+    assert_eq!(
+        propose(std::slice::from_ref(&install), &[&with_paks(&[120, 300])]).len(),
+        1,
+        "the same pak sizes, in any order"
+    );
+    for sizes in [
+        &[120, 310][..],
+        &[300][..],
+        &[120, 300, 80][..],
+        &[300, 300][..],
+    ] {
+        assert!(
+            propose(std::slice::from_ref(&install), &[&with_paks(sizes)]).is_empty(),
+            "{sizes:?}: other paks than the install's"
+        );
+    }
+
+    // An install without paks wants an option without paks.
+    let loose_only = sized_record(
+        "0000000000000f0a#Cloaks",
+        "Vernworth Cloaks Collection",
+        "Cloaks",
+        &[("natives/stm/cloak.mesh", DeployKind::Loose, 50)],
+    );
+    let gained_a_pak = sized_option(
+        "Vernworth Cloaks Collection",
+        "Cloaks",
+        "Vernworth Cloaks Collection",
+        &[
+            (loose("natives/stm/cloak.mesh"), 50),
+            (pak("cloaks.pak"), 300),
+        ],
+    );
+    assert!(
+        propose(&[loose_only], &[&gained_a_pak]).is_empty(),
+        "a version that brought a pak along is another version"
+    );
+}
+
+#[test]
+fn an_install_whose_package_is_on_the_shelf_but_unreadable_stays_put() {
+    let bench = Bench::new();
+    let mut journal = bench.journal();
+    let one = lantern_glow("Lantern Glow Recolor 1.0.zip", b"version one bytes");
+    one.install(&bench, &mut journal);
+    // A copy of the same archive under another name fits the install.
+    let copy = lantern_glow("Lantern Glow Recolor (copy).zip", b"version one bytes");
+
+    // 1.0 is still in the mods folder, but this scan could not read it (a
+    // file caught mid-copy): the shelf lists it by its id, with no options.
+    let mut unreadable = one.package.clone();
+    unreadable.options = Vec::new();
+    unreadable.problems = vec![Problem {
+        kind: ProblemKind::Unreadable,
+        message: "it could not be read.".into(),
+    }];
+    assert!(
+        propose_on_shelf(&journal.installs, &[unreadable, on_shelf(&copy)]).is_empty(),
+        "its own package is on the shelf: the install stays on it"
+    );
+
+    // Once 1.0 has left the mods folder, the copy is where it is found.
+    assert_eq!(
+        propose_on_shelf(&journal.installs, &[on_shelf(&copy)]),
+        BTreeMap::from([(one.id(), copy.option.id.clone())])
     );
 }
