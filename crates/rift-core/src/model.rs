@@ -192,7 +192,8 @@ pub struct ModInfo {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum DeployTarget {
     /// An RE Engine .pak. Lands in `pak_mods/` under a priority-prefixed name
-    /// chosen at install time (`x0003-<file_name>`); later = wins.
+    /// chosen at install time (`zrift-0003-<stem>.pak`, see
+    /// [`crate::dd2::PAK_PREFIX`]); later = wins.
     #[serde(rename_all = "camelCase")]
     Pak { file_name: String },
     /// A loose file under `natives/` — loaded by REFramework's LooseFileLoader.

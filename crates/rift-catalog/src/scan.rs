@@ -1,15 +1,25 @@
 //! Reading one package off disk into a [`Package`].
 //!
-//! **Candidates** ([`list_root`]): the direct children of a library root —
+//! **Candidates** ([`list_library`]): the direct children of the mods folder —
 //! archives by extension (`zip`, `7z`, `rar`, any case; the magic bytes decide
-//! when the package is opened) and folders (each child of a root is one
-//! package, the Fluffy convention). Dotfiles, `desktop.ini` and partial
-//! downloads (`*.crdownload`, `*.part`, `*.tmp`) are never candidates.
+//! when the package is opened) and folders (each child of the mods folder is
+//! one package). Names starting with `.` (the stone's own
+//! `.riftstone-<id>.part` downloads among them), `desktop.ini` and partial
+//! downloads (`*.crdownload`, `*.part`, `*.tmp`) are never candidates. Nothing
+//! else is held back: an archive that holds no mod is a package with nothing
+//! to install.
 //!
-//! **One package** ([`scan_package`]): open → list → (a Downloads-style root
-//! stops here for anything that does not look like a DD2 mod) → read every
-//! `modinfo.ini` (at most 64 KiB each; rift-archive's sibling cache turns the
-//! reads of a solid 7z or rar into one pass) → classify.
+//! **One package** ([`scan_package`]): open → list → read every `modinfo.ini`
+//! (at most 64 KiB each; rift-archive's sibling cache turns the reads of a
+//! solid 7z or rar into one pass) → classify.
+//!
+//! **Archives inside a folder package.** Only what sits directly in the mods
+//! folder is opened as a package, so an archive inside a folder package is
+//! never read. A folder holding archives that no option installs carries one
+//! `FilesSkipped` problem that counts them (it never names them) and says where
+//! they belong. When the folder installs nothing at all, its `NothingToInstall`
+//! problem says the same: the usual why (no game files, so check the download)
+//! would send the player the wrong way.
 //!
 //! **Names and Nexus links.** The display name is the file name without its
 //! archive extension — unless the name is a Nexus download name
@@ -25,6 +35,10 @@
 //! instead (source `Homepage`): the `nexusmods.com/dragonsdogma2/mods/<id>`
 //! most of them name, carrying the modinfo `version` beside it.
 //!
+//! **Identity.** An archive is known by its file name and size
+//! ([`PackageId::for_archive`]), a folder by its name alone
+//! ([`PackageId::for_folder`]), so moving the whole mods folder keeps every id.
+//!
 //! **Size and time** — the cache key ([`crate::catalog`]). An archive's are
 //! its file's own. A folder's size is the sum of its files, and its time the
 //! newest of its own, its subfolders' and its files': a texture swapped deep
@@ -32,7 +46,7 @@
 //! timestamp would not.
 
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -43,8 +57,8 @@ use walkdir::WalkDir;
 use rift_core::nexus_name;
 use rift_core::path::{file_name, parent};
 use rift_core::{
-    lower_key, ArchiveEntry, LibraryRoot, LinkSource, ModInfo, ModOption, NexusLink, Package,
-    PackageFormat, PackageId, PackageSource, Problem, ProblemKind, RiftError,
+    lower_key, ArchiveEntry, LinkSource, ModInfo, ModOption, NexusLink, Package, PackageFormat,
+    PackageId, PackageSource, Problem, ProblemKind, RiftError,
 };
 
 use crate::{classify, modinfo};
@@ -69,17 +83,17 @@ pub struct ScannedPackage {
     pub entries: Vec<ArchiveEntry>,
 }
 
-/// The candidate packages directly inside a root: every archive file and
-/// every folder (one level deep — each child of a root is one package, the
-/// Fluffy convention). Sorted by name (case-blind). A root that cannot be
-/// listed yields nothing.
-pub fn list_root(root: &LibraryRoot) -> Vec<PathBuf> {
-    let reader = match fs::read_dir(&root.path) {
+/// The candidate packages directly inside the mods folder: every archive file
+/// and every folder (one level deep — each child of the mods folder is one
+/// package). Sorted by name (case-blind), then by path. A folder that cannot
+/// be listed yields nothing.
+pub fn list_library(library: &Path) -> Vec<PathBuf> {
+    let reader = match fs::read_dir(library) {
         Ok(reader) => reader,
         Err(err) => {
             log::warn!(
-                "the library folder {} could not be listed: {err}",
-                root.path.display()
+                "the mods folder {} could not be listed: {err}",
+                library.display()
             );
             return Vec::new();
         }
@@ -89,10 +103,7 @@ pub fn list_root(root: &LibraryRoot) -> Vec<PathBuf> {
         let item = match item {
             Ok(item) => item,
             Err(err) => {
-                log::warn!(
-                    "{}: skipped an unreadable entry: {err}",
-                    root.path.display()
-                );
+                log::warn!("{}: skipped an unreadable entry: {err}", library.display());
                 continue;
             }
         };
@@ -114,11 +125,10 @@ pub fn list_root(root: &LibraryRoot) -> Vec<PathBuf> {
     candidates.into_iter().map(|(_, path)| path).collect()
 }
 
-/// Open, list and classify one package. For a `dd2_shaped_only` root, a
-/// package that is not DD2-shaped returns `Ok(None)`.
-pub fn scan_package(root: &LibraryRoot, path: &Path) -> Result<Option<ScannedPackage>, RiftError> {
+/// Open, list and classify one package.
+pub fn scan_package(path: &Path) -> Result<ScannedPackage, RiftError> {
     let stamp = stamp(path).map_err(StampError::into_error)?;
-    scan_stamped(root, path, stamp)
+    scan_stamped(path, stamp)
 }
 
 // ---------------------------------------------------------------------------
@@ -217,31 +227,26 @@ fn modified_ms(modified: io::Result<SystemTime>) -> u64 {
 
 /// [`scan_package`] with the stamp already taken (the catalog takes it first,
 /// to decide whether the cache can answer).
-pub(crate) fn scan_stamped(
-    root: &LibraryRoot,
-    path: &Path,
-    stamp: Stamp,
-) -> Result<Option<ScannedPackage>, RiftError> {
+pub(crate) fn scan_stamped(path: &Path, stamp: Stamp) -> Result<ScannedPackage, RiftError> {
     let mut source = rift_archive::open(path)?;
     let format = source.format();
     let entries = source.entries()?;
-    if root.dd2_shaped_only && !classify::is_dd2_shaped(&entries) {
-        return Ok(None);
-    }
 
     let is_folder = format == PackageFormat::Folder;
     let modinfos = read_modinfos(source.as_mut(), &entries);
     let naming = Naming::of(path, is_folder).vouched_by(modinfos.infos.values());
-    let id = package_id(path, &naming.file_name, is_folder, stamp.size);
+    let id = package_id(&naming.file_name, is_folder, stamp.size);
     let (options, mut problems) =
         classify::build_options(&id, &naming.display_name, &entries, &modinfos.infos);
+    if is_folder {
+        mention_held_archives(&mut problems, held_archives(&entries, &options));
+    }
     problems.extend(modinfos.problems);
     let nexus = naming.nexus.or_else(|| homepage_link(&options));
 
-    Ok(Some(ScannedPackage {
+    Ok(ScannedPackage {
         package: Package {
             id,
-            root_id: root.id.clone(),
             path: path.to_path_buf(),
             file_name: naming.file_name,
             display_name: naming.display_name,
@@ -254,23 +259,17 @@ pub(crate) fn scan_stamped(
             problems,
         },
         entries,
-    }))
+    })
 }
 
 /// The package a candidate becomes when it cannot be opened: named and linked
 /// like any other, no options, one `Unreadable` problem saying why.
-pub(crate) fn unreadable_package(
-    root: &LibraryRoot,
-    path: &Path,
-    stamp: Option<Stamp>,
-    error: &RiftError,
-) -> Package {
+pub(crate) fn unreadable_package(path: &Path, stamp: Option<Stamp>, error: &RiftError) -> Package {
     let is_folder = stamp.map_or_else(|| path.is_dir(), |stamp| stamp.is_folder);
     let naming = Naming::of(path, is_folder);
     let size = stamp.map_or(0, |stamp| stamp.size);
     Package {
-        id: package_id(path, &naming.file_name, is_folder, size),
-        root_id: root.id.clone(),
+        id: package_id(&naming.file_name, is_folder, size),
         path: path.to_path_buf(),
         format: guess_format(&naming.file_name, is_folder),
         file_name: naming.file_name,
@@ -290,7 +289,7 @@ pub(crate) fn unreadable_package(
 fn unreadable_problem(error: &RiftError) -> Problem {
     let message = match error {
         RiftError::Encrypted { .. } => "it is password-protected. Unpack it with its password and \
-             put the unpacked folder in a library folder instead."
+             put the unpacked folder in the mods folder instead."
             .to_string(),
         RiftError::UnsupportedFormat { .. } => "it is not a zip, 7z or rar archive, whatever its \
              name says. It may be an incomplete or mislabelled download: download it again from \
@@ -308,6 +307,55 @@ fn unreadable_problem(error: &RiftError) -> Problem {
     Problem {
         kind: ProblemKind::Unreadable,
         message,
+    }
+}
+
+/// How many archives a folder package holds that no option installs, each
+/// counted once (case-blind). They are never opened: only what sits directly
+/// in the mods folder is.
+fn held_archives(entries: &[ArchiveEntry], options: &[ModOption]) -> usize {
+    let installed: HashSet<String> = options
+        .iter()
+        .flat_map(|option| &option.payload)
+        .map(|file| lower_key(&file.entry))
+        .collect();
+    entries
+        .iter()
+        .filter(|entry| has_archive_extension(file_name(&entry.path)))
+        .map(|entry| lower_key(&entry.path))
+        .filter(|key| !installed.contains(key))
+        .collect::<HashSet<_>>()
+        .len()
+}
+
+/// Say what a folder package's own archives need, by count only: one
+/// `FilesSkipped` problem after the classifier's, and the same why for the
+/// package's `NothingToInstall`, when it has one.
+fn mention_held_archives(problems: &mut Vec<Problem>, held: usize) {
+    if held == 0 {
+        return;
+    }
+    let message = held_archives_message(held);
+    for problem in problems.iter_mut() {
+        if problem.kind == ProblemKind::NothingToInstall {
+            problem.message.clone_from(&message);
+        }
+    }
+    problems.push(Problem {
+        kind: ProblemKind::FilesSkipped,
+        message,
+    });
+}
+
+/// The why for a folder package's own archives. The window says the verdict
+/// before its colon, so this starts lower-case (Chaos #00129 D3).
+fn held_archives_message(held: usize) -> String {
+    if held == 1 {
+        "it holds 1 archive of its own; put that archive directly in the mods folder.".to_string()
+    } else {
+        format!(
+            "it holds {held} archives of its own; put each archive directly in the mods folder."
+        )
     }
 }
 
@@ -376,11 +424,10 @@ impl Naming {
     }
 }
 
-/// Archives by file name + size, folders by absolute path (rift-core's rule).
-fn package_id(path: &Path, file_name: &str, is_folder: bool, size: u64) -> PackageId {
+/// Archives by file name + size, folders by name (rift-core's rule).
+fn package_id(file_name: &str, is_folder: bool, size: u64) -> PackageId {
     if is_folder {
-        let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-        PackageId::for_folder(&absolute)
+        PackageId::for_folder(file_name)
     } else {
         PackageId::for_archive(file_name, size)
     }
@@ -603,7 +650,8 @@ mod tests {
 
     use super::*;
     use crate::test_support::{
-        folder_at, mark_zip_entry_encrypted, modinfo, root, set_mtime, solid_7z_at, zip_at,
+        assert_is_a_why, folder_at, mark_zip_entry_encrypted, modinfo, set_mtime, solid_7z_at,
+        zip_at,
     };
 
     const MESH: &[u8] = b"mesh bytes";
@@ -617,14 +665,19 @@ mod tests {
             .collect()
     }
 
+    fn kinds(package: &Package) -> Vec<ProblemKind> {
+        package.problems.iter().map(|p| p.kind).collect()
+    }
+
     #[test]
-    fn list_root_keeps_archives_and_folders_by_name_and_nothing_else() {
+    fn list_library_keeps_archives_and_folders_by_name_and_nothing_else() {
         let dir = tempfile::tempdir().unwrap();
         for file in [
             "b Lantern Glow.zip",
             "A Vernworth Cape.7Z",
             "c Pawn Satchel.RAR",
             ".hidden.zip",
+            ".riftstone-7.part",
             "desktop.ini",
             "Vernworth Cloaks.zip.crdownload",
             "Lantern Glow.7z.part",
@@ -639,7 +692,10 @@ mod tests {
         for folder in ["Lantern Glow Recolor", ".git", "half done.tmp"] {
             fs::create_dir(dir.path().join(folder)).unwrap();
         }
-        let listed = list_root(&root("fluffy", dir.path(), false));
+        // One level only: an archive inside a folder belongs to that folder.
+        fs::write(dir.path().join("Lantern Glow Recolor/inner.zip"), b"x").unwrap();
+
+        let listed = list_library(dir.path());
         assert_eq!(
             names(&listed),
             [
@@ -649,10 +705,9 @@ mod tests {
                 "Lantern Glow Recolor",
             ]
         );
-        assert!(listed.iter().all(|path| path.starts_with(dir.path())));
+        assert!(listed.iter().all(|path| path.parent() == Some(dir.path())));
 
-        let missing = root("gone", &dir.path().join("no such folder"), false);
-        assert!(list_root(&missing).is_empty());
+        assert!(list_library(&dir.path().join("no such folder")).is_empty());
     }
 
     #[test]
@@ -688,13 +743,10 @@ mod tests {
             SystemTime::UNIX_EPOCH + Duration::from_millis(1_700_000_000_000),
         );
 
-        let scanned = scan_package(&root("fluffy", dir.path(), false), &path)
-            .unwrap()
-            .expect("a normal root keeps every package");
+        let scanned = scan_package(&path).unwrap();
         let package = &scanned.package;
         let size = fs::metadata(&path).unwrap().len();
         assert_eq!(package.id, PackageId::for_archive(file_name, size));
-        assert_eq!(package.root_id, "fluffy");
         assert_eq!(package.path, path);
         assert_eq!(package.file_name, file_name);
         assert_eq!(package.display_name, "Vernworth Cloaks");
@@ -760,10 +812,7 @@ mod tests {
                 ("Lantern Glow/Azure/natives/stm/azure.tex.251211553", MESH),
             ],
         );
-        let package = scan_package(&root("fluffy", dir.path(), false), &path)
-            .unwrap()
-            .unwrap()
-            .package;
+        let package = scan_package(&path).unwrap().package;
         assert_eq!(
             package.display_name, "Lantern Glow Recolor",
             "the extension goes, any case"
@@ -796,10 +845,7 @@ mod tests {
                 ("natives/stm/satchel.mesh.260421070", MESH),
             ],
         );
-        let package = scan_package(&root("fluffy", dir.path(), false), &other)
-            .unwrap()
-            .unwrap()
-            .package;
+        let package = scan_package(&other).unwrap().package;
         assert_eq!(package.nexus, None);
         assert_eq!(package.options[0].name, "Pawn Satchel");
     }
@@ -807,7 +853,6 @@ mod tests {
     #[test]
     fn a_very_old_nexus_name_links_only_when_a_homepage_line_agrees() {
         let dir = tempfile::tempdir().unwrap();
-        let fluffy = root("fluffy", dir.path(), false);
         let scan = |file_name: &str, homepage: Option<&str>| {
             let path = dir.path().join(file_name);
             let mut info = vec![("name", "Ermine Cape")];
@@ -821,7 +866,7 @@ mod tests {
                     ("natives/stm/cape/cloak.mesh.260421070", MESH),
                 ],
             );
-            scan_package(&fluffy, &path).unwrap().unwrap().package
+            scan_package(&path).unwrap().package
         };
 
         // Alone, a person's own name that happens to end in -<id>-<number>.
@@ -872,14 +917,13 @@ mod tests {
         let newest = SystemTime::UNIX_EPOCH + Duration::from_millis(1_900_000_000_000);
         set_mtime(&deep, newest);
 
-        let scanned = scan_package(&root("fluffy", dir.path(), false), &path)
-            .unwrap()
-            .unwrap();
+        let scanned = scan_package(&path).unwrap();
         let package = &scanned.package;
         assert_eq!(package.format, PackageFormat::Folder);
         assert_eq!(
             package.id,
-            PackageId::for_folder(&std::path::absolute(&path).unwrap())
+            PackageId::for_folder("Lantern Glow-123-1-2-1711234567"),
+            "a folder is known by its name"
         );
         let modinfo_len = modinfo(&[("name", "Lantern Glow")]).len() as u64;
         assert_eq!(
@@ -898,6 +942,36 @@ mod tests {
             (123, Some("1.2"), Some(1_711_234_567_000))
         );
         assert_eq!(package.options[0].kinds.loose, 2);
+    }
+
+    #[test]
+    fn a_folder_keeps_its_id_wherever_the_mods_folder_moves() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let files: &[(&str, &[u8])] = &[
+            ("modinfo.ini", b"name=Lantern Glow Recolor\r\n"),
+            ("Lantern Glow Recolor.pak", b"KPKA"),
+        ];
+        folder_at(&first.path().join("mods/Lantern Glow Recolor"), files);
+        folder_at(&second.path().join("Mods/Lantern Glow Recolor"), files);
+        let here = scan_package(&first.path().join("mods/Lantern Glow Recolor")).unwrap();
+        let there = scan_package(&second.path().join("Mods/Lantern Glow Recolor")).unwrap();
+        assert_eq!(here.package.id, there.package.id);
+        assert_eq!(
+            here.package.options[0].id, there.package.options[0].id,
+            "and so does every option in it"
+        );
+        assert_ne!(
+            here.package.id,
+            PackageId::legacy_folder(&first.path().join("mods/Lantern Glow Recolor")),
+            "not v0.2's id, which hashed the absolute path"
+        );
+
+        // A broken folder is known by its name too.
+        let error = RiftError::unreadable("x", "Permission denied");
+        let path = first.path().join("mods/Lantern Glow Recolor");
+        let stamp = stamp(&path).ok();
+        assert_eq!(unreadable_package(&path, stamp, &error).id, here.package.id);
     }
 
     #[test]
@@ -936,24 +1010,104 @@ mod tests {
     }
 
     #[test]
-    fn downloads_roots_pass_over_what_is_not_a_dd2_mod() {
+    fn an_archive_that_holds_no_mod_is_a_package_with_nothing_to_install() {
         let dir = tempfile::tempdir().unwrap();
         let photos = dir.path().join("Holiday Photos.zip");
         zip_at(&photos, &[("beach.jpg", b"jpg"), ("notes.txt", b"txt")]);
-        let downloads = root("downloads", dir.path(), true);
-        assert!(scan_package(&downloads, &photos).unwrap().is_none());
-
-        // In an ordinary root the same archive is a package with nothing to install.
-        let package = scan_package(&root("custom", dir.path(), false), &photos)
-            .unwrap()
-            .unwrap()
-            .package;
+        let package = scan_package(&photos).unwrap().package;
         assert!(package.options.is_empty());
-        assert_eq!(package.problems[0].kind, ProblemKind::NothingToInstall);
+        assert_eq!(kinds(&package), [ProblemKind::NothingToInstall]);
+        assert!(
+            package.problems[0].message.starts_with("no natives/"),
+            "an archive is no folder: the usual why ({})",
+            package.problems[0].message
+        );
+    }
 
-        let glow = dir.path().join("Lantern Glow.zip");
-        zip_at(&glow, &[("Lantern Glow/Lantern Glow.pak", b"KPKA")]);
-        assert!(scan_package(&downloads, &glow).unwrap().is_some());
+    #[test]
+    fn a_folder_package_holding_archives_counts_them_and_never_names_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let names_inside = [
+            "Lantern Glow Recolor",
+            "Pawn Banter Quieter",
+            "Vernworth Cloaks Collection",
+        ];
+
+        // A folder of downloads, nothing unpacked: the archives are the why.
+        let pile = dir.path().join("Vernworth Downloads");
+        folder_at(
+            &pile,
+            &[
+                ("Lantern Glow Recolor.zip", b"PK"),
+                ("Pawn Banter Quieter.7Z", b"7z"),
+                ("older/Vernworth Cloaks Collection.rar", b"Rar!"),
+                ("readme.txt", b"txt"),
+            ],
+        );
+        let package = scan_package(&pile).unwrap().package;
+        assert!(package.options.is_empty());
+        assert_eq!(
+            kinds(&package),
+            [ProblemKind::NothingToInstall, ProblemKind::FilesSkipped]
+        );
+        let message =
+            "it holds 3 archives of its own; put each archive directly in the mods folder.";
+        for problem in &package.problems {
+            assert_eq!(problem.message, message, "{:?}", problem.kind);
+            assert_is_a_why(&problem.message);
+            for name in names_inside {
+                assert!(!problem.message.contains(name), "counts only");
+            }
+        }
+
+        // An unpacked mod keeping its own download in a subfolder, and a game
+        // file that happens to be an archive: only the one no option installs
+        // counts, after the classifier's own word on the subfolder.
+        let unpacked = dir.path().join("Lantern Glow Recolor");
+        folder_at(
+            &unpacked,
+            &[
+                ("modinfo.ini", &modinfo(&[("name", "Lantern Glow Recolor")])),
+                ("natives/stm/gui/glow.tex.251211553", b"tex"),
+                ("natives/stm/gui/glow_bundle.zip", b"PK"),
+                ("Downloads/Lantern Glow Recolor.zip", b"PK"),
+            ],
+        );
+        let package = scan_package(&unpacked).unwrap().package;
+        assert_eq!(package.options.len(), 1);
+        assert_eq!(package.options[0].kinds.loose, 2);
+        assert_eq!(
+            kinds(&package),
+            [ProblemKind::FilesSkipped, ProblemKind::FilesSkipped]
+        );
+        assert!(package.problems[0]
+            .message
+            .starts_with("1 file sits in a folder the game never reads"));
+        assert_eq!(
+            package.problems[1].message,
+            "it holds 1 archive of its own; put that archive directly in the mods folder."
+        );
+
+        // An archive inside an archive is no folder's business: the usual why.
+        let bundle = dir.path().join("Vernworth Bundle.zip");
+        zip_at(
+            &bundle,
+            &[
+                ("Lantern Glow Recolor.zip", b"PK"),
+                ("Pawn Banter Quieter.zip", b"PK"),
+            ],
+        );
+        let package = scan_package(&bundle).unwrap().package;
+        assert_eq!(kinds(&package), [ProblemKind::NothingToInstall]);
+        assert!(package.problems[0].message.starts_with("no natives/"));
+
+        // No archives, no word about them.
+        let plain = dir.path().join("Pawn Banter Quieter");
+        folder_at(
+            &plain,
+            &[("reframework/autorun/pawn_banter_quieter.lua", b"lua")],
+        );
+        assert!(scan_package(&plain).unwrap().package.problems.is_empty());
     }
 
     #[test]
@@ -982,10 +1136,7 @@ mod tests {
             ],
         );
         mark_zip_entry_encrypted(&path, "Banners/Green/modinfo.ini");
-        let package = scan_package(&root("fluffy", dir.path(), false), &path)
-            .unwrap()
-            .unwrap()
-            .package;
+        let package = scan_package(&path).unwrap().package;
         let names: Vec<&str> = package.options.iter().map(|o| o.name.as_str()).collect();
         assert_eq!(names.len(), 3, "{names:?}");
         assert!(names.contains(&"Blue Banner"));
@@ -993,9 +1144,8 @@ mod tests {
             names.contains(&"Green"),
             "an unreadable modinfo still makes an option, named after its folder: {names:?}"
         );
-        let kinds: Vec<ProblemKind> = package.problems.iter().map(|p| p.kind).collect();
         assert_eq!(
-            kinds,
+            kinds(&package),
             [ProblemKind::ModinfoGarbled, ProblemKind::ModinfoGarbled]
         );
         assert!(
@@ -1048,10 +1198,7 @@ mod tests {
         assert_eq!(source.decode_passes(), 1, "40 modinfo.ini files, one pass");
 
         // And the whole package through scan_package.
-        let package = scan_package(&root("fluffy", dir.path(), false), &path)
-            .unwrap()
-            .unwrap()
-            .package;
+        let package = scan_package(&path).unwrap().package;
         assert_eq!(package.format, PackageFormat::SevenZip);
         assert_eq!(package.options.len(), 40);
     }
@@ -1061,15 +1208,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("Lantern Glow-123-1-2-1711234567.7z");
         fs::write(&path, b"not an archive at all").unwrap();
-        let fluffy = root("fluffy", dir.path(), false);
-        let error = scan_package(&fluffy, &path).unwrap_err();
+        let error = scan_package(&path).unwrap_err();
         assert!(
             matches!(error, RiftError::UnsupportedFormat { .. }),
             "{error:?}"
         );
 
         let stamped = stamp(&path).unwrap();
-        let package = unreadable_package(&fluffy, &path, Some(stamped), &error);
+        let package = unreadable_package(&path, Some(stamped), &error);
         assert_eq!(
             package.id,
             PackageId::for_archive("Lantern Glow-123-1-2-1711234567.7z", 21)
@@ -1078,8 +1224,7 @@ mod tests {
         assert_eq!(package.format, PackageFormat::SevenZip);
         assert_eq!(package.nexus.as_ref().map(|n| n.mod_id), Some(123));
         assert!(package.options.is_empty());
-        assert_eq!(package.problems.len(), 1);
-        assert_eq!(package.problems[0].kind, ProblemKind::Unreadable);
+        assert_eq!(kinds(&package), [ProblemKind::Unreadable]);
         assert!(
             package.problems[0]
                 .message
@@ -1125,11 +1270,24 @@ mod tests {
             },
         ] {
             let message = unreadable_problem(&error).message;
-            crate::test_support::assert_is_a_why(&message);
+            assert_is_a_why(&message);
             assert!(
                 !message.contains("the Riftstone"),
                 "one narrator, and the window names it: {message}"
             );
+            assert!(
+                !message.contains("library folder"),
+                "one mods folder: {message}"
+            );
+        }
+        assert!(
+            unreadable_problem(&RiftError::Encrypted { path: "x".into() })
+                .message
+                .ends_with("put the unpacked folder in the mods folder instead."),
+            "the one place mods come from"
+        );
+        for held in [1, 2, 40] {
+            assert_is_a_why(&held_archives_message(held));
         }
     }
 
@@ -1147,6 +1305,10 @@ mod tests {
         );
         assert!(is_never_a_package("Lantern.ZIP.CRDOWNLOAD"));
         assert!(is_never_a_package("Desktop.ini"));
+        assert!(
+            is_never_a_package(".riftstone-12.part"),
+            "the stone's own download in flight"
+        );
         assert!(!is_never_a_package("Lantern Glow.zip"));
         assert_eq!(guess_format("x.RAR", false), PackageFormat::Rar);
         assert_eq!(guess_format("x.zip", true), PackageFormat::Folder);

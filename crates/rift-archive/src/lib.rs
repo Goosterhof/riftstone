@@ -16,7 +16,7 @@
 //!   path that climbs out (`..`, a drive letter, a `:` stream, a control
 //!   character) is dropped with a `log::warn!` and can never be read or
 //!   extracted — it is simply not in the package any more.
-//! - **Case-blind lookups**, the way the Windows filesystem (and Fluffy) see
+//! - **Case-blind lookups**, the way the Windows filesystem sees
 //!   `natives/STM` and `natives/stm` as one place. When two entries share a
 //!   case-folded path the later one wins — the copy an extractor would leave
 //!   on disk — and the earlier one is dropped with a warning.

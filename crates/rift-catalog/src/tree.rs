@@ -1,5 +1,7 @@
 //! The addon tree across the whole library: `addonfor` parents, breadcrumb
-//! trails, menu-only detection.
+//! trails, menu-only detection ([`resolve`]) — and one package's options
+//! nested the way their menus nest them ([`nest`]), the shape of the window's
+//! library tree.
 //!
 //! **Parents.** An option's `addon_for` names its parent by display name
 //! (case-insensitive, trimmed). The parent is looked up in the option's own
@@ -26,12 +28,21 @@
 //! **Idempotent.** Cached packages arrive already resolved, so `resolve`
 //! first forgets its previous answers (`MissingParent` problems, parents,
 //! trails) and then works them out again.
+//!
+//! **Nesting** ([`nest`], pure). An option whose parent is in its own package
+//! hangs under that parent; an option whose parent is in another package, or
+//! that has none, is a top node of its own package. At each level, two or more
+//! siblings sharing a bundle (`NameAsBundle`, compared case-blind) gather under
+//! one [`Nest::Bundle`], at the place of the first of them. Everything keeps
+//! the package's option order, and every option appears exactly once: a loop
+//! [`resolve`] would have broken (a package that was never resolved) is shown
+//! once, from its first member.
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
 
 use rift_core::path::is_within;
-use rift_core::{lower_key, OptionId, Package, Problem, ProblemKind};
+use rift_core::{lower_key, ModOption, OptionId, Package, Problem, ProblemKind};
 
 /// (package index, option index).
 type Slot = (usize, usize);
@@ -209,10 +220,130 @@ fn missing_parent_problem(name: &str, waiting: usize) -> Problem {
         kind: ProblemKind::MissingParent,
         message: format!(
             "{options} in this package {verb} under \"{name}\" (addonfor), but no option with that name is in \
-             the library, so {shown} at the top level. Add the mod that provides \"{name}\" to a library folder \
-             to restore the menu."
+             the mods folder, so {shown} at the top level. Add the mod that provides \"{name}\" to the mods \
+             folder to restore the menu."
         ),
     }
+}
+
+// ---------------------------------------------------------------------------
+// One package, nested
+// ---------------------------------------------------------------------------
+
+/// One node of a package's option tree ([`nest`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Nest {
+    /// An option, with the options that hang under it.
+    Option { id: OptionId, children: Vec<Nest> },
+    /// Two or more siblings sharing a `NameAsBundle` value, gathered under the
+    /// first one's spelling of it.
+    Bundle { label: String, children: Vec<Nest> },
+}
+
+/// A package's options nested the way their menus nest them (see the module
+/// docs): its top nodes, each with its subtree. Pure; it reads `parent` and
+/// `bundle` as they stand, so a resolved package nests as its menus do.
+pub fn nest(package: &Package) -> Vec<Nest> {
+    let options = &package.options;
+    let mut slot_of: HashMap<&OptionId, usize> = HashMap::with_capacity(options.len());
+    for (slot, option) in options.iter().enumerate() {
+        slot_of.entry(&option.id).or_insert(slot);
+    }
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); options.len()];
+    let mut top = Vec::new();
+    for (slot, option) in options.iter().enumerate() {
+        match option
+            .parent
+            .as_ref()
+            .and_then(|parent| slot_of.get(parent))
+        {
+            Some(&parent) => children[parent].push(slot),
+            None => top.push(slot),
+        }
+    }
+
+    let mut placed = vec![false; options.len()];
+    let mut nodes = nest_level(options, &top, &children, &mut placed);
+    // Options no top node reaches sit in a loop: each loop is shown once,
+    // from its first member.
+    for slot in 0..options.len() {
+        if !placed[slot] {
+            nodes.extend(nest_level(options, &[slot], &children, &mut placed));
+        }
+    }
+    nodes
+}
+
+/// One level of siblings, bundles gathered at their first member's place.
+fn nest_level(
+    options: &[ModOption],
+    level: &[usize],
+    children: &[Vec<usize>],
+    placed: &mut [bool],
+) -> Vec<Nest> {
+    // Each entry: the members of one place (an option alone, or a bundle).
+    let mut places: Vec<Vec<usize>> = Vec::new();
+    let mut bundle_place: HashMap<String, usize> = HashMap::new();
+    for &slot in level.iter().filter(|&&slot| !placed[slot]) {
+        match bundle_key(&options[slot]) {
+            Some(key) => match bundle_place.get(&key) {
+                Some(&at) => places[at].push(slot),
+                None => {
+                    bundle_place.insert(key, places.len());
+                    places.push(vec![slot]);
+                }
+            },
+            None => places.push(vec![slot]),
+        }
+    }
+
+    let mut nodes = Vec::new();
+    for members in places {
+        let mut built: Vec<Nest> = members
+            .iter()
+            .filter_map(|&slot| nest_option(options, slot, children, placed))
+            .collect();
+        if built.len() >= 2 {
+            let label = options[members[0]]
+                .bundle
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string();
+            nodes.push(Nest::Bundle {
+                label,
+                children: built,
+            });
+        } else {
+            nodes.append(&mut built);
+        }
+    }
+    nodes
+}
+
+/// An option and its subtree; `None` when a loop already placed it.
+fn nest_option(
+    options: &[ModOption],
+    slot: usize,
+    children: &[Vec<usize>],
+    placed: &mut [bool],
+) -> Option<Nest> {
+    if std::mem::replace(&mut placed[slot], true) {
+        return None;
+    }
+    Some(Nest::Option {
+        id: options[slot].id.clone(),
+        children: nest_level(options, &children[slot], children, placed),
+    })
+}
+
+/// The bundle an option gathers under (case-blind); none when blank.
+fn bundle_key(option: &ModOption) -> Option<String> {
+    option
+        .bundle
+        .as_deref()
+        .map(|bundle| lower_key(bundle.trim()))
+        .filter(|key| !key.is_empty())
 }
 
 #[cfg(test)]
@@ -306,8 +437,7 @@ mod tests {
             .collect();
         Package {
             id,
-            root_id: "fluffy".into(),
-            path: PathBuf::from(format!("/library/{display_name}.zip")),
+            path: PathBuf::from(format!("/mods/{display_name}.zip")),
             file_name: format!("{display_name}.zip"),
             display_name: display_name.to_string(),
             format: PackageFormat::Zip,
@@ -584,6 +714,167 @@ mod tests {
             find(&packages, "Amber Hood").parent.as_ref(),
             Some(&ids[0]),
             "held by none of them: the first in the package, as before"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // nest
+    // -----------------------------------------------------------------------
+
+    /// A package whose options already carry their parents: `(root, name,
+    /// parent root, bundle)`, every parent in the same package.
+    fn shelf(rows: &[(&str, &str, Option<&str>, Option<&str>)]) -> Package {
+        let mut shelf = package("Vernworth Cloaks Collection", &[]);
+        let id = shelf.id.clone();
+        shelf.options = rows
+            .iter()
+            .map(|&(root, name, parent, bundle)| ModOption {
+                id: OptionId::new(&id, root),
+                package_id: id.clone(),
+                root: root.to_string(),
+                name: name.to_string(),
+                info: None,
+                screenshot: None,
+                payload: Vec::new(),
+                skipped: Vec::new(),
+                kinds: PayloadKinds::default(),
+                parent: parent.map(|parent| OptionId::new(&id, parent)),
+                addon_for: None,
+                bundle: bundle.map(str::to_string),
+                menu_only: false,
+                trail: Vec::new(),
+            })
+            .collect();
+        shelf
+    }
+
+    /// The tree in one line: `name[children]` for an option, `{label}(members)`
+    /// for a bundle.
+    fn shape(package: &Package, nodes: &[Nest]) -> String {
+        nodes
+            .iter()
+            .map(|node| match node {
+                Nest::Option { id, children } => {
+                    let name = &package
+                        .options
+                        .iter()
+                        .find(|option| &option.id == id)
+                        .expect("an option of the package")
+                        .name;
+                    if children.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{name}[{}]", shape(package, children))
+                    }
+                }
+                Nest::Bundle { label, children } => {
+                    format!("{{{label}}}({})", shape(package, children))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Moved here from the spine with the nesting itself (v0.3): the spine
+    /// decorates these nodes into the window's tree.
+    #[test]
+    fn the_tree_nests_addons_and_gathers_bundles() {
+        let package = shelf(&[
+            ("Menu", "Cloaks", None, None),
+            ("Menu/A", "Ermine Cape", Some("Menu"), Some("Capes")),
+            (
+                "Menu/B",
+                "Ermine Cape - Variation 2",
+                Some("Menu"),
+                Some("capes"),
+            ),
+            ("Menu/C", "Wool Hood", Some("Menu"), None),
+        ]);
+        let option = |root: &str| Nest::Option {
+            id: OptionId::new(&package.id, root),
+            children: Vec::new(),
+        };
+        let tree = nest(&package);
+        assert_eq!(tree.len(), 1);
+        let Nest::Option { id, children } = &tree[0] else {
+            panic!("an option at the top: {tree:?}");
+        };
+        assert_eq!(id, &OptionId::new(&package.id, "Menu"));
+        assert_eq!(children.len(), 2, "one bundle node and one plain option");
+        assert_eq!(
+            children[0],
+            Nest::Bundle {
+                label: "Capes".to_string(),
+                children: vec![option("Menu/A"), option("Menu/B")],
+            },
+            "case-blind, under the first member's spelling"
+        );
+        assert_eq!(children[1], option("Menu/C"));
+        assert_eq!(
+            shape(&package, &tree),
+            "Cloaks[{Capes}(Ermine Cape, Ermine Cape - Variation 2), Wool Hood]"
+        );
+    }
+
+    #[test]
+    fn a_parent_in_another_package_or_nowhere_makes_a_top_node() {
+        let mut packages = vec![
+            collection(),
+            package(
+                "Vernworth Trims",
+                &[
+                    opt("Ermine Trim").under("Cloaks"),
+                    opt("Ghost Trim").under("Ghost Menu"),
+                    opt("Fur Trim"),
+                ],
+            ),
+        ];
+        resolve(&mut packages);
+        assert_eq!(
+            shape(&packages[0], &nest(&packages[0])),
+            "Cloaks[Ermine Cape (Menu Option)[Ermine Cape - White, Ermine Cape - Black]]",
+            "a bundle of one is a plain option"
+        );
+        assert_eq!(
+            shape(&packages[1], &nest(&packages[1])),
+            "Ermine Trim, Ghost Trim, Fur Trim",
+            "the trim's menu lives in the collection; the ghost's nowhere"
+        );
+        assert!(nest(&package("Empty", &[])).is_empty());
+    }
+
+    #[test]
+    fn bundles_gather_at_their_first_place_and_only_among_siblings() {
+        let package = shelf(&[
+            ("A", "Ashen Hood", None, Some("Hoods")),
+            ("B", "Lantern", None, None),
+            ("C", "Amber Hood", None, Some(" HOODS ")),
+            ("D", "Hood Menu", None, None),
+            ("D/E", "Azure Hood", Some("D"), Some("Hoods")),
+            ("D/F", "Violet Hood", Some("D"), None),
+            ("G", "Grey Hood", None, Some("  ")),
+        ]);
+        assert_eq!(
+            shape(&package, &nest(&package)),
+            "{Hoods}(Ashen Hood, Amber Hood), Lantern, Hood Menu[Azure Hood, Violet Hood], Grey Hood",
+            "the package's order; the hood under the menu has no sibling in its bundle; a blank \
+             bundle is none"
+        );
+    }
+
+    #[test]
+    fn a_loop_shows_each_option_once_and_loses_none() {
+        let package = shelf(&[
+            ("A", "Alpha", Some("B"), None),
+            ("B", "Beta", Some("A"), None),
+            ("C", "Gamma", None, None),
+            ("D", "Narcissus", Some("D"), None),
+            ("E", "Echo", Some("B"), None),
+        ]);
+        assert_eq!(
+            shape(&package, &nest(&package)),
+            "Gamma, Alpha[Beta[Echo]], Narcissus",
+            "the top nodes first, then each loop from its first member"
         );
     }
 }

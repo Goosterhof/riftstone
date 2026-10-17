@@ -175,9 +175,6 @@
 //! independent port of REE.PAK.Tool's C#. `tests/bench_reference_hashes.rs`
 //! (ignored, env-gated) re-runs such a check against any
 //! `<lower> <upper> <path>` file.
-//!
-//! FluffyQuack's REtool also packs paks, but its source ships as a download
-//! archive rather than a browsable repository, and was not inspected.
 
 use serde::Serialize;
 

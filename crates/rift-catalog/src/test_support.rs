@@ -7,7 +7,6 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use rift_core::{LibraryRoot, RootKind};
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
@@ -86,27 +85,13 @@ pub(crate) fn folder_at(path: &Path, files: &[(&str, &[u8])]) {
     }
 }
 
-/// modinfo.ini text, CRLF like Fluffy's.
+/// modinfo.ini text, with the CRLF line ends Windows tools write.
 pub(crate) fn modinfo(lines: &[(&str, &str)]) -> Vec<u8> {
     lines
         .iter()
         .map(|(key, value)| format!("{key}={value}\r\n"))
         .collect::<String>()
         .into_bytes()
-}
-
-pub(crate) fn root(id: &str, path: &Path, dd2_shaped_only: bool) -> LibraryRoot {
-    LibraryRoot {
-        id: id.to_string(),
-        path: path.to_path_buf(),
-        label: id.to_string(),
-        kind: if dd2_shaped_only {
-            RootKind::Downloads
-        } else {
-            RootKind::Custom
-        },
-        dd2_shaped_only,
-    }
 }
 
 pub(crate) fn mtime(path: &Path) -> SystemTime {

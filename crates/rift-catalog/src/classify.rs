@@ -78,7 +78,7 @@ const DOCUMENT_NAMES: &[&str] = &[
 ];
 /// Programs: the deploy guard refuses executables in the game root.
 const PROGRAM_EXTENSIONS: &[&str] = &["exe", "msi", "bat", "cmd", "ps1", "vbs", "com", "scr"];
-/// Preview names Fluffy looks for when modinfo names none, in order.
+/// Preview names looked for when modinfo names none, in order.
 const SCREENSHOT_NAMES: &[&str] = &["screenshot.png", "screenshot.jpg", "screenshot.jpeg"];
 /// Folders the game root must keep as folders.
 const GAME_FOLDER_NAMES: &[&str] = &["natives", "reframework", "pak_mods"];
@@ -145,22 +145,6 @@ pub fn build_options(
 
     let problems = package_problems(&options);
     (options, problems)
-}
-
-/// Does this listing look like a Dragon's Dogma 2 mod at all? (Downloads
-/// roots list only DD2-shaped archives.) True when any entry sits under a
-/// `natives/` or `reframework/` folder, is a `.pak`, a `modinfo.ini` or a
-/// `dinput8.dll`.
-pub fn is_dd2_shaped(entries: &[ArchiveEntry]) -> bool {
-    entries.iter().any(|entry| {
-        let name = file_name(&entry.path);
-        let mut folders = entry.path.split('/').rev().skip(1);
-        folders.any(|folder| {
-            folder.eq_ignore_ascii_case("natives") || folder.eq_ignore_ascii_case("reframework")
-        }) || has_extension(name, "pak")
-            || name.eq_ignore_ascii_case("modinfo.ini")
-            || name.eq_ignore_ascii_case("dinput8.dll")
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1289,27 +1273,6 @@ mod tests {
     }
 
     #[test]
-    fn dd2_shape_is_recognised() {
-        for paths in [
-            &["Mod/natives/stm/a.mesh"][..],
-            &["Mod/REFramework/autorun/a.lua"],
-            &["Mod/thing.PAK"],
-            &["Mod/ModInfo.ini"],
-            &["DINPUT8.dll"],
-        ] {
-            assert!(is_dd2_shaped(&listing(paths)), "{paths:?}");
-        }
-        for paths in [
-            &["Holiday Photos/beach.jpg", "natives.txt"][..],
-            &["Mod/natives"],
-            &["setup.exe", "readme.txt"],
-            &[],
-        ] {
-            assert!(!is_dd2_shaped(&listing(paths)), "{paths:?}");
-        }
-    }
-
-    #[test]
     fn strip_segments_and_folder_prefixes() {
         assert_eq!(strip_segments("a/b/c/d.pak", 2), "c/d.pak");
         assert_eq!(strip_segments("a/b.pak", 0), "a/b.pak");
@@ -1574,8 +1537,7 @@ mod tests {
         let menu_id = OptionId::new(&package(), "Vernworth Cloaks Collection/Hoods");
         let mut packages = vec![rift_core::Package {
             id: package(),
-            root_id: "fluffy".into(),
-            path: "/library/Vernworth Cloaks Collection.zip".into(),
+            path: "/mods/Vernworth Cloaks Collection.zip".into(),
             file_name: "Vernworth Cloaks Collection.zip".into(),
             display_name: "Vernworth Cloaks Collection".into(),
             format: rift_core::PackageFormat::Zip,

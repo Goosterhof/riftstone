@@ -1,27 +1,26 @@
-//! Bench suite: the investor's real library, READ-ONLY, COUNTS ONLY.
+//! Bench suite: the investor's real mods folder, READ-ONLY, COUNTS ONLY.
 //!
 //! `#[ignore]`d and env-gated, so `cargo test` never touches real data. Run it
 //! deliberately, in release:
 //!
 //! ```sh
-//! RIFT_BENCH_LIBRARY='/mnt/c/<fluffy>/Games/DragonsDogma2/Mods' \
-//! RIFT_BENCH_DOWNLOADS='/mnt/c/Users/<you>/Downloads' \
+//! RIFT_BENCH_LIBRARY='/mnt/c/<install dir>/mods' \
 //!   cargo test -p rift-catalog --release --test bench_real -- --ignored --nocapture
 //! ```
 //!
-//! `RIFT_BENCH_LIBRARY` is scanned as a Fluffy root; the optional
-//! `RIFT_BENCH_DOWNLOADS` as a Downloads root (`dd2_shaped_only`). The library
-//! holds the investor's own mods, so this bench prints counts, shapes and
-//! timings — never a package, option or file name, never a problem message
-//! (those quote names), never a byte of content — and writes nothing anywhere:
-//! the cache the cold scan builds stays in memory for the warm scan.
+//! `RIFT_BENCH_LIBRARY` is THE mods folder, scanned the way the stone scans
+//! it. It holds the investor's own mods, so this bench prints counts, shapes
+//! and timings — never a package, option or file name, never a problem
+//! message (those quote names), never a byte of content — and writes nothing
+//! anywhere: the cache the cold scan builds stays in memory for the warm scan.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use rift_catalog::{Catalog, ScanStats, SearchFilters, SearchQuery};
-use rift_core::{LibraryRoot, PackageFormat, RootKind};
+use rift_catalog::tree::{self, Nest};
+use rift_catalog::{Catalog, CatalogCache, ScanStats, SearchFilters, SearchQuery};
+use rift_core::PackageFormat;
 
 /// The armour-variants collection in the investor's library: 281 options,
 /// each with its own modinfo.ini (docs/BUILD-SPEC.md, "What the Riftstone is").
@@ -32,57 +31,73 @@ const QUERIES: [&str; 3] = ["top_314", "\"menu option\"", "variation 3"];
 /// Repeats per query for the steady-state time.
 const QUERY_RUNS: usize = 25;
 
-fn root(id: &str, path: PathBuf, kind: RootKind, dd2_shaped_only: bool) -> LibraryRoot {
-    LibraryRoot {
-        id: id.to_string(),
-        path,
-        label: id.to_string(),
-        kind,
-        dd2_shaped_only,
-    }
+fn mods_folder() -> Option<PathBuf> {
+    std::env::var_os("RIFT_BENCH_LIBRARY").map(PathBuf::from)
 }
 
 fn ms(duration: Duration) -> String {
     format!("{:.1} ms", duration.as_secs_f64() * 1000.0)
 }
 
+fn format_name(format: PackageFormat) -> &'static str {
+    match format {
+        PackageFormat::Zip => "zip",
+        PackageFormat::SevenZip => "7z",
+        PackageFormat::Rar => "rar",
+        PackageFormat::Folder => "folder",
+    }
+}
+
 fn print_stats(label: &str, stats: ScanStats) {
     eprintln!(
-        "  {label}: {} candidates — {} opened, {} from cache, {} passed over (not DD2; {} of \
-         them from cache), {} unreadable, {} duplicates, {} gone",
-        stats.candidates,
-        stats.opened,
-        stats.reused,
-        stats.passed_over,
-        stats.passed_over_from_cache,
-        stats.unreadable,
-        stats.duplicates,
-        stats.gone
+        "  {label}: {} candidates — {} opened, {} from cache, {} unreadable, {} gone",
+        stats.candidates, stats.opened, stats.reused, stats.unreadable, stats.gone
     );
+}
+
+/// Nodes, bundles and the deepest level of one package's tree.
+fn tree_counts(nodes: &[Nest], depth: usize) -> (usize, usize, usize) {
+    let (mut count, mut bundles, mut deepest) = (0, 0, depth);
+    for node in nodes {
+        let children = match node {
+            Nest::Option { children, .. } => children,
+            Nest::Bundle { children, .. } => {
+                bundles += 1;
+                children
+            }
+        };
+        count += 1;
+        let (below, below_bundles, below_deepest) = tree_counts(children, depth + 1);
+        count += below;
+        bundles += below_bundles;
+        deepest = deepest.max(below_deepest);
+    }
+    (count, bundles, deepest)
 }
 
 #[test]
 #[ignore = "bench: needs RIFT_BENCH_LIBRARY (read-only, prints counts only)"]
 fn bench_real_library_scan_and_search() {
-    let Some(library) = std::env::var_os("RIFT_BENCH_LIBRARY").map(PathBuf::from) else {
+    let Some(library) = mods_folder() else {
         eprintln!("RIFT_BENCH_LIBRARY is not set; nothing to scan");
         return;
     };
-    let mut roots = vec![root("fluffy", library, RootKind::Fluffy, false)];
-    if let Some(downloads) = std::env::var_os("RIFT_BENCH_DOWNLOADS").map(PathBuf::from) {
-        roots.push(root("downloads", downloads, RootKind::Downloads, true));
-    }
 
     // Cold: nothing cached.
     let mut events = 0usize;
     let started = Instant::now();
-    let (cold, cache) = Catalog::scan(&roots, None, &mut |_| events += 1);
+    let (cold, cache) = Catalog::scan(&library, &CatalogCache::default(), &mut |_| events += 1);
     let cold_time = started.elapsed();
 
     // Warm: the second launch, from the cache the cold scan built.
     let started = Instant::now();
-    let (warm, _) = Catalog::scan(&roots, Some(&cache), &mut |_| {});
+    let (warm, _) = Catalog::scan(&library, &cache, &mut |_| {});
     let warm_time = started.elapsed();
+
+    // The startup preview, from the same cache, without the disk.
+    let started = Instant::now();
+    let preview = Catalog::from_cache(&library, &cache);
+    let preview_time = started.elapsed();
 
     let packages = cold.packages();
     let mut options_per_package: Vec<usize> = packages.iter().map(|p| p.options.len()).collect();
@@ -110,42 +125,45 @@ fn bench_real_library_scan_and_search() {
         .filter(|o| o.parent.is_some())
         .count();
 
-    let mut per_root: BTreeMap<&str, usize> = BTreeMap::new();
     let mut formats: BTreeMap<&str, usize> = BTreeMap::new();
     let mut problems: BTreeMap<String, usize> = BTreeMap::new();
+    let (mut tree_top, mut tree_nodes, mut tree_bundles, mut tree_depth) = (0, 0, 0, 0);
+    let started = Instant::now();
     for package in packages {
-        *per_root.entry(package.root_id.as_str()).or_default() += 1;
-        let format = match package.format {
-            PackageFormat::Zip => "zip",
-            PackageFormat::SevenZip => "7z",
-            PackageFormat::Rar => "rar",
-            PackageFormat::Folder => "folder",
-        };
-        *formats.entry(format).or_default() += 1;
+        *formats.entry(format_name(package.format)).or_default() += 1;
         for problem in &package.problems {
             *problems.entry(format!("{:?}", problem.kind)).or_default() += 1;
         }
+        let nested = tree::nest(package);
+        let (nodes, bundles, depth) = tree_counts(&nested, 1);
+        tree_top += nested.len();
+        tree_nodes += nodes;
+        tree_bundles += bundles;
+        tree_depth = tree_depth.max(depth);
     }
+    let nest_time = started.elapsed();
     let linked = packages.iter().filter(|p| p.nexus.is_some()).count();
 
     eprintln!("rift-catalog bench (counts only)");
-    eprintln!("  roots: {}", roots.len());
     print_stats("cold scan", cold.stats());
     print_stats("warm scan", warm.stats());
     eprintln!("  progress events (cold): {events}");
-    eprintln!(
-        "  packages: {} per root {per_root:?}, formats {formats:?}",
-        packages.len()
-    );
+    eprintln!("  packages: {}, formats {formats:?}", packages.len());
     eprintln!("  options: {options}; per package (sorted): {options_per_package:?}");
     eprintln!("  menu-only options: {menus}; options with a resolved parent: {parented}");
     eprintln!("  entries: {entries}; payload files: {payload}; skipped files: {skipped}");
     eprintln!("  packages linked to Nexus (file name or homepage): {linked}");
     eprintln!("  problems by kind: {problems:?}");
     eprintln!(
-        "  cold: {}   warm (from cache): {}",
+        "  library tree: {tree_top} top nodes under the packages, {tree_nodes} nodes in all, \
+         {tree_bundles} bundles, {tree_depth} levels at most; nested in {}",
+        ms(nest_time)
+    );
+    eprintln!(
+        "  cold: {}   warm (from cache): {}   startup preview: {}",
         ms(cold_time),
-        ms(warm_time)
+        ms(warm_time),
+        ms(preview_time)
     );
 
     let largest = options_per_package.last().copied().unwrap_or(0);
@@ -166,7 +184,7 @@ fn bench_real_library_scan_and_search() {
                     include_menu_only,
                     ..SearchFilters::default()
                 },
-                limit: usize::MAX,
+                limit: 0, // every match, as the window asks
             };
             let started = Instant::now();
             let hits = warm.search(&query, &|_| false).len();
@@ -190,6 +208,11 @@ fn bench_real_library_scan_and_search() {
         "the warm scan reopened packages the cache already held"
     );
     assert_eq!(warm.packages().len(), packages.len());
+    assert_eq!(
+        preview.packages(),
+        warm.packages(),
+        "the startup preview shows what the scan does"
+    );
 }
 
 /// Where a scan's time goes, one package at a time (no pool, no cache):
@@ -202,13 +225,12 @@ fn bench_real_package_phases() {
     use rift_core::path::{file_name, parent};
     use rift_core::PackageId;
 
-    let Some(library) = std::env::var_os("RIFT_BENCH_LIBRARY").map(PathBuf::from) else {
+    let Some(library) = mods_folder() else {
         eprintln!("RIFT_BENCH_LIBRARY is not set; nothing to time");
         return;
     };
-    let fluffy = root("fluffy", library, RootKind::Fluffy, false);
     let started = Instant::now();
-    let candidates = scan::list_root(&fluffy);
+    let candidates = scan::list_library(&library);
     eprintln!(
         "rift-catalog package phases (counts only): {} candidates listed in {}",
         candidates.len(),
@@ -249,14 +271,9 @@ fn bench_real_package_phases() {
         );
         let classify_time = started.elapsed();
 
-        let format = match source.format() {
-            PackageFormat::Zip => "zip",
-            PackageFormat::SevenZip => "7z",
-            PackageFormat::Rar => "rar",
-            PackageFormat::Folder => "folder",
-        };
         let row = format!(
-            "  {format:<6} {:>8.1} MB  {:>5} entries  {:>3} modinfo  {:>3} options | open+list {:>9}  modinfo {:>9}  classify {:>8}",
+            "  {:<6} {:>8.1} MB  {:>5} entries  {:>3} modinfo  {:>3} options | open+list {:>9}  modinfo {:>9}  classify {:>8}",
+            format_name(source.format()),
             size as f64 / 1_048_576.0,
             entries.len(),
             modinfos.len(),
