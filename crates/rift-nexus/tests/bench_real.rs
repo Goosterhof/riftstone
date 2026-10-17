@@ -1,7 +1,9 @@
 //! Bench: live looks at Nexus Mods. Never part of the default test run. The
 //! lookup is `#[ignore]`d AND gated on `RIFT_BENCH_NEXUS_MOD` naming the
 //! Dragon's Dogma 2 mod to ask about (the id a download of yours carries); the
-//! name search has its own gate (see `live_find_by_an_invented_phrase_and_a_generic_word`):
+//! name search has its own gate (see `live_find_by_an_invented_phrase_and_a_generic_word`),
+//! and so do browsing and a mod's file notes (v0.3, see
+//! `live_browse_by_every_sort_and_one_mods_file_notes`):
 //!
 //! ```sh
 //! RIFT_BENCH_NEXUS_MOD=<mod id> RIFT_BENCH_NEXUS_SQID=<sqid, optional> \
@@ -15,7 +17,10 @@
 //! counts and states only — no mod name, no file name, no version.
 
 use rift_core::{LinkSource, NexusLink};
-use rift_nexus::{pin_link, update_state, NexusClient, UpdateState, CANDIDATES_PER_FIND};
+use rift_nexus::{
+    pin_link, update_state, BrowseQuery, BrowseSort, NexusClient, UpdateState, BROWSE_PAGE_SIZE,
+    CANDIDATES_PER_FIND,
+};
 
 /// One live look at the name search (v0.2, Find on Nexus): the measured
 /// `mods(filter, sort, count)` shape still answers. `#[ignore]`d AND gated on
@@ -115,4 +120,68 @@ fn live_lookup_of_one_mod() {
         "Nexus should know the mod"
     );
     assert!(!list.is_empty(), "the mod should list files");
+}
+
+/// v0.3: one live look at browsing and at a mod's file notes — the `mods`
+/// page with `offset`, every sort key, and `modFiles` with `description` and
+/// `changelogText` still answer. `#[ignore]`d AND gated on
+/// `RIFT_BENCH_NEXUS_BROWSE=1`:
+///
+/// ```sh
+/// RIFT_BENCH_NEXUS_BROWSE=1 [RIFT_BENCH_NEXUS_MOD=<mod id>] \
+///   cargo test -p rift-nexus --test bench_real -- --ignored --nocapture
+/// ```
+///
+/// Anonymous, at most five requests: four pages (no text for endorsements,
+/// downloads and updated; the fixed generic word `armor` for relevance, never
+/// a name from a player's library), then one mod's files when
+/// `RIFT_BENCH_NEXUS_MOD` names one. Counts only.
+#[test]
+#[ignore = "talks to the live Nexus Mods API; run with RIFT_BENCH_NEXUS_BROWSE=1 and --ignored"]
+fn live_browse_by_every_sort_and_one_mods_file_notes() {
+    if std::env::var("RIFT_BENCH_NEXUS_BROWSE").ok().as_deref() != Some("1") {
+        eprintln!("RIFT_BENCH_NEXUS_BROWSE is not 1 — the live browse bench stays quiet.");
+        return;
+    }
+    let client = NexusClient::new(env!("CARGO_PKG_VERSION"));
+    for (sort, text) in [
+        (BrowseSort::Endorsements, ""),
+        (BrowseSort::Downloads, ""),
+        (BrowseSort::Updated, ""),
+        (BrowseSort::Relevance, "armor"),
+    ] {
+        let page = client
+            .browse(&BrowseQuery {
+                text: text.into(),
+                sort,
+                offset: BROWSE_PAGE_SIZE as u64,
+            })
+            .unwrap_or_else(|err| panic!("browsing by {sort:?} answered: {err}"));
+        println!(
+            "live browse {sort:?}: {} in all, {} on the second page, {} adult",
+            page.total,
+            page.mods.len(),
+            page.mods.iter().filter(|m| m.adult).count()
+        );
+        assert!(page.mods.len() <= BROWSE_PAGE_SIZE);
+        assert!(page.total >= page.mods.len() as u64);
+    }
+    let Some(mod_id) = std::env::var("RIFT_BENCH_NEXUS_MOD")
+        .ok()
+        .and_then(|id| id.trim().parse::<u64>().ok())
+    else {
+        eprintln!("RIFT_BENCH_NEXUS_MOD is not a mod id — no file notes asked for.");
+        return;
+    };
+    let details = client
+        .mod_file_details(mod_id)
+        .expect("modFiles with its notes answered");
+    println!(
+        "live file notes: {} file(s), {} with a description, {} with patch notes ({} lines)",
+        details.len(),
+        details.iter().filter(|d| d.description.is_some()).count(),
+        details.iter().filter(|d| !d.changelog.is_empty()).count(),
+        details.iter().map(|d| d.changelog.len()).sum::<usize>()
+    );
+    assert!(!details.is_empty(), "the mod should list files");
 }

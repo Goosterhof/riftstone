@@ -4,8 +4,8 @@
 //! repack (its bytes are new), so the Riftstone searches Nexus by NAME. A name
 //! on disk carries a lot Nexus's search would trip over: an archive
 //! extension, the 2026 download suffix, underscores, a camelCase run, a
-//! version, a `(1)` from the browser, the game's own name, the mod manager's.
-//! [`search_terms`] keeps only the words Nexus can match against a mod's name.
+//! version, a `(1)` from the browser, the game's own name. [`search_terms`]
+//! keeps only the words Nexus can match against a mod's name.
 //!
 //! Nexus wants EVERY term in a mod's name (`MATCHES` and `WILDCARD` alike), so
 //! the two ways to get a word wrong do not cost the same. A stray word kept
@@ -25,9 +25,8 @@ const MAX_CHARS: usize = 100;
 const ARCHIVE_EXTENSIONS: [&str; 3] = ["zip", "7z", "rar"];
 /// Words that only say a file has a version.
 const VERSION_WORDS: [&str; 3] = ["v", "ver", "version"];
-/// Words that name the game or the mod manager, never the mod. (`Fluffy` on
-/// its own is a word as well, see [`keep_words`].)
-const GAME_AND_MANAGER_WORDS: [&str; 2] = ["dd2", "fmm"];
+/// Words that name the game, never the mod.
+const GAME_WORDS: [&str; 1] = ["dd2"];
 /// Names that are camelCase themselves: their two humps stay one word.
 const WHOLE_WORDS: [&str; 2] = ["REFramework", "ReShade"];
 /// Apostrophes as people (and keyboards) type them; read as `'`.
@@ -68,10 +67,8 @@ const APOSTROPHES: [char; 7] = [
 ///    `Lantern.Glow.1.2.3a`) goes whole. Words that merely hold digits stay
 ///    (`4K`, `2B`, `1080p`), and so does a multiplier (`2x`, `1.5x`, `x1.5`).
 /// 8. The game's name (`Dragon's Dogma 2` or `Dragons Dogma 2` with any
-///    apostrophe, `DD2`) and the mod manager's (`Fluffy Mod Manager`,
-///    `Fluffy Manager`, `FMM`, and a `Fluffy` that no kept word follows) go,
-///    each taking a `for` right before it along (`Lantern Glow for Fluffy`).
-///    A `Fluffy` that a word follows is a word (`Fluffy Ermine Cape`).
+///    apostrophe, `DD2`) goes, taking a `for` right before it along
+///    (`Lantern Glow for DD2`).
 /// 9. At most 8 words and 100 characters, cut between words (a single word
 ///    longer than that is cut on a character boundary).
 /// 10. Nothing searchable (no word with two or more letters) → `""`.
@@ -144,77 +141,50 @@ fn outside_brackets(text: &str) -> String {
         .collect()
 }
 
-/// A word [`keep_words`] keeps so far.
-enum Kept {
-    Word(String),
-    /// A `Fluffy`, kept only when a kept word follows it: at the end of a
-    /// name it is the mod manager's (`Lantern Glow Fluffy`), before a word
-    /// it is a word (`Fluffy Ermine Cape`).
-    Fluffy(String),
-}
-
 /// The words of `text` that are worth searching for, in order.
 fn keep_words(text: &str) -> Vec<String> {
     let words = split_words(text);
-    let mut kept: Vec<Kept> = Vec::with_capacity(words.len());
+    let mut kept: Vec<String> = Vec::with_capacity(words.len());
     let mut at = 0;
     while at < words.len() {
-        if let Some(len) = game_or_manager_name(&words[at..]) {
+        if let Some(len) = game_name(&words[at..]) {
             drop_trailing_for(&mut kept);
             at += len;
             continue;
         }
         let word = &words[at];
-        if word.eq_ignore_ascii_case("fluffy") {
-            kept.push(Kept::Fluffy(word.clone()));
-        } else if !is_version_word(word) && !is_version(word) {
-            kept.push(Kept::Word(word.clone()));
+        if !is_version_word(word) && !is_version(word) {
+            kept.push(word.clone());
         }
         at += 1;
     }
-    // No kept word follows these: they name the manager.
-    while matches!(kept.last(), Some(Kept::Fluffy(_))) {
+    kept
+}
+
+/// A `for` right before the game's name goes with it (`Lantern Glow for DD2`).
+fn drop_trailing_for(kept: &mut Vec<String>) {
+    if kept
+        .last()
+        .is_some_and(|word| word.eq_ignore_ascii_case("for"))
+    {
         kept.pop();
-        drop_trailing_for(&mut kept);
     }
-    kept.into_iter()
-        .map(|kept| match kept {
-            Kept::Word(word) | Kept::Fluffy(word) => word,
+}
+
+/// How many of the words at the start of `words` name the game:
+/// `Dragon's Dogma 2` (3), `DD2` (1).
+fn game_name(words: &[String]) -> Option<usize> {
+    if is_game_title(words) {
+        return Some(3);
+    }
+    words
+        .first()
+        .is_some_and(|word| {
+            GAME_WORDS
+                .iter()
+                .any(|game| word.eq_ignore_ascii_case(game))
         })
-        .collect()
-}
-
-/// A `for` right before the game's or the manager's name goes with it
-/// (`Lantern Glow for Fluffy`, `Lantern Glow for DD2`).
-fn drop_trailing_for(kept: &mut Vec<Kept>) {
-    if matches!(kept.last(), Some(Kept::Word(word)) if word.eq_ignore_ascii_case("for")) {
-        kept.pop();
-    }
-}
-
-/// How many of the words at the start of `words` name the game or the mod
-/// manager: `Dragon's Dogma 2`, `Fluffy Mod Manager` (3), `Fluffy Manager`
-/// (2), `DD2`, `FMM` (1). A lone `Fluffy` is judged by [`keep_words`].
-fn game_or_manager_name(words: &[String]) -> Option<usize> {
-    let is = |at: usize, wanted: &str| {
-        words
-            .get(at)
-            .is_some_and(|word| word.eq_ignore_ascii_case(wanted))
-    };
-    if is_game_title(words) || (is(0, "fluffy") && is(1, "mod") && is(2, "manager")) {
-        Some(3)
-    } else if is(0, "fluffy") && is(1, "manager") {
-        Some(2)
-    } else {
-        words
-            .first()
-            .is_some_and(|word| {
-                GAME_AND_MANAGER_WORDS
-                    .iter()
-                    .any(|noise| word.eq_ignore_ascii_case(noise))
-            })
-            .then_some(1)
-    }
+        .then_some(1)
 }
 
 /// Every word of `text`: upload stamps (and a sqid after one) gone,
@@ -740,30 +710,18 @@ mod tests {
     }
 
     #[test]
-    fn fluffy_is_noise_only_as_the_managers_name() {
+    fn a_for_goes_only_with_the_games_name() {
         assert_terms(&[
-            // The manager's name, wherever it stands, takes a `for` before
-            // it along.
-            ("Lantern Glow FMM", "Lantern Glow"),
-            ("Lantern Glow (Fluffy Mod Manager)", "Lantern Glow"),
+            ("Lantern Glow for DD2", "Lantern Glow"),
+            ("Lantern Glow For dd2 v2 (1)", "Lantern Glow"),
             (
-                "Lantern Glow Fluffy Mod Manager Edition",
+                "Lantern Glow for Dragons Dogma 2 Edition",
                 "Lantern Glow Edition",
             ),
-            ("Lantern Glow for Fluffy Manager", "Lantern Glow"),
-            ("LanternGlow_FluffyModManager", "Lantern Glow"),
-            ("Lantern Glow for FMM", "Lantern Glow"),
-            // A Fluffy that ends the name is the manager's name too…
-            ("Lantern Glow Fluffy", "Lantern Glow"),
-            ("Lantern Glow - Fluffy Version", "Lantern Glow"),
-            ("Lantern Glow for FLUFFY", "Lantern Glow"),
-            ("Lantern Glow Fluffy v2 (1)", "Lantern Glow"),
-            // …and one a word follows is a word.
-            ("Fluffy Ermine Cape", "Fluffy Ermine Cape"),
-            ("Vernworth Fluffy Cloaks", "Vernworth Fluffy Cloaks"),
-            ("Fluffy Ermine Cape FMM", "Fluffy Ermine Cape"),
-            // `for` stays where no manager or game follows it.
+            // `for` stays where the game's name does not follow it.
             ("Vernworth Cloaks for Pawns", "Vernworth Cloaks for Pawns"),
+            ("Cloaks for the Arisen", "Cloaks for the Arisen"),
+            ("Lantern Glow for", "Lantern Glow for"),
         ]);
     }
 
@@ -803,9 +761,8 @@ mod tests {
     }
 
     #[test]
-    fn noise_words_and_the_games_own_name_are_dropped() {
+    fn the_games_own_name_is_dropped() {
         assert_terms(&[
-            ("Lantern Glow Fluffy FMM", "Lantern Glow"),
             ("DD2 Lantern Glow", "Lantern Glow"),
             ("dd2_lantern_glow", "lantern glow"),
             ("Lantern Glow for DD2", "Lantern Glow"),
@@ -841,7 +798,7 @@ mod tests {
         );
         // Dropped words do not count against the eight.
         assert_eq!(
-            search_terms("DD2 one v1 two 3 three FMM four five six seven eight nine"),
+            search_terms("DD2 one v1 two 3 three dd2 four five six seven eight nine"),
             "one two three four five six seven eight"
         );
         let long = "vernworthian".repeat(3); // 36 letters, no camelCase inside
@@ -865,7 +822,7 @@ mod tests {
             (".zip", ""),
             ("v1.2", ""),
             ("DD2 1.0", ""),
-            ("Fluffy FMM dd2", ""),
+            ("dd2 DD2 v3", ""),
             ("Dragon's Dogma 2", ""),
             ("(1)", ""),
             ("2207", ""),

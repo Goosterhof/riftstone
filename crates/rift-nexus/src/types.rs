@@ -215,12 +215,23 @@ pub struct ModFilesReport {
     pub refused: BTreeMap<u64, NexusError>,
 }
 
-/// The account behind a personal API key (v1 `users/validate.json`).
+/// The account behind a personal API key (v1 `users/validate.json`). Never
+/// the key the answer echoes, never the e-mail: neither is read into memory.
+/// The name is the player's own: shown in the window, never logged.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NexusAccount {
     pub name: String,
+    /// v0.3: the account's numeric id (`user_id`). An nxm link names the
+    /// account it was made for; the spine compares the two.
+    #[serde(default)]
+    pub user_id: Option<u64>,
+    /// Premium accounts may download straight from the stone
+    /// ([`crate::NexusClient::download_links`] without a grant).
     pub is_premium: bool,
+    /// v0.3: `is_supporter` (or the older `is_supporter?`).
+    #[serde(default)]
+    pub is_supporter: bool,
 }
 
 /// v1 `files.json`: the files plus the author's explicit replacement chain.
@@ -229,6 +240,11 @@ pub struct NexusAccount {
 pub struct V1FileList {
     pub files: Vec<NexusFile>,
     pub updates: Vec<FileUpdate>,
+    /// v0.3: each file's archive name as uploaded (`file_name`), by file id —
+    /// the name a download lands under. Untrusted text: clean it before it
+    /// names anything on disk. Files whose answer carried no name are absent.
+    #[serde(default)]
+    pub file_names: BTreeMap<u64, String>,
 }
 
 /// One link of v1's `file_updates` chain: `old_file_id` was replaced by
@@ -242,6 +258,11 @@ pub struct FileUpdate {
 }
 
 impl V1FileList {
+    /// The archive name `file_id` was uploaded as (v0.3), if the answer said.
+    pub fn file_name(&self, file_id: u64) -> Option<&str> {
+        self.file_names.get(&file_id).map(String::as_str)
+    }
+
     /// Follow the replacement chain from `file_id` to its newest successor —
     /// the fallback when group ids mislead. `None` when nothing replaced it.
     /// Cycle-safe; when a file was replaced twice, the later replacement wins.
@@ -262,6 +283,149 @@ impl V1FileList {
         }
         (current != file_id).then_some(current)
     }
+}
+
+// ---------------------------------------------------------------------------
+// v0.3 — the key's extras, a mod's files, browsing
+// ---------------------------------------------------------------------------
+
+/// One place Nexus will serve a file from (v1 `download_link.json`), in
+/// Nexus's order: the first is its preferred mirror.
+///
+/// The `uri` is a secret: the CDN signs it for this account and this file.
+/// It is handed to [`crate::Downloader::download_to`] and nowhere else: it
+/// never reaches a log line, an error or the window, so this type has no
+/// `Serialize` and its `Debug` shows `<redacted>` in its place.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DownloadMirror {
+    /// The mirror's name (`Nexus CDN`, a city).
+    pub name: String,
+    pub short_name: String,
+    /// The download link itself: `https` (or `http` to a loopback test server).
+    pub uri: String,
+}
+
+impl std::fmt::Debug for DownloadMirror {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DownloadMirror")
+            .field("name", &self.name)
+            .field("short_name", &self.short_name)
+            .field("uri", &"<redacted>")
+            .finish()
+    }
+}
+
+/// What [`crate::NexusClient::confirm_download`] learned of a downloaded
+/// archive's MD5. (Hits for other files only are an error,
+/// [`crate::NexusError::NotTheFile`].)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DownloadCheck {
+    /// Nexus names this exact mod and file for the MD5.
+    Confirmed,
+    /// Nexus knows no Dragon's Dogma 2 file with this MD5 yet: the size
+    /// alone vouches for the archive.
+    Unknown,
+}
+
+/// An account's decided endorsement of a mod (v1 `user/endorsements.json`).
+/// Nexus's third state, `Undecided`, is no entry at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EndorseStatus {
+    Endorsed,
+    Abstained,
+}
+
+impl EndorseStatus {
+    /// From Nexus's spelling (`Endorsed`, `Abstained`), any case; `None` for
+    /// `Undecided` and anything else.
+    pub fn from_nexus(status: &str) -> Option<Self> {
+        match status.trim().to_ascii_lowercase().as_str() {
+            "endorsed" => Some(EndorseStatus::Endorsed),
+            "abstained" => Some(EndorseStatus::Abstained),
+            _ => None,
+        }
+    }
+}
+
+/// One file of a mod page with what the player reads before downloading it
+/// (v0.3, v2 `modFiles` with `description` and `changelogText`). Anonymous.
+///
+/// `file` carries the facts the update rules work on (`fileId`, `groupId`,
+/// `sqid`, `name`, `version`, `category`, `date`, `primary`, `sizeInBytes`),
+/// so [`crate::pin_link`] and [`crate::update_state`] take
+/// `details.iter().map(|d| d.file.clone())` as they are. Serializes flat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NexusFileDetail {
+    #[serde(flatten)]
+    pub file: NexusFile,
+    /// The file's description, whitespace collapsed to single spaces, at most
+    /// [`crate::FILE_DESCRIPTION_CHARS`] characters (cut on a character
+    /// boundary); `None` when blank.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// The file's own patch notes (`changelogText`), one entry per line as
+    /// Nexus wrote them, each trimmed; blank lines dropped.
+    #[serde(default)]
+    pub changelog: Vec<String>,
+}
+
+/// How [`crate::NexusClient::browse`] orders Dragon's Dogma 2's mods.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BrowseSort {
+    /// Most endorsed first.
+    #[default]
+    Endorsements,
+    /// Most downloaded first.
+    Downloads,
+    /// Most recently updated first.
+    Updated,
+    /// Best match for the text first. Without text there is nothing to be
+    /// relevant to, and the page is sorted by endorsements instead.
+    Relevance,
+}
+
+impl BrowseSort {
+    /// The `ModsSort` key, given whether the query carries text.
+    pub(crate) fn key(self, has_text: bool) -> &'static str {
+        match self {
+            BrowseSort::Endorsements => "endorsements",
+            BrowseSort::Downloads => "downloads",
+            BrowseSort::Updated => "updatedAt",
+            BrowseSort::Relevance if has_text => "relevance",
+            BrowseSort::Relevance => "endorsements",
+        }
+    }
+}
+
+/// One page of Nexus's Dragon's Dogma 2 mods to ask for (v0.3, browse).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowseQuery {
+    /// The words the player typed. `""` browses the whole game by `sort`. It
+    /// travels only as a GraphQL variable, never as query text.
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub sort: BrowseSort,
+    /// How many mods to skip: 0, 20, 40 … ([`crate::BROWSE_PAGE_SIZE`] a page).
+    #[serde(default)]
+    pub offset: u64,
+}
+
+/// One page of browsing (v0.3).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowsePage {
+    /// Every match Nexus counts, across all pages (`totalCount`).
+    pub total: u64,
+    /// The offset this page starts at, as it was asked for.
+    pub offset: u64,
+    /// The page's mods in Nexus's order; the page size is however many came.
+    pub mods: Vec<ModCandidate>,
 }
 
 #[cfg(test)]
@@ -375,9 +539,125 @@ mod tests {
     }
 
     #[test]
+    fn a_download_mirror_never_shows_its_link() {
+        let mirror = DownloadMirror {
+            name: "Nexus CDN".into(),
+            short_name: "Nexus CDN".into(),
+            uri: "https://cdn.example.invalid/2207/9001/lantern.zip?md5=signed&expires=1".into(),
+        };
+        let shown = format!("{mirror:?}");
+        assert!(
+            shown.contains("Nexus CDN") && shown.contains("<redacted>"),
+            "{shown}"
+        );
+        assert!(
+            !shown.contains("example.invalid") && !shown.contains("signed"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn endorse_statuses_read_nexus_spelling_and_skip_undecided() {
+        assert_eq!(
+            EndorseStatus::from_nexus("Endorsed"),
+            Some(EndorseStatus::Endorsed)
+        );
+        assert_eq!(
+            EndorseStatus::from_nexus(" ABSTAINED "),
+            Some(EndorseStatus::Abstained)
+        );
+        assert_eq!(EndorseStatus::from_nexus("Undecided"), None);
+        assert_eq!(EndorseStatus::from_nexus(""), None);
+        assert_eq!(
+            serde_json::to_value(EndorseStatus::Abstained).unwrap(),
+            "abstained"
+        );
+    }
+
+    #[test]
+    fn a_file_detail_serializes_flat() {
+        let detail = NexusFileDetail {
+            file: NexusFile {
+                file_id: 9001,
+                group_id: Some(31),
+                sqid: Some("Rk4vLmN2Q".into()),
+                name: "Lantern Glow Recolor".into(),
+                version: Some("2.1".into()),
+                category: FileCategory::Main,
+                uploaded_ms: 1_700_000_000_000,
+                primary: true,
+                size_bytes: Some(2048),
+            },
+            description: Some("Warmer lanterns.".into()),
+            changelog: vec!["Ember tint.".into()],
+        };
+        let json = serde_json::to_value(&detail).unwrap();
+        assert_eq!(json["fileId"], 9001);
+        assert_eq!(json["groupId"], 31);
+        assert_eq!(json["description"], "Warmer lanterns.");
+        assert_eq!(json["changelog"], serde_json::json!(["Ember tint."]));
+        let back: NexusFileDetail = serde_json::from_value(json).unwrap();
+        assert_eq!(back, detail);
+    }
+
+    #[test]
+    fn browse_sorts_map_to_nexus_keys_and_relevance_needs_text() {
+        assert_eq!(BrowseSort::Endorsements.key(false), "endorsements");
+        assert_eq!(BrowseSort::Downloads.key(true), "downloads");
+        assert_eq!(BrowseSort::Updated.key(false), "updatedAt");
+        assert_eq!(BrowseSort::Relevance.key(true), "relevance");
+        assert_eq!(BrowseSort::Relevance.key(false), "endorsements");
+        let query: BrowseQuery = serde_json::from_value(
+            serde_json::json!({ "text": "lantern", "sort": "updated", "offset": 40 }),
+        )
+        .unwrap();
+        assert_eq!(
+            query,
+            BrowseQuery {
+                text: "lantern".into(),
+                sort: BrowseSort::Updated,
+                offset: 40
+            }
+        );
+    }
+
+    #[test]
+    fn an_account_stored_before_v0_3_still_loads() {
+        let old: NexusAccount = serde_json::from_value(serde_json::json!({
+            "name": "Arisen of Vernworth", "isPremium": true
+        }))
+        .unwrap();
+        assert_eq!(old.user_id, None);
+        assert!(old.is_premium && !old.is_supporter);
+    }
+
+    #[test]
+    fn the_v1_list_names_each_files_archive() {
+        let list = V1FileList {
+            file_names: BTreeMap::from([(
+                9001,
+                "Lantern Glow Recolor-2207-2-1-1700000000.zip".into(),
+            )]),
+            ..V1FileList::default()
+        };
+        assert_eq!(
+            list.file_name(9001),
+            Some("Lantern Glow Recolor-2207-2-1-1700000000.zip")
+        );
+        assert_eq!(list.file_name(9002), None);
+        let old: V1FileList =
+            serde_json::from_value(serde_json::json!({ "files": [], "updates": [] })).unwrap();
+        assert!(
+            old.file_names.is_empty(),
+            "a list stored before v0.3 still loads"
+        );
+    }
+
+    #[test]
     fn the_v1_replacement_chain_is_followed_to_its_end() {
         let list = V1FileList {
             files: vec![],
+            file_names: BTreeMap::new(),
             updates: vec![
                 FileUpdate {
                     old_file_id: 1,
