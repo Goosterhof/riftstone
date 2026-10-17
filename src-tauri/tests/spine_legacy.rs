@@ -374,6 +374,135 @@ fn a_migration_that_meets_a_change_runs_when_the_change_lets_go() {
     assert_relinked(&state, 1);
 }
 
+#[test]
+fn a_migration_that_meets_plays_probe_runs_when_the_probe_lets_go() {
+    // Play's plan asks whether a change holds the game folder by trying its
+    // lock for a moment. A scan's migration that meets that moment is put
+    // off; the probe must run it as it lets go, as a change's turn does.
+    // Hammered from four threads across a whole scan, three times over: the
+    // migration meets a probe nearly every time.
+    for trial in 1..=3 {
+        let bench = Bench::new();
+        let dirs = DataDirs::under(&bench.data_home());
+        let (banners, legacy) = staged_v02_folder(&bench, &dirs, &bench.mods.join(BANNERS));
+        let (state, events) = bench.open(bench.config(dirs.clone()));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let probes: Vec<_> = (0..4)
+            .map(|_| {
+                let state = std::sync::Arc::clone(&state);
+                let stop = std::sync::Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    let mut asked = 0u64;
+                    while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                        let _ = state.deploy_busy();
+                        asked += 1;
+                    }
+                    asked
+                })
+            })
+            .collect();
+        assert!(state.scan_blocking());
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        for probe in probes {
+            assert!(probe.join().unwrap() > 0);
+        }
+        assert_eq!(
+            deploy::get_installed_impl(&state).unwrap().installs[0].option_id,
+            banners,
+            "trial {trial}: the put-off migration ran"
+        );
+        let journal = bench.journal_on_disk(&dirs);
+        assert!(
+            !journal.to_string().contains(&legacy.0),
+            "trial {trial}: re-keyed on disk: {journal}"
+        );
+        assert_eq!(events.named(GAME_CHANGED).len(), 1, "trial {trial}");
+        assert_relinked(&state, 1);
+    }
+}
+
+/// The bench's Lantern Glow Recolor installed by the stone, the window's
+/// events cleared: its option id and the archive it came from.
+fn installed_lantern(
+    bench: &Bench,
+) -> (
+    std::sync::Arc<AppState>,
+    std::sync::Arc<RecordedEvents>,
+    String,
+) {
+    let dirs = DataDirs::under(&bench.data_home());
+    let (state, events) = bench.open(bench.config(dirs));
+    assert!(state.scan_blocking());
+    let lantern = option_named(&state, "Lantern Glow Recolor");
+    deploy::install_impl(&state, &lantern).unwrap();
+    events.clear();
+    (state, events, lantern)
+}
+
+#[test]
+fn an_install_whose_package_is_there_but_unreadable_keeps_its_id() {
+    let bench = Bench::new();
+    let (state, events, lantern) = installed_lantern(&bench);
+    // A byte-identical copy under another name, and the original damaged in
+    // place (zero-filled at its length: the same package id, no options).
+    let original = bench.mods.join("Lantern Glow Recolor.zip");
+    fs::copy(
+        &original,
+        bench.mods.join("Lantern Glow Recolor (copy).zip"),
+    )
+    .unwrap();
+    let length = fs::metadata(&original).unwrap().len();
+    fs::write(&original, vec![0u8; usize::try_from(length).unwrap()]).unwrap();
+    assert!(state.scan_blocking());
+
+    let world = deploy::get_installed_impl(&state).unwrap();
+    assert_eq!(
+        world.installs[0].option_id, lantern,
+        "its package is still in the mods folder, unreadable this scan: it stays"
+    );
+    assert!(events.named(GAME_CHANGED).is_empty(), "nothing moved");
+    assert!(!overview::get_overview_impl(&state)
+        .unwrap()
+        .checks
+        .iter()
+        .any(|c| c.id == "relinked"));
+}
+
+#[test]
+fn a_newer_archive_with_other_files_never_takes_over_an_install() {
+    let bench = Bench::new();
+    let (state, events, lantern) = installed_lantern(&bench);
+    // Version 1.1 of the same mod beside it (the same option, a pak of
+    // another size: three entries where 1.0's has two), then 1.0 deleted.
+    let newer = support::pak(&[
+        rift_pak::path_hash("natives/stm/effect/lantern/lantern_glow_amber.tex.251211553"),
+        rift_pak::path_hash("natives/stm/effect/lantern/lantern_glow_ember.tex.251211553"),
+        rift_pak::path_hash("natives/stm/effect/lantern/lantern_glow_ash.tex.251211553"),
+    ]);
+    support::write_zip(
+        &bench.mods.join("Lantern Glow Recolor 1.1.zip"),
+        &[
+            (
+                "Lantern Glow/modinfo.ini",
+                b"name=Lantern Glow Recolor\r\nversion=1.1\r\n",
+            ),
+            ("Lantern Glow/LanternGlow.pak", &newer),
+        ],
+    );
+    fs::remove_file(bench.mods.join("Lantern Glow Recolor.zip")).unwrap();
+    assert!(state.scan_blocking());
+
+    let world = deploy::get_installed_impl(&state).unwrap();
+    assert_eq!(world.installs[0].option_id, lantern, "keeps its id");
+    assert!(world.installs[0].package_missing, "its own archive is gone");
+    assert!(events.named(GAME_CHANGED).is_empty());
+    assert!(!overview::get_overview_impl(&state)
+        .unwrap()
+        .checks
+        .iter()
+        .any(|c| c.id == "relinked"));
+}
+
 fn assert_relinked(state: &AppState, count: usize) {
     let check = overview::get_overview_impl(state)
         .unwrap()

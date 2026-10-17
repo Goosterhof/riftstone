@@ -62,7 +62,7 @@ fn lantern_update() -> Vec<u8> {
 }
 
 /// What the API stand-in says.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct Scene {
     premium: bool,
     /// The size Nexus states for the file.
@@ -71,6 +71,24 @@ struct Scene {
     link: String,
     /// The file the MD5 lookup names: `None` for no hit at all.
     hash_names: Option<(u64, u64)>,
+    /// Where Nexus states the size.
+    stated: Stated,
+    /// The archive's own name in v1 `files.json`, else [`ARCHIVE`].
+    archive: Option<&'static str>,
+    /// The anonymous MD5 lookup answers 429 with an hour's Retry-After.
+    lookup_refused: bool,
+}
+
+/// Where the API stand-in states the file's size.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Stated {
+    /// v2 `modFiles` and v1 `files.json` both.
+    #[default]
+    Everywhere,
+    /// v1 `files.json` only (v2's `sizeInBytes` is null).
+    V1Only,
+    /// Nowhere.
+    Nowhere,
 }
 
 fn status(code: u16) -> Answer {
@@ -91,10 +109,11 @@ fn nexus_api(scene: Scene) -> impl Fn(&Seen) -> Answer + Send + 'static {
             }));
         }
         if path.ends_with(&format!("/mods/{MOD}/files.json")) {
+            let v1_size = (scene.stated != Stated::Nowhere).then_some(scene.size);
             return Answer::json(json!({
-                "files": [{ "file_id": FILE, "file_name": ARCHIVE, "name": "Lantern Glow Recolor",
-                            "version": "2.2", "category_id": 1, "uploaded_timestamp": UPLOADED_S,
-                            "size_in_bytes": scene.size }],
+                "files": [{ "file_id": FILE, "file_name": scene.archive.unwrap_or(ARCHIVE),
+                            "name": "Lantern Glow Recolor", "version": "2.2", "category_id": 1,
+                            "uploaded_timestamp": UPLOADED_S, "size_in_bytes": v1_size }],
                 "file_updates": []
             }));
         }
@@ -109,10 +128,11 @@ fn nexus_api(scene: Scene) -> impl Fn(&Seen) -> Answer + Send + 'static {
             ]));
         }
         if request.body.contains("RiftstoneModFileDetails") {
+            let v2_size = (scene.stated == Stated::Everywhere).then(|| scene.size.to_string());
             return Answer::json(json!({ "data": { "modFiles": [{
                 "fileId": FILE, "groupId": 31, "sqid": "Rk4vLmN2Q", "name": "Lantern Glow Recolor",
                 "version": "2.2", "category": "MAIN", "date": UPLOADED_S, "primary": 1,
-                "sizeInBytes": scene.size.to_string(),
+                "sizeInBytes": v2_size,
                 "description": "Warmer amber for every hand lantern.",
                 "changelogText": ["Amber for every lantern."]
             }]}}));
@@ -126,6 +146,13 @@ fn nexus_api(scene: Scene) -> impl Fn(&Seen) -> Answer + Send + 'static {
             }}}));
         }
         if request.body.contains("fileHashes") {
+            if scene.lookup_refused {
+                return Answer {
+                    status: 429,
+                    headers: vec![("Retry-After".into(), "3600".into())],
+                    body: json!({}),
+                };
+            }
             let asked: Value = serde_json::from_str(&request.body).unwrap();
             let md5 = asked["variables"]["md5s"][0].clone();
             let hits = match scene.hash_names {
@@ -223,6 +250,7 @@ fn a_premium_download_lands_under_its_nexus_name_and_links_itself() {
         size: update.len() as u64,
         link: cdn.link(CDN_PATH),
         hash_names: Some((MOD, FILE)),
+        ..Scene::default()
     }));
     let bench = Bench::new();
     let (state, events) = open(&bench, &api);
@@ -321,6 +349,7 @@ fn a_free_download_waits_for_the_site_link_and_resumes_on_it() {
         size: update.len() as u64,
         link: cdn.link(CDN_PATH),
         hash_names: None,
+        ..Scene::default()
     }));
     let bench = Bench::new();
     let (state, events) = open(&bench, &api);
@@ -420,6 +449,7 @@ fn premium_run(
         size: stated,
         link: cdn.link(CDN_PATH),
         hash_names,
+        ..Scene::default()
     }));
     let bench = Bench::new();
     let (state, events) = open(&bench, &api);
@@ -437,16 +467,157 @@ fn reason(row: &DownloadView) -> Value {
     serde_json::to_value(row.failure.as_ref().expect("a failure says why")).unwrap()
 }
 
+/// A settled premium download in `scene` (its link pointed at a CDN serving
+/// `delivery`): the row, the mods folder before and after, the spine and its
+/// bench (which holds the folders).
+fn premium_in(
+    delivery: Delivery,
+    scene: Scene,
+) -> (DownloadView, Folder, Folder, Arc<AppState>, Bench) {
+    let cdn = Cdn::start(move |_| delivery.clone());
+    let api = StandIn::start(nexus_api(Scene {
+        premium: true,
+        link: cdn.link(CDN_PATH),
+        ..scene
+    }));
+    let bench = Bench::new();
+    let (state, events) = open(&bench, &api);
+    let before = Bench::snapshot(&bench.mods);
+    let row = downloads::start(&state, MOD, FILE, None).unwrap();
+    let row = settled(&state, &row.id);
+    let after = Bench::snapshot(&bench.mods);
+    assert_cdn_saw_no_key(&cdn);
+    assert_no_secret(&state, &events);
+    (row, before, after, state, bench)
+}
+
+#[test]
+fn a_whole_download_lands_on_its_size_when_the_hash_lookup_cannot_be_asked() {
+    // Every stated size met; the anonymous MD5 lookup is cooling down for an
+    // hour (a 429 the update check shares). The bytes are kept.
+    let update = lantern_update();
+    let (row, before, after, _, _bench) = premium_in(
+        Delivery::bytes(&update),
+        Scene {
+            size: update.len() as u64,
+            lookup_refused: true,
+            ..Scene::default()
+        },
+    );
+    assert_eq!(row.phase, DownloadPhase::Landed, "{row:?}");
+    assert_eq!(after[ARCHIVE], update);
+    assert_eq!(
+        after.len(),
+        before.len() + 1,
+        "the archive, no partial file"
+    );
+}
+
+#[test]
+fn a_download_nobody_sized_lands_only_on_a_hash_nexus_knows() {
+    let update = lantern_update();
+    let nowhere = |hash_names, lookup_refused| Scene {
+        size: update.len() as u64,
+        stated: Stated::Nowhere,
+        hash_names,
+        lookup_refused,
+        ..Scene::default()
+    };
+    // No size from v2, v1 or the server, and a hash Nexus does not know:
+    // nothing vouches for the bytes.
+    let (row, before, after, _, _bench) =
+        premium_in(Delivery::unsized_bytes(&update), nowhere(None, false));
+    assert_eq!(row.phase, DownloadPhase::Failed, "{row:?}");
+    assert_eq!(reason(&row)["kind"], "nexus");
+    assert_eq!(after, before, "nothing kept");
+
+    // Nexus names the file for its hash: that vouches for it.
+    let (row, _, after, _, _bench) = premium_in(
+        Delivery::unsized_bytes(&update),
+        nowhere(Some((MOD, FILE)), false),
+    );
+    assert_eq!(row.phase, DownloadPhase::Landed, "{row:?}");
+    assert_eq!(after[ARCHIVE], update);
+
+    // Nobody sized it and the lookup could not be asked: nothing vouches.
+    let (row, before, after, _, _bench) =
+        premium_in(Delivery::unsized_bytes(&update), nowhere(None, true));
+    assert_eq!(row.phase, DownloadPhase::Failed, "{row:?}");
+    assert_eq!(reason(&row)["detail"]["reason"], "rateLimited");
+    assert_eq!(after, before);
+}
+
+#[test]
+fn files_json_states_the_size_when_v2_does_not() {
+    let update = lantern_update();
+    let v1_only = |size: u64, hash_names| Scene {
+        size,
+        stated: Stated::V1Only,
+        hash_names,
+        ..Scene::default()
+    };
+    // v2 states no size, the server none either; v1's is not what arrives.
+    let (row, before, after, _, _bench) = premium_in(
+        Delivery::unsized_bytes(&update),
+        v1_only(update.len() as u64 + 7, Some((MOD, FILE))),
+    );
+    assert_eq!(row.phase, DownloadPhase::Failed, "{row:?}");
+    assert_eq!(reason(&row)["detail"]["reason"], "sizeMismatch");
+    assert_eq!(after, before);
+
+    // v1's size met: it vouches, so a hash Nexus does not know lands.
+    let (row, _, after, _, _bench) = premium_in(
+        Delivery::unsized_bytes(&update),
+        v1_only(update.len() as u64, None),
+    );
+    assert_eq!(row.phase, DownloadPhase::Landed, "{row:?}");
+    assert_eq!(row.bytes_total, Some(update.len() as u64));
+    assert_eq!(after[ARCHIVE], update);
+}
+
+#[test]
+fn a_file_that_is_no_archive_lands_without_a_package_or_a_link() {
+    // A raw pak: the scan lists only archives and folders, so no package
+    // will ever answer to a link made for it.
+    const RAW: &str = "Lantern Glow Recolor.pak";
+    let pak = b"KPKA a raw pak with no archive around it".to_vec();
+    let (row, before, after, state, bench) = premium_in(
+        Delivery::bytes(&pak),
+        Scene {
+            size: pak.len() as u64,
+            archive: Some(RAW),
+            hash_names: Some((MOD, FILE)),
+            ..Scene::default()
+        },
+    );
+    assert_eq!(row.phase, DownloadPhase::Landed, "{row:?}");
+    assert_eq!(row.landed_as.as_deref(), Some(RAW), "under its own name");
+    assert_eq!(after[RAW], pak);
+    assert_eq!(after.len(), before.len() + 1);
+    assert_eq!(
+        row.package_id, None,
+        "no package: nothing to show in the Rift"
+    );
+    let orphan = rift_core::PackageId::for_archive(RAW, pak.len() as u64);
+    let store = std::fs::read_to_string(
+        riftstone_lib::persist::DataDirs::under(&bench.data_home()).nexus_file(),
+    )
+    .unwrap_or_default();
+    assert!(!store.contains(&orphan.0), "no link for it: {store}");
+    assert!(nexus::get_updates_impl(&state)
+        .rows
+        .iter()
+        .all(|row| row.package_id != orphan.0));
+}
+
 #[test]
 fn a_cut_off_body_leaves_nothing_in_the_mods_folder() {
     let update = lantern_update();
     let half = update[..update.len() / 2].to_vec();
     let (row, before, after) = premium_run(
         Delivery {
-            status: 200,
-            body: half,
             declared: Some(update.len()),
-            pace: None,
+            ..Delivery::bytes(&half)
         },
         update.len() as u64,
         Some((MOD, FILE)),
@@ -495,10 +666,8 @@ fn a_cancel_mid_download_leaves_nothing_behind() {
     let cdn = Cdn::start({
         let slow = slow.clone();
         move |_| Delivery {
-            status: 200,
-            body: slow.clone(),
-            declared: None,
             pace: Some((8 * 1024, Duration::from_millis(60))),
+            ..Delivery::bytes(&slow)
         }
     });
     let api = StandIn::start(nexus_api(Scene {
@@ -506,6 +675,7 @@ fn a_cancel_mid_download_leaves_nothing_behind() {
         size: slow.len() as u64,
         link: cdn.link(CDN_PATH),
         hash_names: Some((MOD, FILE)),
+        ..Scene::default()
     }));
     let bench = Bench::new();
     let (state, events) = open(&bench, &api);
@@ -567,6 +737,7 @@ fn a_waiting_download_cancels_without_asking_anything() {
         size: 10,
         link: "http://127.0.0.1:9/never".into(),
         hash_names: None,
+        ..Scene::default()
     }));
     let bench = Bench::new();
     let (state, events) = open(&bench, &api);
@@ -595,6 +766,7 @@ fn a_cold_start_link_is_handled_once_the_spine_is_awake() {
         size: 10,
         link: "http://127.0.0.1:9/never".into(),
         hash_names: None,
+        ..Scene::default()
     }));
     let bench = Bench::new();
     let (state, events) = bench.open_keyed(bench.config_at(&api), KEY);
@@ -612,6 +784,8 @@ fn a_cold_start_link_is_handled_once_the_spine_is_awake() {
         "nothing before the wake"
     );
     state.wake();
+    // The window reads its first frame: it listens now.
+    nxm::window_listens(&state);
     wait_for(
         Duration::from_secs(20),
         "the launch link is handled",
@@ -635,6 +809,7 @@ fn every_nxm_refusal_says_why_and_starts_nothing() {
         size: 10,
         link: "http://127.0.0.1:9/never".into(),
         hash_names: None,
+        ..Scene::default()
     }));
     let now_s = riftstone_lib::persist::now_ms() / 1000;
     let file_link =

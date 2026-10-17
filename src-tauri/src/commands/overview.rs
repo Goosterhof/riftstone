@@ -103,21 +103,21 @@ pub enum ModsFolderState {
     Empty,
     /// It is there, but its list of files could not be read: why.
     Unlistable(String),
-    /// It is not there: why it could not be made.
-    Missing(String),
+    /// It is not there, and it could not be made at launch: why.
+    Unmade(String),
+    /// It was made at launch and is not there now (moved or deleted while
+    /// the stone ran): `open_mods_folder` makes it again.
+    Gone,
 }
 
 /// Look at the mods folder (one listing, no archive opened). `unmade` is
 /// why it could not be made at launch, when it could not.
 pub fn mods_folder_state(folder: &Path, unmade: Option<&str>) -> ModsFolderState {
     if !folder.is_dir() {
-        return ModsFolderState::Missing(
-            unmade
-                .unwrap_or(
-                    "it is not there any more; the Riftstone makes it again at its next start",
-                )
-                .to_string(),
-        );
+        return match unmade {
+            Some(why) => ModsFolderState::Unmade(why.to_string()),
+            None => ModsFolderState::Gone,
+        };
     }
     if let Err(err) = std::fs::read_dir(folder) {
         return ModsFolderState::Unlistable(err.to_string());
@@ -204,7 +204,7 @@ fn checks(
             ),
             Some(CheckAction::Rescan),
         ),
-        ModsFolderState::Missing(why) => add(
+        ModsFolderState::Unmade(why) => add(
             "mods",
             CheckLevel::Error,
             "The mods folder is missing".into(),
@@ -214,6 +214,16 @@ fn checks(
             ),
             None,
         ),
+        ModsFolderState::Gone => add(
+            "mods",
+            CheckLevel::Warn,
+            "The mods folder is gone".into(),
+            format!(
+                "{} was moved or deleted while the Riftstone ran, and it reads mods from nowhere else. Open mods folder makes it again, empty, and watches it; then put your mods back in it.",
+                folder.display()
+            ),
+            Some(CheckAction::OpenModsFolder),
+        ),
     }
     let relinked = state.relinked_count();
     if relinked > 0 {
@@ -221,7 +231,7 @@ fn checks(
             "relinked",
             CheckLevel::Info,
             format!("{relinked} install(s) found again in the mods folder"),
-            "Their mods had moved. Each was matched to the same option in the mods folder by its files, so it shows, updates and uninstalls as before. Nothing in the game folder changed.".into(),
+            "Each was known by an id the mods folder no longer answers to (an id from before v0.3, a folder or archive renamed), and was matched to the one option there that installs the same files, each at its game path and with its size. So it shows, updates and uninstalls as before. Nothing in the game folder changed.".into(),
             None,
         );
     }
@@ -336,9 +346,17 @@ pub fn get_troubled_packages_impl(state: &AppState) -> Vec<PackageSummary> {
 
 // -- wrappers ----------------------------------------------------------------
 
+/// The window's home frame. Its first read is also the window's word that
+/// it listens: `src/composables/boot.ts` subscribes to every event before it
+/// reads the overview, so the nxm links held at the door until then go now
+/// ([`crate::nxm::window_listens`]).
 #[tauri::command]
 pub async fn get_overview(state: Spine<'_>) -> Result<Overview, RiftError> {
-    blocking(&state, |state| get_overview_impl(state)).await
+    blocking(&state, |state| {
+        crate::nxm::window_listens(state);
+        get_overview_impl(state)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -527,12 +545,13 @@ mod tests {
         let mods = dir.path().join("mods");
         assert!(matches!(
             mods_folder_state(&mods, Some("access is denied")),
-            ModsFolderState::Missing(why) if why == "access is denied"
+            ModsFolderState::Unmade(why) if why == "access is denied"
         ));
-        assert!(matches!(
+        assert_eq!(
             mods_folder_state(&mods, None),
-            ModsFolderState::Missing(why) if why.contains("not there")
-        ));
+            ModsFolderState::Gone,
+            "made at launch, not there now"
+        );
         std::fs::create_dir_all(&mods).unwrap();
         assert_eq!(mods_folder_state(&mods, None), ModsFolderState::Empty);
         // Windows' folder settings, a hidden name and a browser's download in

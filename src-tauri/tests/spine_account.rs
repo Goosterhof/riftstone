@@ -1,6 +1,7 @@
 //! The key's account and its extras (v0.3) against a loopback stand-in for
-//! Nexus: the stored key is validated on the wake thread after the first
-//! scan (no quota spent) and its account shows; a new key keeps the account
+//! Nexus: the stored key is validated at the wake on a thread of its own,
+//! without waiting for the first scan (no quota spent), and its account
+//! shows; a new key keeps the account
 //! it validated; a refused key reads `rejected` and Nexus out of reach reads
 //! `unchecked`; the update check never waits on a spent v1 quota; tracked
 //! mods and endorsements round-trip through the session cache; browsing and
@@ -22,10 +23,11 @@ use riftstone_lib::commands::standings::{
 use riftstone_lib::dto::{
     EndorseStatus, NexusBrowseQuery, NexusBrowseSort, NexusFileCategory, NexusKeyStanding,
 };
-use riftstone_lib::events::{LIBRARY_CHANGED, UPDATES_CHANGED};
+use riftstone_lib::events::{LIBRARY_CHANGED, SCAN_PROGRESS, UPDATES_CHANGED};
+use riftstone_lib::keys::MemoryKeyStore;
 use riftstone_lib::persist::DataDirs;
 use riftstone_lib::state::AppState;
-use support::{wait_for, Answer, Bench, Seen, StandIn, BANTER_UPLOADED_S};
+use support::{wait_for, Answer, Bench, GatedEvents, Seen, StandIn, BANTER_UPLOADED_S};
 
 const KEY: &str = "invented-personal-key-0042";
 const EMAIL: &str = "arisen@vernworth.invalid";
@@ -193,10 +195,16 @@ fn summary(state: &AppState) -> riftstone_lib::dto::NexusSummary {
 }
 
 #[test]
-fn the_stored_key_is_validated_after_the_first_scan_and_its_account_shows() {
+fn the_stored_key_is_validated_at_the_wake_without_waiting_for_the_scan() {
     let (api, _) = stand_in(Validate::Premium);
     let bench = Bench::new();
-    let (state, events) = bench.open_keyed(bench.config_at(&api), KEY);
+    // The first scan stops at its first package until the test lets it go.
+    let events = Arc::new(GatedEvents::closed_on(SCAN_PROGRESS));
+    let state = AppState::open(
+        bench.config_at(&api),
+        events.clone(),
+        Box::new(MemoryKeyStore::holding(KEY)),
+    );
     let before = summary(&state);
     assert!(before.has_api_key);
     assert_eq!(before.key, NexusKeyStanding::Unchecked, "not validated yet");
@@ -206,8 +214,12 @@ fn the_stored_key_is_validated_after_the_first_scan_and_its_account_shows() {
     state.wake();
     wait_for(
         Duration::from_secs(20),
-        "the wake thread validates the key",
+        "the account thread validates the key while the scan is held",
         || summary(&state).key == NexusKeyStanding::Connected,
+    );
+    assert!(
+        events.recorded.named(LIBRARY_CHANGED).is_empty(),
+        "the validation never waited for the library"
     );
     let after = summary(&state);
     let account = after.account.clone().expect("connected: the account shows");
@@ -216,21 +228,18 @@ fn the_stored_key_is_validated_after_the_first_scan_and_its_account_shows() {
     assert!(account.checked_ms > 0);
     let wire = serde_json::to_string(&after).unwrap();
     assert!(!wire.contains(KEY) && !wire.contains(EMAIL), "{wire}");
-
-    // The validation came after the first scan, and the window heard it.
-    let all = events.all();
-    let scanned = all
-        .iter()
-        .position(|(name, _)| name == LIBRARY_CHANGED)
-        .expect("the first scan ended");
-    let heard = all
-        .iter()
-        .position(|(name, _)| name == UPDATES_CHANGED)
-        .expect("the window heard the account");
-    assert!(scanned < heard, "the scan first, then the key");
+    assert!(
+        !events.recorded.named(UPDATES_CHANGED).is_empty(),
+        "the window heard the account"
+    );
     // validate.json spends no quota, and still reports it.
     let quota = nexus::get_nexus_quota_impl(&state).expect("the launch validation shows the quota");
     assert_eq!(quota.hourly_remaining, 499);
+
+    events.open();
+    wait_for(Duration::from_secs(20), "the first scan ends", || {
+        !events.recorded.named(LIBRARY_CHANGED).is_empty()
+    });
 }
 
 #[test]

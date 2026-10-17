@@ -576,7 +576,7 @@ pub fn wait_for(limit: Duration, what: &str, mut done: impl FnMut() -> bool) {
 // ---------------------------------------------------------------------------
 
 /// What the CDN stand-in sends: any bytes, optionally declaring another
-/// length than it sends (a body cut off), optionally slowly.
+/// length than it sends (a body cut off) or none at all, optionally slowly.
 #[derive(Clone)]
 pub struct Delivery {
     pub status: u16,
@@ -585,6 +585,8 @@ pub struct Delivery {
     pub declared: Option<usize>,
     /// Send `.0` bytes, then wait `.1`, until the body is out.
     pub pace: Option<(usize, Duration)>,
+    /// Declare no length at all: the body ends when the connection closes.
+    pub no_length: bool,
 }
 
 impl Delivery {
@@ -594,6 +596,15 @@ impl Delivery {
             body: body.to_vec(),
             declared: None,
             pace: None,
+            no_length: false,
+        }
+    }
+
+    /// The body with no `Content-Length`: the server states no size.
+    pub fn unsized_bytes(body: &[u8]) -> Delivery {
+        Delivery {
+            no_length: true,
+            ..Delivery::bytes(body)
         }
     }
 }
@@ -665,8 +676,13 @@ impl Drop for Cdn {
 
 fn deliver(mut stream: TcpStream, delivery: &Delivery) {
     let declared = delivery.declared.unwrap_or(delivery.body.len());
+    let length = if delivery.no_length {
+        String::new()
+    } else {
+        format!("Content-Length: {declared}\r\n")
+    };
     let head = format!(
-        "HTTP/1.1 {} Delivery\r\nContent-Type: application/octet-stream\r\nContent-Length: {declared}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {} Delivery\r\nContent-Type: application/octet-stream\r\n{length}Connection: close\r\n\r\n",
         delivery.status
     );
     if stream.write_all(head.as_bytes()).is_err() {

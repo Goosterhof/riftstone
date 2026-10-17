@@ -52,17 +52,14 @@ use crate::state::{mods_dir_from, AppState, SpineConfig, MODS_DIR_ENV};
 
 /// A second launch (`riftstone.exe "nxm://…"`, Windows answering the site's
 /// Mod Manager Download button) handed its arguments over: each nxm link
-/// goes to the spine, and the window comes forward. This runs on the
-/// window's own thread, so nothing here waits on the network.
+/// goes to the spine (held at its door while the launch's key validation or
+/// the window's first frame is still to come), and the window comes
+/// forward. This runs on the window's own thread, so nothing here waits on
+/// the network.
 fn second_launch<R: tauri::Runtime>(app: &tauri::AppHandle<R>, args: Vec<String>, _cwd: String) {
-    let links = nxm::nxm_arguments(&args);
     match app.try_state::<Arc<AppState>>() {
-        Some(spine) => {
-            for link in &links {
-                nxm::handle_nxm(spine.inner(), link);
-            }
-        }
-        None if !links.is_empty() => log::warn!(
+        Some(spine) => nxm::second_launch(spine.inner(), &args),
+        None if !nxm::nxm_arguments(&args).is_empty() => log::warn!(
             "a Mod Manager Download link arrived before the Riftstone was awake; press the button again"
         ),
         None => {}
@@ -75,6 +72,17 @@ fn second_launch<R: tauri::Runtime>(app: &tauri::AppHandle<R>, args: Vec<String>
 }
 
 pub fn run() {
+    // The uninstaller's last word (`riftstone.exe --give-back-nxm`, from
+    // `windows/hooks.nsh` before a file is removed): give the nxm:// links
+    // back and exit. Before any plugin, so a running stone is not handed the
+    // argument and no window opens. (`args_os`: an argument that is not
+    // Unicode must never stop the stone from starting.)
+    if std::env::args_os()
+        .skip(1)
+        .any(|arg| arg == nxm::GIVE_BACK_ARG)
+    {
+        std::process::exit(nxm::give_back_on_uninstall());
+    }
     let data_home = DataDirs::from_env();
     let webview_dir = data_home.as_ref().map(|dirs| dirs.data.join("webview"));
     let log_file = match &data_home {
@@ -125,8 +133,9 @@ pub fn run() {
                 Box::new(keys::SystemKeyStore),
             );
             app.manage(Arc::clone(&spine));
-            // A cold start for a Mod Manager Download link: handled once the
-            // spine is awake (startup step 9).
+            // A cold start for a Mod Manager Download link: held at the door
+            // until the key is validated and the window listens (startup
+            // step 9).
             let args: Vec<String> = std::env::args().collect();
             spine.queue_launch_links(nxm::nxm_arguments(&args));
             spine.wake();

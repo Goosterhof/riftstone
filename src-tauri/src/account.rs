@@ -2,8 +2,9 @@
 //! what the key's extras last heard from Nexus (tracked mods, endorsements).
 //!
 //! **The standing** (`NexusSummary.key`): `none` without a key; `unchecked`
-//! while a stored key waits for its validation (the wake thread validates it
-//! after the first scan) or when Nexus was out of reach; `connected` once
+//! while a stored key waits for its validation (a thread of its own validates
+//! it at the wake, without waiting for the first scan) or when Nexus was out
+//! of reach; `connected` once
 //! `/v1/users/validate.json` answered with the account (it spends no quota);
 //! `rejected` when Nexus refused the key at its last validation. A rejected
 //! key stays stored: the player replaces it, the stone never forgets it on
@@ -167,9 +168,10 @@ pub fn validate(state: &AppState) -> Result<(), RiftError> {
     result
 }
 
-/// The launch validation (startup step 7): a stored key is validated once
-/// the first scan is in; what goes wrong is logged (the overview says
-/// `unchecked`, and `refresh_nexus_account` tries again).
+/// The launch validation (startup step 7): a stored key is validated at the
+/// wake, on the account thread, without waiting for the first scan; what
+/// goes wrong is logged (the overview says `unchecked`, and
+/// `refresh_nexus_account` tries again).
 pub fn validate_at_wake(state: &AppState) {
     if !state.has_api_key.load(Ordering::SeqCst) {
         return;

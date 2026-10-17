@@ -28,13 +28,16 @@
 //! Play) asks the watch afresh ([`AppState::observe_game`]).
 //!
 //! **The key's extras (v0.3).** The stored key's account is a word of its own
-//! (`account`, [`crate::account`]), validated on the wake thread after the
-//! first scan; the standings it heard are a session cache (`standings`);
-//! downloads live in their own list with their own worker (`downloads`,
-//! [`crate::downloads`]), which holds the spine only weakly while it waits.
-//! None of these locks is held across a network call or a disk write, none
-//! is taken together with `deploy_lock` or `nexus_check`, and a download
-//! never waits for an install or an update check (nor they for it).
+//! (`account`, [`crate::account`]), validated at the wake on a thread of its
+//! own (the first scan never delays it); nxm links that arrive before that
+//! validation is done, or before the window listens, wait at the link door
+//! ([`AppState::hold_link`]); the standings it heard are a session cache
+//! (`standings`); downloads live in their own list with their own worker
+//! (`downloads`, [`crate::downloads`]), which holds the spine only weakly
+//! while it waits. None of these locks is held across a network call or a
+//! disk write, none is taken together with `deploy_lock` or `nexus_check`,
+//! and a download never waits for an install or an update check (nor they
+//! for it).
 //!
 //! Every lock is taken through [`lock`], [`read`] or [`write()`], which recover
 //! from poisoning: a panic in one command must not wedge every command after it.
@@ -287,8 +290,9 @@ pub struct AppState {
     pub(crate) standings: Mutex<Option<StandingsCache>>,
     /// v0.3: this session's downloads and their worker.
     pub(crate) downloads: Downloads,
-    /// v0.3: nxm links on the stone's own command line, for the wake thread.
-    launch_links: Mutex<Vec<String>>,
+    /// v0.3: nxm links that arrived before the stone could check them and
+    /// say what became of them (startup step 9).
+    link_door: Mutex<LinkDoor>,
     watcher: Mutex<Option<LibraryWatcher>>,
     game: Arc<GameWord>,
     game_watching: AtomicBool,
@@ -393,7 +397,7 @@ impl AppState {
             account: Mutex::new(AccountWord::at_launch(has_api_key)),
             standings: Mutex::new(None),
             downloads: Downloads::new(now),
-            launch_links: Mutex::new(Vec::new()),
+            link_door: Mutex::new(LinkDoor::default()),
             watcher: Mutex::new(None),
             game: Arc::new(GameWord::new(running, now)),
             game_watching: AtomicBool::new(false),
@@ -403,13 +407,15 @@ impl AppState {
         state
     }
 
-    /// Startup steps 4–9, on a background thread: the game watcher, the
-    /// mods-folder watcher, the scan (and the migration after it); then, side
-    /// by side, the stored key's validation (no quota spent) followed by the
-    /// nxm links of the stone's own command line, and the Nexus check when
-    /// the last one is stale. The check is anonymous: it never waits on the
-    /// key, its validation or its v1 quota.
+    /// Startup steps 4–9, in the background. The stored key's validation (no
+    /// quota spent) starts first, on a thread of its own: it needs no
+    /// library, so a long first scan never delays it (an nxm link's grant
+    /// expires). Then the game watcher, the mods-folder watcher, the scan
+    /// (and the migration after it), and the Nexus check when the last one
+    /// is stale. The check is anonymous: it never waits on the key, its
+    /// validation or its v1 quota.
     pub fn wake(self: &Arc<Self>) {
+        self.wake_account();
         let me = Arc::clone(self);
         let spawned = std::thread::Builder::new()
             .name("riftstone-wake".into())
@@ -422,7 +428,6 @@ impl AppState {
                 if !me.scan_blocking() {
                     me.wait_until_scanned();
                 }
-                me.wake_account();
                 crate::commands::nexus::auto_check(&me);
             });
         if let Err(err) = spawned {
@@ -430,33 +435,69 @@ impl AppState {
         }
     }
 
-    /// Startup steps 7 and 9, on a thread of their own so the anonymous
-    /// update check never waits on the key: validate the stored key, then
-    /// handle the launch's nxm links (checked against the account it found).
+    /// Startup steps 7 and 9, on a thread of their own so nothing else waits
+    /// on Nexus: validate the stored key, then open the link door's first
+    /// half (the held nxm links go once the window listens too).
     fn wake_account(self: &Arc<Self>) {
         let me = Arc::clone(self);
         let account = move || {
             crate::account::validate_at_wake(&me);
-            crate::nxm::handle_launch_links(&me);
+            crate::nxm::launch_validated(&me);
         };
         let spawned = std::thread::Builder::new()
             .name("riftstone-account".into())
             .spawn(account);
         if let Err(err) = spawned {
-            log::warn!("could not validate the key on a thread of its own ({err}); the launch links wait for the next launch");
+            log::warn!("could not validate the key on a thread of its own ({err}); the held nxm links are checked without it");
+            crate::nxm::launch_validated(self);
         }
     }
 
+    // -- the nxm link door (v0.3, startup step 9) ------------------------------
+
     /// The nxm links of the stone's own command line (a cold start for the
-    /// site's Mod Manager Download button): the wake thread handles them once
-    /// the spine is awake. Call before [`AppState::wake`].
+    /// site's Mod Manager Download button): held at the door like every
+    /// link that arrives early ([`AppState::hold_link`]). Call before
+    /// [`AppState::wake`].
     pub fn queue_launch_links(&self, links: Vec<String>) {
-        lock(&self.launch_links).extend(links);
+        lock(&self.link_door).held.extend(links);
     }
 
-    /// The launch's nxm links, once.
+    /// The links the door holds, taken (none are handled for them).
     pub fn take_launch_links(&self) -> Vec<String> {
-        std::mem::take(&mut *lock(&self.launch_links))
+        std::mem::take(&mut lock(&self.link_door).held)
+    }
+
+    /// Hold a link that arrived (a second launch's) while the door is shut:
+    /// `true` when it is held, `false` when the door is open and the caller
+    /// handles it now.
+    pub fn hold_link(&self, link: &str) -> bool {
+        let mut door = lock(&self.link_door);
+        if door.open() {
+            return false;
+        }
+        door.held.push(link.to_string());
+        true
+    }
+
+    /// The launch's key validation is done (or could not run): the held
+    /// links to handle now, when the window listens already.
+    pub fn launch_validated(&self) -> Vec<String> {
+        let mut door = lock(&self.link_door);
+        door.validated = true;
+        door.take_when_open()
+    }
+
+    /// The window read its first frame (`get_overview`, which
+    /// `src/composables/boot.ts` asks only once it listens to every event):
+    /// the held links to handle now, when the launch validation is done too.
+    pub fn window_listens(&self) -> Vec<String> {
+        let mut door = lock(&self.link_door);
+        if door.listening {
+            return Vec::new();
+        }
+        door.listening = true;
+        door.take_when_open()
     }
 
     // -- the journal ----------------------------------------------------------
@@ -581,8 +622,9 @@ impl AppState {
         self.mods_unmade.as_deref()
     }
 
-    /// (Re-)arm the mods-folder watcher. A folder that is not there is not
-    /// watched (`open_mods_folder` arms it once it makes the folder).
+    /// (Re-)arm the mods-folder watcher, replacing the one there was. A
+    /// folder that is not there is not watched (`open_mods_folder` arms it
+    /// again once it makes the folder).
     pub fn arm_watcher(self: &Arc<Self>) {
         if !self.config.watch_library {
             return;
@@ -603,6 +645,12 @@ impl AppState {
     /// Is the mods-folder watcher armed?
     pub fn watching_library(&self) -> bool {
         lock(&self.watcher).is_some()
+    }
+
+    /// Should the mods folder be watched, and nothing watches it (it was
+    /// missing at the wake, or the platform watcher would not start)?
+    pub fn library_unwatched(&self) -> bool {
+        self.config.watch_library && !self.watching_library()
     }
 
     // -- the library -----------------------------------------------------------
@@ -927,9 +975,14 @@ impl AppState {
 
     /// Is a change to the game folder being made right now (the deploy lock
     /// is held, or an install waits for it)?
+    ///
+    /// The lock is probed through a [`Turn`], never a bare guard: a scan's
+    /// migration that meets the probe's moment is put off, and the turn runs
+    /// it as it ends, exactly as a change's turn would. (A bare guard let it
+    /// wait for the next change or scan, and a v0.2 install could meet a new
+    /// install of its option under the v0.3 id in between.)
     pub fn deploy_busy(&self) -> bool {
-        self.installing.load(Ordering::SeqCst) > 0
-            || matches!(self.deploy_lock.try_lock(), Err(TryLockError::WouldBlock))
+        self.installs_under_way() || self.try_turn().is_none()
     }
 
     /// Is an install under way, waiting for the deploy lock or holding it?
@@ -1105,6 +1158,39 @@ impl AppState {
                 )
             })
             .collect()
+    }
+}
+
+/// The door nxm links pass (startup step 9). A link that arrives before the
+/// launch's key validation is done would be checked against no account (a
+/// link made for another one would pass), and one whose outcome is told
+/// before the window listens is never heard (no refusal said, no move to THE
+/// FAR WORLD). So every link waits at the door until both have happened:
+/// the cold start's own, and a second launch's that came early.
+///
+/// No `Debug`: a held link carries the site's grant, a secret.
+#[derive(Default)]
+struct LinkDoor {
+    /// Waiting, in the order they arrived.
+    held: Vec<String>,
+    /// The launch's key validation has run (whatever it found).
+    validated: bool,
+    /// The window has read its first frame: it hears `rift://nxm-received`.
+    listening: bool,
+}
+
+impl LinkDoor {
+    fn open(&self) -> bool {
+        self.validated && self.listening
+    }
+
+    /// Everything held, when the door is open; nothing otherwise.
+    fn take_when_open(&mut self) -> Vec<String> {
+        if self.open() {
+            std::mem::take(&mut self.held)
+        } else {
+            Vec::new()
+        }
     }
 }
 

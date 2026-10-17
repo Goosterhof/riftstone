@@ -2,19 +2,30 @@
 //! the switch that makes the stone answer the site's Mod Manager Download
 //! button, and what the stone does with a link that arrives.
 //!
-//! **The switch** is off by default and the player's own act. On: the
-//! command the user's registry key held (if any) is remembered in
+//! **The switch** is off by default and the player's own act. On: the user's
+//! registry key as the claim will change it ([`UserKey`]: whether it was
+//! there, its values, the command it held) is remembered in
 //! `nxm-handler.json` in the app data folder FIRST, then
 //! `HKCU\Software\Classes\nxm` is written for this `riftstone.exe`. Off: when
-//! the user's key still points at this exe, the remembered command goes back
-//! (or the key is removed when there was none, and the machine's handler, if
-//! any, answers again); a key another program took back is left alone. The
-//! installer never registers anything.
+//! the user's key still points at this exe, it is put back exactly as the
+//! claim found it ([`crate::protocol`] says how): removed whole only when the
+//! claim made it (the machine's handler, if any, answers again), the command
+//! it held back in place unless that starts a `riftstone.exe`, and nothing
+//! the claim never wrote touched. A key another program took back is left
+//! alone. A memory that cannot be read or parsed refuses the off and is left
+//! exactly where it is: the stone never guesses what it replaced. The
+//! installer registers nothing; its uninstaller runs `riftstone.exe
+//! --give-back-nxm` ([`give_back_on_uninstall`]): the switch's off, except
+//! that a key it cannot put back is removed whole, since the exe it starts
+//! is about to go ([`give_back_as_uninstalled`]).
 //!
 //! **An arriving link** is untrusted input. A second launch hands it over
 //! through `tauri-plugin-single-instance` (the app's first plugin), a cold
-//! start through the stone's own command line, handled once the spine is
-//! awake. It is accepted only when it reads as a Dragon's Dogma 2 file link
+//! start through the stone's own command line. Until the launch's key
+//! validation is done and the window has read its first frame, every link
+//! waits at a door ([`second_launch`], startup step 9): checked against the
+//! validated account, and told to a window that hears it. It is accepted
+//! only when it reads as a Dragon's Dogma 2 file link
 //! with the site's grant (`key` + `expires`), the grant has not expired, the
 //! link was made for the validated account (when both ids are known) and a
 //! key is stored that Nexus has not refused. It then resumes the waiting
@@ -41,37 +52,65 @@ use crate::account;
 use crate::downloads;
 use crate::dto::{NxmHandlerState, NxmHandlerView, NxmReceivedEvent};
 use crate::events;
-use crate::persist;
-use crate::protocol::{command_for, points_at, program_name, NOT_ON_THIS_SYSTEM};
+use crate::persist::{self, DataDirs, Loaded};
+use crate::protocol::{
+    self, command_for, points_at, program_name, ProtocolRegistry, UserKey, NOT_ON_THIS_SYSTEM,
+};
 use crate::state::AppState;
 
 /// The refusal of a link made for another account than the stored key's.
 pub const NOT_YOURS: &str = "That Mod Manager Download link was made for another Nexus Mods account than the one whose API key the Riftstone holds. Sign in on the site with that key's account, then press Mod Manager Download again.";
 
-/// `nxm-handler.json`: the command the user's registry key held before the
-/// stone answered nxm:// links.
+/// The uninstaller's argument (`src-tauri/windows/hooks.nsh`): give the
+/// nxm:// links back and exit, with no window ([`give_back_on_uninstall`]).
+pub const GIVE_BACK_ARG: &str = "--give-back-nxm";
+
+/// `nxm-handler.json`: what the claim replaced in the user's registry key,
+/// written before the registry changes.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HandlerMemory {
     #[serde(default)]
     schema: u32,
-    /// `None`: the user's key held no handler (the machine's, if any,
-    /// answered).
+    /// The command the user's key held, when it is one the links may go back
+    /// to; `None`: none (the machine's handler, if any, answered).
     #[serde(default)]
     previous: Option<String>,
+    /// Schema 2: the user's key as the claim found it, which off puts back.
+    /// A schema-1 memory has none and gives the links back as schema 1 did:
+    /// the previous command written back, else the key removed whole.
+    #[serde(default)]
+    before: Option<UserKey>,
 }
 
 impl HandlerMemory {
-    const SCHEMA: u32 = 1;
+    const SCHEMA: u32 = 2;
 }
 
-fn remembered(state: &AppState) -> Option<HandlerMemory> {
-    persist::read_json(&state.config.dirs.nxm_handler_file())
+/// What the stone remembers of the handler it replaced.
+enum Memory {
+    /// Nothing: the switch was never turned on here, or the file went.
+    Nothing,
+    Held(HandlerMemory),
+    /// `nxm-handler.json` is there and cannot be read or parsed: why. Off is
+    /// refused while it is, and the file stays exactly as it is.
+    Unknown(String),
 }
 
-fn forget(state: &AppState) {
-    let file = state.config.dirs.nxm_handler_file();
-    match fs::remove_file(&file) {
+/// The memory, read where it lies: a damaged one is never set aside.
+fn remembered(file: &Path) -> Memory {
+    match persist::inspect_json::<HandlerMemory>(file) {
+        Loaded::Absent => Memory::Nothing,
+        Loaded::Found(memory) => Memory::Held(memory),
+        Loaded::Damaged => Memory::Unknown("it is damaged".into()),
+        Loaded::Unreadable(why) => Memory::Unknown(why),
+    }
+}
+
+/// The memory is spent: the links went back, or the key is another
+/// program's now. Only ever called on a memory that was read.
+fn forget(file: &Path) {
+    match fs::remove_file(file) {
         Ok(()) => {}
         Err(err) if err.kind() == io::ErrorKind::NotFound => {}
         Err(err) => log::warn!(
@@ -79,6 +118,14 @@ fn forget(state: &AppState) {
             file.display()
         ),
     }
+}
+
+/// Off, refused: the memory of what the claim replaced cannot be read.
+fn unreadable_memory(file: &Path, why: &str) -> RiftError {
+    RiftError::refused(format!(
+        "The Riftstone cannot read which program it took Mod Manager Download links from ({}: {why}), so it changed nothing rather than guess. To give the links back, turn link handling on again in that program; or delete that file and turn this off again, and Windows' own handler, if there is one, answers them.",
+        file.display()
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -96,9 +143,56 @@ fn worth_giving_back(command: &str, exe: &Path) -> bool {
     !points_at(command, exe) && !same_name
 }
 
+/// The user's key as off puts it back: as the claim found it, except a
+/// command that starts a `riftstone.exe` (a blank one, a `DelegateExecute`
+/// handler's, goes back as it was).
+fn as_given_back(before: &UserKey, exe: &Path) -> UserKey {
+    UserKey {
+        command: before
+            .command
+            .clone()
+            .filter(|command| command.trim().is_empty() || worth_giving_back(command, exe)),
+        ..before.clone()
+    }
+}
+
+/// The program off would give the links back to, while the key is ours.
+fn gives_back_to(
+    registry: &dyn ProtocolRegistry,
+    exe: &Path,
+    memory: &Memory,
+) -> Result<Option<String>, RiftError> {
+    let back = match memory {
+        // Off is refused then: it gives nothing back.
+        Memory::Unknown(_) => return Ok(None),
+        Memory::Held(HandlerMemory {
+            before: Some(before),
+            ..
+        }) => {
+            let restored = as_given_back(before, exe);
+            if restored.exists && restored.command_depth >= 3 {
+                // The user's command key stays: it answers, values and all.
+                return Ok(restored.handler().map(str::to_string));
+            }
+            None
+        }
+        Memory::Held(memory) => memory
+            .previous
+            .clone()
+            .filter(|previous| worth_giving_back(previous, exe)),
+        Memory::Nothing => None,
+    };
+    match back {
+        Some(previous) => Ok(Some(previous)),
+        None => Ok(registry
+            .machine_command()?
+            .filter(|machine| worth_giving_back(machine, exe))),
+    }
+}
+
 /// Who answers nxm:// links on this PC now (`get_nxm_handler`).
 pub fn handler_view(state: &AppState) -> Result<NxmHandlerView, RiftError> {
-    let registry = &state.config.protocols;
+    let registry = &*state.config.protocols;
     if !registry.supported() {
         return Ok(NxmHandlerView {
             state: NxmHandlerState::Unsupported,
@@ -114,15 +208,8 @@ pub fn handler_view(state: &AppState) -> Result<NxmHandlerView, RiftError> {
             gives_back_to: None,
         },
         Some(command) if points_at(&command, exe) => {
-            let previous = remembered(state)
-                .and_then(|memory| memory.previous)
-                .filter(|previous| worth_giving_back(previous, exe));
-            let back = match previous {
-                Some(previous) => Some(previous),
-                None => registry
-                    .machine_command()?
-                    .filter(|machine| worth_giving_back(machine, exe)),
-            };
+            let memory = remembered(&state.config.dirs.nxm_handler_file());
+            let back = gives_back_to(registry, exe, &memory)?;
             NxmHandlerView {
                 state: NxmHandlerState::Ours,
                 other: None,
@@ -138,41 +225,140 @@ pub fn handler_view(state: &AppState) -> Result<NxmHandlerView, RiftError> {
 }
 
 /// Turn the stone's nxm handler on or off (`set_nxm_handler`). Refused off
-/// Windows.
+/// Windows, and off is refused while the memory cannot be read.
 pub fn set_handler(state: &AppState, on: bool) -> Result<NxmHandlerView, RiftError> {
-    let registry = &state.config.protocols;
+    let registry = &*state.config.protocols;
+    let exe = &state.config.exe;
+    let file = state.config.dirs.nxm_handler_file();
+    if on {
+        claim(registry, exe, &file)?;
+    } else {
+        give_back(registry, exe, &file)?;
+    }
+    handler_view(state)
+}
+
+/// On: unless the user's key already starts this exe, remember the key as
+/// the claim will change it, then claim it.
+fn claim(registry: &dyn ProtocolRegistry, exe: &Path, file: &Path) -> Result<(), RiftError> {
     if !registry.supported() {
         return Err(RiftError::refused(NOT_ON_THIS_SYSTEM));
     }
-    let exe = &state.config.exe;
     let user = registry.user_command()?;
-    let ours = user
+    if user
+        .as_deref()
+        .is_some_and(|command| points_at(command, exe))
+    {
+        return Ok(());
+    }
+    // Remembered first: the registry changes only once the stone can put
+    // it back. A memory left from an earlier claim is spent: that claim is
+    // no longer in the registry.
+    let before = registry.user_key()?;
+    let memory = HandlerMemory {
+        schema: HandlerMemory::SCHEMA,
+        previous: user.filter(|previous| worth_giving_back(previous, exe)),
+        before: Some(before),
+    };
+    persist::write_json(file, &memory, true)?;
+    registry.write_user(&command_for(exe))?;
+    log::info!("the Riftstone answers nxm:// links now; the key it changed is remembered");
+    Ok(())
+}
+
+/// Give the nxm:// links back: the switch's off, and the uninstaller's
+/// `--give-back-nxm`. When the user's key still starts `exe`, it goes back as
+/// the claim found it; a key another program took back is left alone. The
+/// memory is forgotten afterwards. Refused, with nothing changed and the
+/// memory left as it is, while the memory cannot be read and the key is
+/// ours. `true` when the stone held the links and gave them back.
+pub fn give_back(
+    registry: &dyn ProtocolRegistry,
+    exe: &Path,
+    memory_file: &Path,
+) -> Result<bool, RiftError> {
+    if !registry.supported() {
+        return Err(RiftError::refused(NOT_ON_THIS_SYSTEM));
+    }
+    let ours = registry
+        .user_command()?
         .as_deref()
         .is_some_and(|command| points_at(command, exe));
-    if on && !ours {
-        // Remembered first: the registry changes only once the stone can
-        // give the links back.
-        let memory = HandlerMemory {
-            schema: HandlerMemory::SCHEMA,
-            previous: user.filter(|previous| worth_giving_back(previous, exe)),
-        };
-        persist::write_json(&state.config.dirs.nxm_handler_file(), &memory, true)?;
-        registry.write_user(&command_for(exe))?;
-        log::info!("the Riftstone answers nxm:// links now; the handler it replaced is remembered");
-    } else if !on {
-        if ours {
-            let previous = remembered(state)
+    let memory = match remembered(memory_file) {
+        Memory::Unknown(why) if ours => return Err(unreadable_memory(memory_file, &why)),
+        // Not the stone's key any more, and a memory that was not read is
+        // never removed: nothing to do.
+        Memory::Unknown(_) => return Ok(false),
+        Memory::Nothing => None,
+        Memory::Held(memory) => Some(memory),
+    };
+    if ours {
+        match memory {
+            Some(HandlerMemory {
+                before: Some(before),
+                ..
+            }) => registry.restore_user(&as_given_back(&before, exe))?,
+            // Schema 1, or no memory at all: what that build did.
+            other => match other
                 .and_then(|memory| memory.previous)
-                .filter(|previous| worth_giving_back(previous, exe));
-            match previous {
+                .filter(|previous| worth_giving_back(previous, exe))
+            {
                 Some(previous) => registry.write_user(&previous)?,
                 None => registry.remove_user()?,
-            }
-            log::info!("the Riftstone gave nxm:// links back");
+            },
         }
-        forget(state);
+        log::info!("the Riftstone gave nxm:// links back");
     }
-    handler_view(state)
+    forget(memory_file);
+    Ok(ours)
+}
+
+/// `riftstone.exe --give-back-nxm`, run by the uninstaller before it removes
+/// a file (`src-tauri/windows/hooks.nsh`): [`give_back_as_uninstalled`] over
+/// the system's registry, this exe and the app data folder the installed
+/// stone uses (`RIFTSTONE_DATA_HOME` when set), with no window, no
+/// single-instance hand-over and no scan. The exit code: 0 when nothing is
+/// left pointing at this exe (or there is no registry here), 1 when
+/// something is; the uninstaller goes on either way.
+pub fn give_back_on_uninstall() -> i32 {
+    let registry = protocol::system_registry();
+    if !registry.supported() {
+        return 0;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return 1;
+    };
+    let Some(dirs) = DataDirs::from_env().or_else(DataDirs::installed) else {
+        return 1;
+    };
+    if give_back_as_uninstalled(&*registry, &exe, &dirs.nxm_handler_file()) {
+        0
+    } else {
+        1
+    }
+}
+
+/// The uninstaller's give-back: [`give_back`], and when that cannot finish
+/// (the memory cannot be read, Windows refused the restore) while the user's
+/// key still starts `exe`, the key is removed whole, as the stone did before
+/// it remembered more. The switch's off refuses in that case so the player
+/// can choose; the uninstaller can ask no one, and the exe is about to go, so
+/// a key that starts it would only hand the links to a dead path. The memory
+/// itself is left as it is. `true` when nothing is left pointing at `exe`.
+pub fn give_back_as_uninstalled(
+    registry: &dyn ProtocolRegistry,
+    exe: &Path,
+    memory_file: &Path,
+) -> bool {
+    if give_back(registry, exe, memory_file).is_ok() {
+        return true;
+    }
+    let ours = registry
+        .user_command()
+        .ok()
+        .flatten()
+        .is_some_and(|command| points_at(&command, exe));
+    !ours || registry.remove_user().is_ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -285,10 +471,30 @@ fn revalidate(state: &Arc<AppState>) {
     }
 }
 
-/// The links of the stone's own command line (a cold start for a Mod Manager
-/// Download link), handled once the spine is awake (startup step 9).
-pub fn handle_launch_links(state: &Arc<AppState>) {
-    for link in state.take_launch_links() {
+/// A second launch handed its arguments over (`riftstone.exe "nxm://…"`,
+/// through single-instance): each nxm link in them is handled now, or held
+/// at the door until the launch's key validation is done and the window
+/// listens ([`AppState::hold_link`], startup step 9).
+pub fn second_launch(state: &Arc<AppState>, args: &[String]) {
+    for link in nxm_arguments(args) {
+        if !state.hold_link(&link) {
+            handle_nxm(state, &link);
+        }
+    }
+}
+
+/// The launch's key validation is done (the account thread, startup step
+/// 7): the links held for it are handled, when the window listens.
+pub fn launch_validated(state: &Arc<AppState>) {
+    for link in state.launch_validated() {
+        handle_nxm(state, &link);
+    }
+}
+
+/// The window read its first frame (`get_overview`): the links held for it
+/// are handled, when the launch validation is done.
+pub fn window_listens(state: &Arc<AppState>) {
+    for link in state.window_listens() {
         handle_nxm(state, &link);
     }
 }

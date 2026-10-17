@@ -377,8 +377,10 @@ pub fn get_library_impl(state: &AppState) -> LibraryView {
 }
 
 /// Open the mods folder in Explorer, Rust-side (the opener scope refuses
-/// folders from the webview). A folder that is missing is made first; once
-/// it exists, it is watched.
+/// folders from the webview). A folder that is missing is made first, then
+/// watched and read: a folder made again is a new folder, which the watcher
+/// of the one that went never sees, so the watcher is armed afresh and a
+/// scan follows (also whenever nothing watches the folder).
 pub fn open_mods_folder_impl(state: &Arc<AppState>) -> Result<(), RiftError> {
     let folder = state.library_dir().to_path_buf();
     let made = !folder.is_dir();
@@ -388,9 +390,9 @@ pub fn open_mods_folder_impl(state: &Arc<AppState>) -> Result<(), RiftError> {
             err,
         )
     })?;
-    if made && !state.watching_library() {
+    if made || state.library_unwatched() {
         state.arm_watcher();
-        state.start_scan();
+        state.request_scan();
     }
     state.config.launcher.show_folder(&folder)
 }

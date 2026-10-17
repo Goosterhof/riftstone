@@ -51,6 +51,14 @@ keyring.workspace = true
 # instead).
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
+# A download lands without ever writing over a file. Where hard links fail
+# (FAT32, exFAT, some network shares) it moves with MoveFileExW and no
+# MOVEFILE_REPLACE_EXISTING (the version rift-deploy already uses).
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
+# The same move on the Linux bench: renameat2 with RENAME_NOREPLACE.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true

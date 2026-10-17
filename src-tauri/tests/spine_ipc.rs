@@ -23,11 +23,11 @@ use riftstone_lib::dto::{
     ParkedRestoreReport, SearchResult, Settings, UninstallPlanView, UninstallResultView, UpdateRow,
     UpdatesView, VeilMode,
 };
-use riftstone_lib::events::{GAME_CHANGED, LIBRARY_CHANGED};
+use riftstone_lib::events::{GAME_CHANGED, LIBRARY_CHANGED, NXM_RECEIVED};
 use riftstone_lib::persist::DataDirs;
 use riftstone_lib::play::Launched;
 use riftstone_lib::state::AppState;
-use support::{Answer, Bench, StandIn, ERMINE_MESH};
+use support::{wait_for, Answer, Bench, Seen, StandIn, ERMINE_MESH};
 
 /// The window's own origin: what Tauri serves the bundled frontend from, and
 /// the only origin the default capability lets call app commands. Windows
@@ -704,4 +704,145 @@ fn every_invoke_name_the_window_sends_is_registered() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// nxm links that arrive before the stone can say what became of them
+// ---------------------------------------------------------------------------
+
+/// The bench's personal API key (invented), and its account's id.
+const LINK_KEY: &str = "invented-personal-key-0042";
+const ACCOUNT: u64 = 4242;
+
+/// A Mod Manager Download link the site made for another account (5150).
+fn link_for_another_account() -> Vec<String> {
+    let expires = riftstone_lib::persist::now_ms() / 1000 + 3600;
+    vec![
+        r"D:\Vernworth\The Riftstone\riftstone.exe".to_string(),
+        format!(
+            "nxm://dragonsdogma2/mods/2207/files/9001?key=Invented-Grant_Key.0123&expires={expires}&user_id=5150"
+        ),
+    ]
+}
+
+/// Nexus as far as a validation goes: the key's account (free), nothing else.
+fn account_api(request: &Seen) -> Answer {
+    if request.path.contains("validate.json") {
+        return Answer::json(json!({
+            "user_id": ACCOUNT, "key": LINK_KEY, "name": "Arisen of Vernworth",
+            "email": "arisen@vernworth.invalid", "is_premium": false, "is_supporter": false
+        }));
+    }
+    Answer {
+        status: 404,
+        headers: Vec::new(),
+        body: json!({}),
+    }
+}
+
+fn key_standing(state: &AppState) -> NexusKeyStanding {
+    riftstone_lib::commands::nexus::summary(state, &state.shelf()).key
+}
+
+#[test]
+fn a_cold_start_links_outcome_waits_until_the_window_reads_its_first_frame() {
+    let api = StandIn::start(account_api);
+    let bench = Bench::new();
+    let (state, events) = bench.open_keyed(bench.config_at(&api), LINK_KEY);
+    // Windows started the stone for a link: no window listens yet.
+    state.queue_launch_links(riftstone_lib::nxm::nxm_arguments(
+        &link_for_another_account(),
+    ));
+    state.wake();
+    wait_for(Duration::from_secs(20), "the key is validated", || {
+        key_standing(&state) == NexusKeyStanding::Connected
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        events.named(NXM_RECEIVED).is_empty(),
+        "nothing is said before the window can hear it"
+    );
+
+    // The window wakes: it listens, then reads its first frame.
+    let (_app, window) = mock_window(&state);
+    let _: Overview = window.call("get_overview", json!({}));
+    wait_for(Duration::from_secs(10), "the window hears the link", || {
+        !events.named(NXM_RECEIVED).is_empty()
+    });
+    let heard = events.named(NXM_RECEIVED);
+    assert_eq!(heard[0]["accepted"], json!(false), "{}", heard[0]);
+    assert_eq!(
+        heard[0]["refusal"]["detail"]["reason"], "linkNotYours",
+        "checked against the validated account: {}",
+        heard[0]
+    );
+    let _: Overview = window.call("get_overview", json!({}));
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(events.named(NXM_RECEIVED).len(), 1, "said once");
+}
+
+/// Opens the stand-in's held validation when the test ends, however it
+/// ends: the stand-in's thread waits on it.
+struct Release(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+
+impl Release {
+    fn open(&self) {
+        *self.0 .0.lock().unwrap() = true;
+        self.0 .1.notify_all();
+    }
+}
+
+impl Drop for Release {
+    fn drop(&mut self) {
+        self.open();
+    }
+}
+
+#[test]
+fn a_second_launchs_link_waits_for_the_launch_validation() {
+    let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let api = StandIn::start({
+        let gate = Arc::clone(&gate);
+        move |request| {
+            if request.path.contains("validate.json") {
+                let (open, bell) = &*gate;
+                let mut opened = open.lock().unwrap();
+                while !*opened {
+                    opened = bell.wait(opened).unwrap();
+                }
+            }
+            account_api(request)
+        }
+    });
+    let release = Release(Arc::clone(&gate));
+    let bench = Bench::new();
+    let (state, events) = bench.open_keyed(bench.config_at(&api), LINK_KEY);
+    state.wake();
+    let (_app, window) = mock_window(&state);
+    let _: Overview = window.call("get_overview", json!({}));
+    wait_for(
+        Duration::from_secs(20),
+        "the launch validation is asked",
+        || api.seen().iter().any(|r| r.path.contains("validate.json")),
+    );
+
+    // The player presses Mod Manager Download while Nexus has not answered.
+    riftstone_lib::nxm::second_launch(&state, &link_for_another_account());
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        events.named(NXM_RECEIVED).is_empty(),
+        "held until the account is known"
+    );
+
+    release.open();
+    wait_for(Duration::from_secs(10), "the link is handled", || {
+        !events.named(NXM_RECEIVED).is_empty()
+    });
+    let heard = &events.named(NXM_RECEIVED)[0];
+    assert_eq!(heard["accepted"], json!(false), "{heard}");
+    assert_eq!(
+        heard["refusal"]["detail"]["reason"], "linkNotYours",
+        "{heard}"
+    );
+    assert!(riftstone_lib::commands::downloads::get_downloads_impl(&state).is_empty());
 }

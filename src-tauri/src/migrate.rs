@@ -9,13 +9,15 @@
 //!   folder in the mods folder: exact, nothing guessed.
 //! - **The relink pass.** An install whose package is not in the mods folder
 //!   (a folder that moved, an adopted install's stand-in id) is matched to a
-//!   library option by rift-deploy's [`relink::propose`]. [`plan_rekey`]
+//!   library option by rift-deploy's [`relink::propose_on_shelf`], which
+//!   reads the whole shelf: a package that is there but yielded no option
+//!   this scan (unreadable, half-copied) keeps its installs. [`plan_rekey`]
 //!   runs it over the journal as the exact re-key leaves it, and folds both
 //!   into one map, so the journal is saved once.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use rift_core::{ModOption, OptionId, Package, PackageFormat, PackageId};
+use rift_core::{OptionId, Package, PackageFormat, PackageId};
 use rift_deploy::{relink, Below, BelowOwner, Journal};
 
 /// v0.2 id → v0.3 id of every folder package in the mods folder whose two
@@ -78,7 +80,8 @@ pub fn journal_ids(journal: &Journal) -> BTreeSet<OptionId> {
 }
 
 /// The re-key the journal needs against the library `packages` (the mods
-/// folder as the last scan found it): (1) every id whose package half is a
+/// folder as the last scan found it, every package of it, those that yielded
+/// no option included): (1) every id whose package half is a
 /// folder's v0.2 id takes the folder's v0.3 id, root half kept, unless the
 /// journal already holds the new id; (2) the relink pass over the journal as
 /// (1) leaves it. A map the engine would refuse whole (an id the journal
@@ -107,11 +110,7 @@ pub fn plan_rekey(
         exact.clear();
         moved = journal.clone();
     }
-    let options: Vec<&ModOption> = packages
-        .iter()
-        .flat_map(|package| &package.options)
-        .collect();
-    let relinked = relink::propose(&moved.installs, &options);
+    let relinked = relink::propose_on_shelf(&moved.installs, packages);
 
     // Fold the relink's matches back onto the ids the journal holds now.
     let back: HashMap<&OptionId, &OptionId> = exact.iter().map(|(from, to)| (to, from)).collect();
@@ -160,7 +159,7 @@ pub fn plan_rekey(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rift_core::{DeployTarget, PayloadFile, PayloadKinds};
+    use rift_core::{DeployTarget, ModOption, PayloadFile, PayloadKinds};
     use rift_deploy::{DeployKind, DeployedFile, InstalledOption, Origin};
     use std::path::{Path, PathBuf};
 

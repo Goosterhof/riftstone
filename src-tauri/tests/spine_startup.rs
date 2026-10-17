@@ -498,6 +498,70 @@ fn open_mods_folder_makes_a_missing_folder_and_shows_it() {
 }
 
 #[test]
+fn a_mods_folder_deleted_after_launch_is_made_again_watched_and_read() {
+    let bench = Bench::new();
+    let mut config = bench.config(DataDirs::under(&bench.data_home()));
+    config.watch_library = true;
+    let events = Arc::new(RecordedEvents::default());
+    let state = AppState::open(config, events.clone(), Box::new(MemoryKeyStore::default()));
+    state.wake();
+    wait_for(&events, LIBRARY_CHANGED, 1);
+    assert!(state.watching_library());
+
+    // The player deletes the whole mods folder while the stone runs; the
+    // watcher's rescan finds nothing there.
+    std::fs::remove_dir_all(&bench.mods).unwrap();
+    wait_for(&events, LIBRARY_CHANGED, 2);
+    state.wait_until_scanned();
+    let home = overview::get_overview_impl(&state).unwrap();
+    assert_eq!(home.library.packages, 0);
+    assert!(!home.mods.exists, "not there at the moment of the read");
+    let check = home.checks.iter().find(|c| c.id == "mods").unwrap();
+    assert_eq!(
+        (check.level, check.action.clone()),
+        (CheckLevel::Warn, Some(CheckAction::OpenModsFolder)),
+        "{check:?}"
+    );
+    assert!(
+        check.detail.contains("Open mods folder") && !check.detail.contains("could not be made"),
+        "the way back, not a folder that cannot be made: {}",
+        check.detail
+    );
+    assert!(check.detail.contains(&*bench.mods.to_string_lossy()));
+
+    // Open mods folder makes it again, watches the new folder and reads it.
+    library::open_mods_folder_impl(&state).unwrap();
+    assert!(bench.mods.is_dir());
+    state.wait_until_scanned();
+    write_zip(
+        &bench.mods.join("Lantern Glow Recolor.zip"),
+        &[(
+            "Lantern Glow/natives/stm/effect/lantern/lantern_glow.tex.251211553",
+            b"glow",
+        )],
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while overview::get_overview_impl(&state)
+        .unwrap()
+        .library
+        .packages
+        != 1
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the watcher on the folder made again sees a new mod"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let home = overview::get_overview_impl(&state).unwrap();
+    assert!(home.mods.exists);
+    assert!(
+        home.checks.iter().all(|c| c.id != "mods"),
+        "it holds a package"
+    );
+}
+
+#[test]
 fn v02s_roots_file_is_never_read_written_or_deleted() {
     let bench = Bench::new();
     let dirs = DataDirs::under(&bench.data_home());

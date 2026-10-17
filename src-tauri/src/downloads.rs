@@ -19,20 +19,26 @@
 //! lets v1 serve a free account the download link.
 //!
 //! **The run.** `linking`: the file's facts (anonymous v2, when the start did
-//! not ask already), the archive's own name (v1 `files.json`) and the
-//! download link (v1 `download_link.json`, Nexus's preferred mirror first).
-//! `downloading`: rift-nexus's downloader, which never holds the API key,
-//! streams into `.riftstone-<id>.part` with the MD5 computed on the way; the
-//! window hears the bytes at most every 200 ms, plus the last. `verifying`:
-//! the byte count against Nexus's size and the server's (the downloader),
+//! not ask already), the archive's own name and size (one v1 `files.json`)
+//! and the download link (v1 `download_link.json`, Nexus's preferred mirror
+//! first). `downloading`: rift-nexus's downloader, which never holds the API
+//! key, streams into `.riftstone-<id>.part` with the MD5 computed on the
+//! way; the window hears the bytes at most every 200 ms, plus the last.
+//! `verifying`: the byte count against Nexus's size (v2's, else v1's) and the
+//! server's length (the downloader; a body nobody sized stops at 32 GiB),
 //! then the MD5 through the anonymous `fileHashes` lookup, which must name
-//! this mod and file (a hash Nexus does not know yet passes on the size
-//! alone). `landed`: the archive takes its Nexus name, cleaned for Windows,
-//! never over an existing file (the same bytes there already is `alreadyHad`;
-//! another file of that name makes it ` (2)`, ` (3)` …), `nexus.json` links
-//! it to the exact file (source `download`), and the library is scanned.
-//! Failure or cancel: the partial file is deleted and nothing else in the
-//! mods folder is touched. The stone never installs a download by itself.
+//! this mod and file (`verify`): a hash Nexus does not know yet, or a
+//! lookup that cannot be asked (Nexus out of reach, its 429 cooldown), passes
+//! on a stated size alone; with no size stated anywhere, only a hash Nexus
+//! knows for this file passes. `landed`: the file takes its Nexus name,
+//! cleaned for Windows, never over an existing file (the same bytes there
+//! already is `alreadyHad`; another file of that name makes it ` (2)`, ` (3)`
+//! …); an archive is linked in `nexus.json` to the exact file (source
+//! `download`) and the library is scanned, while a file that is no archive
+//! (a raw `.pak`, an `.exe`) lands with no package id and no link, since the
+//! scan never lists it. Failure or cancel: the partial file is deleted and
+//! nothing else in the mods folder is touched. The stone never installs a
+//! download by itself.
 //!
 //! **Secrets.** The API key stays in the client. An nxm grant's key lives in
 //! its job until the worker takes it, never in the view. The download link
@@ -49,7 +55,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use rift_core::{lower_key, LinkSource, NexusLink, PackageId, RiftError};
-use rift_nexus::{NexusClient, NexusError, NxmGrant, NxmLink};
+use rift_nexus::{Downloaded, NexusClient, NexusError, NxmGrant, NxmLink};
 
 use crate::account;
 use crate::dto::{DownloadPhase, DownloadProgressEvent, DownloadView};
@@ -60,9 +66,9 @@ use crate::state::{lock, read, AppState};
 /// The quickest the window hears a download's bytes (plus the last).
 pub const PROGRESS_EVERY: Duration = Duration::from_millis(200);
 
-/// The longest name the stone gives an archive, in characters: Windows
-/// allows 255 per name, and the rest leaves room for ` (2)` and a deep
-/// install folder.
+/// The longest name the stone gives an archive, in UTF-16 units (what
+/// Windows counts): Windows allows 255 per name, and the rest leaves room
+/// for ` (2)` and a deep install folder.
 const LONGEST_NAME: usize = 180;
 
 /// The most ` (n)` names tried before the landing gives up.
@@ -626,7 +632,9 @@ fn fetch(state: &Arc<AppState>, job: &Running) -> Result<(), Stop> {
         }
     };
     still_wanted()?;
-    let archive = archive_name(&client, job.mod_id, job.file_id);
+    let listed = v1_listing(&client, job.mod_id, job.file_id);
+    // Nexus's size: v2's, else v1's (`size_in_bytes`, never the KB fields).
+    let expected = facts.size.or(listed.size);
     still_wanted()?;
     let mirror = client
         .download_links(job.mod_id, job.file_id, job.grant.as_ref())?
@@ -643,18 +651,18 @@ fn fetch(state: &Arc<AppState>, job: &Running) -> Result<(), Stop> {
     still_wanted()?;
     if !state.downloads.change(&job.id, |row| {
         row.view.phase = DownloadPhase::Downloading;
-        row.view.bytes_total = facts.size.or(row.view.bytes_total);
+        row.view.bytes_total = expected.or(row.view.bytes_total);
     }) {
         return Err(Stop::Cancelled);
     }
     state.events.changed(events::DOWNLOADS_CHANGED);
 
     let part = state.library_dir().join(part_name(&job.id));
-    let mut meter = Meter::new(state, &job.id, facts.size);
+    let mut meter = Meter::new(state, &job.id, expected);
     let downloaded = client.downloader().download_to(
         &mirror.uri,
         &part,
-        facts.size,
+        expected,
         &mut |done, total| meter.tick(done, total),
         &job.cancel,
     )?;
@@ -670,13 +678,13 @@ fn fetch(state: &Arc<AppState>, job: &Running) -> Result<(), Stop> {
         return Err(Stop::Cancelled);
     }
     state.events.changed(events::DOWNLOADS_CHANGED);
-    client.confirm_download(&downloaded.md5, job.mod_id, job.file_id)?;
+    verify(&client, &downloaded, job)?;
     if !state.downloads.commit(&job.id) {
         return Err(Stop::Cancelled);
     }
 
     let wanted = landing_name(
-        archive.as_deref(),
+        listed.name.as_deref(),
         link_name.as_deref(),
         job.mod_id,
         job.file_id,
@@ -691,14 +699,20 @@ fn fetch(state: &Arc<AppState>, job: &Running) -> Result<(), Stop> {
     )
     .map_err(Stop::Failed)?;
     drop(part);
-    let package_id = PackageId::for_archive(landing.name(), downloaded.bytes);
-    pre_link(state, &package_id, job, &facts);
+    // Only an archive becomes a package: a raw `.pak` or an `.exe` lands
+    // under its own name, but the scan never lists it, so no package id
+    // and no link are made for it.
+    let package_id = archive_extension(landing.name())
+        .map(|_| PackageId::for_archive(landing.name(), downloaded.bytes));
+    if let Some(package_id) = &package_id {
+        pre_link(state, package_id, job, &facts);
+    }
     let landed_ms = persist::now_ms();
     let already_had = matches!(landing, Landing::AlreadyHad(_));
     state.downloads.change(&job.id, |row| {
         row.view.phase = DownloadPhase::Landed;
         row.view.landed_as = Some(landing.name().to_string());
-        row.view.package_id = Some(package_id.0.clone());
+        row.view.package_id = package_id.as_ref().map(|id| id.0.clone());
         row.view.already_had = already_had;
         row.view.bytes_done = downloaded.bytes;
         row.view.bytes_total = Some(downloaded.bytes);
@@ -708,17 +722,46 @@ fn fetch(state: &Arc<AppState>, job: &Running) -> Result<(), Stop> {
         "the download of mod {} file {} landed in the mods folder{}",
         job.mod_id,
         job.file_id,
-        if already_had {
-            " (the same file was there already)"
-        } else {
-            ""
+        match (already_had, package_id.is_some()) {
+            (true, _) => " (the same file was there already)",
+            (false, false) => " (no archive, so no package: the scan does not list it)",
+            (false, true) => "",
         }
     );
     state.events.changed(events::DOWNLOADS_CHANGED);
-    if !already_had {
+    if !already_had && package_id.is_some() {
         state.request_scan();
     }
     Ok(())
+}
+
+/// The verifying step's MD5 half (the byte count was checked as the bytes
+/// arrived): rift-nexus's `verify_download`. Where a stated size vouched for
+/// the bytes, only a lookup that names another file (`notTheFile`) lets them
+/// go: a lookup that could not be asked (Nexus out of reach, its 429
+/// cooldown, an answer it could not use) lands the archive on its size
+/// alone, as a hash Nexus does not know yet does. With no size stated at
+/// all, only a hash Nexus knows for this file vouches: a lookup that could
+/// not answer, or that does not know the hash, fails the download.
+fn verify(client: &NexusClient, downloaded: &Downloaded, job: &Running) -> Result<(), Stop> {
+    match client.verify_download(downloaded, job.mod_id, job.file_id) {
+        Ok(_) => Ok(()),
+        Err(NexusError::NotTheFile) => Err(NexusError::NotTheFile.into()),
+        Err(
+            err @ (NexusError::Offline(_)
+            | NexusError::RateLimited { .. }
+            | NexusError::Http(_)
+            | NexusError::BadResponse(_)),
+        ) if downloaded.size_vouched => {
+            log::warn!(
+                "the download of mod {} file {} lands on its size alone: Nexus Mods could not be asked about its MD5 ({err})",
+                job.mod_id,
+                job.file_id
+            );
+            Ok(())
+        }
+        Err(err) => Err(err.into()),
+    }
 }
 
 /// What Nexus says about one file (anonymous v2), and the mod's name (best
@@ -757,14 +800,26 @@ fn file_facts(
     ))
 }
 
-/// The archive's own name as uploaded (v1 `files.json`); `None` when Nexus
-/// does not say or could not be asked (the download link names it then).
-fn archive_name(client: &NexusClient, mod_id: u64, file_id: u64) -> Option<String> {
+/// What v1 `files.json` says about one file: the archive's own name as
+/// uploaded, and its size in bytes. Each is `None` when Nexus does not say
+/// or could not be asked (the download link names the archive then, and
+/// v2's size or the server's has to do).
+#[derive(Debug, Default)]
+struct V1Listing {
+    name: Option<String>,
+    size: Option<u64>,
+}
+
+/// One v1 `files.json` read for both: the name and the size.
+fn v1_listing(client: &NexusClient, mod_id: u64, file_id: u64) -> V1Listing {
     match client.files_v1(mod_id) {
-        Ok(list) => list.file_name(file_id).map(str::to_string),
+        Ok(list) => V1Listing {
+            name: list.file_name(file_id).map(str::to_string),
+            size: list.size_of(file_id),
+        },
         Err(err) => {
-            log::warn!("the archive name of mod {mod_id} file {file_id} could not be read ({err}); the download link names it instead");
-            None
+            log::warn!("v1 could not say the archive name and size of mod {mod_id} file {file_id} ({err}); the download link names it instead");
+            V1Listing::default()
         }
     }
 }
@@ -903,23 +958,28 @@ pub fn landing_name(
         return name;
     }
     match sniff_archive(part) {
-        Some(extension) => clamp(&format!("{name}.{extension}")),
+        Some(extension) => fit(&format!("{name}.{extension}")),
         None => name,
     }
 }
 
 /// A file name Windows accepts and the scan lists: only the last path
-/// component of `raw`; control characters and `<>:"|?*` become `_`; no
-/// leading or trailing dots or spaces (a dot-name is hidden from the scan,
-/// a trailing dot or space is dropped by Windows); a reserved device name
-/// (`CON`, `NUL`, `COM1` …, with an extension or not) takes a leading `_`;
-/// at most 180 characters, the extension kept. `None` when nothing is left.
+/// component of `raw`; control characters, `<>:"|?*` and the invisible
+/// Unicode format characters (`hidden_in_a_name`) become `_`; no leading or
+/// trailing dots or spaces (a dot-name is hidden from the scan, a trailing
+/// dot or space is dropped by Windows); at most 180 UTF-16 units, the
+/// extension kept; and a reserved device name (`CON`, `NUL`, `COM1`,
+/// `CONIN$` …, with an extension or not) takes a leading `_`, counted in
+/// those 180. `None` when nothing is left.
 pub fn clean_file_name(raw: &str) -> Option<String> {
     let last = raw.rsplit(['/', '\\']).next().unwrap_or(raw);
     let replaced: String = last
         .chars()
         .map(|c| {
-            if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') {
+            if c.is_control()
+                || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*')
+                || hidden_in_a_name(c)
+            {
                 '_'
             } else {
                 c
@@ -930,26 +990,79 @@ pub fn clean_file_name(raw: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    let mut name = clamp(trimmed);
-    if is_reserved(&name) {
-        name.insert(0, '_');
-    }
-    Some(name)
+    Some(fit(trimmed))
 }
 
-/// At most [`LONGEST_NAME`] characters, the extension kept.
+/// The invisible characters of Unicode's format category (Cf), and the line
+/// and paragraph separators: they show nothing, and some reorder what a name
+/// shows (a right-to-left override makes `piz.exe` read `exe.zip`), so a
+/// name from Nexus could pass for something it is not in Explorer and in the
+/// window.
+fn hidden_in_a_name(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
+}
+
+/// What Windows counts in a name: UTF-16 units.
+fn units(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+/// [`clamp`], then a leading `_` for a reserved device name, the `_` counted:
+/// a cut can leave a device name behind (`CON` and spaces, cut to `CON`).
+fn fit(name: &str) -> String {
+    let name = clamp(name);
+    if is_reserved(&name) {
+        clamp(&format!("_{name}"))
+    } else {
+        name
+    }
+}
+
+/// At most [`LONGEST_NAME`] UTF-16 units, the extension kept, never a
+/// character cut in half.
 fn clamp(name: &str) -> String {
-    if name.chars().count() <= LONGEST_NAME {
+    if units(name) <= LONGEST_NAME {
         return name.to_string();
     }
     let extension = name
         .rfind('.')
         .map(|at| &name[at..])
-        .filter(|extension| extension.chars().count() <= 10)
+        .filter(|extension| units(extension) <= 10)
         .unwrap_or("");
     let stem = &name[..name.len() - extension.len()];
-    let room = LONGEST_NAME - extension.chars().count();
-    let cut: String = stem.chars().take(room).collect();
+    let mut room = LONGEST_NAME - units(extension);
+    let mut cut = String::new();
+    for c in stem.chars() {
+        let width = c.len_utf16();
+        if width > room {
+            break;
+        }
+        room -= width;
+        cut.push(c);
+    }
     format!(
         "{}{extension}",
         cut.trim_end_matches(|c: char| c == '.' || c.is_whitespace())
@@ -957,8 +1070,8 @@ fn clamp(name: &str) -> String {
 }
 
 /// Is this a name Windows keeps for a device (`CON`, `PRN`, `AUX`, `NUL`,
-/// `COM0`–`COM9`, `LPT0`–`LPT9`, and the superscript ones), whatever its
-/// extension?
+/// `CONIN$`, `CONOUT$`, `COM0`–`COM9`, `LPT0`–`LPT9`, and the superscript
+/// ones), whatever its extension?
 fn is_reserved(name: &str) -> bool {
     let stem = name
         .split('.')
@@ -966,7 +1079,7 @@ fn is_reserved(name: &str) -> bool {
         .unwrap_or(name)
         .trim_end()
         .to_uppercase();
-    if ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str()) {
+    if ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].contains(&stem.as_str()) {
         return true;
     }
     let mut chars = stem.chars();
@@ -1098,11 +1211,22 @@ fn same_bytes(path: &Path, bytes: u64, md5: &str) -> bool {
         && rift_nexus::md5_file(path, &mut |_| {}).is_ok_and(|hash| hash == md5)
 }
 
-/// Rename `from` to `to` only when `to` does not exist, atomically where the
-/// file system has hard links (a link fails on an existing name, then the
-/// partial name goes); elsewhere (FAT32, exFAT) it looks first, then moves.
+/// Rename `from` to `to` only when `to` does not exist, never over a file:
+/// a hard link where the file system has them (a link fails on an existing
+/// name; then the partial name goes), elsewhere (FAT32, exFAT, some network
+/// shares) a move that itself refuses an existing name ([`move_new`]). An
+/// existing name is `AlreadyExists` either way, whenever it appeared.
 fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
-    match fs::hard_link(from, to) {
+    rename_new_by(from, to, |from, to| fs::hard_link(from, to))
+}
+
+/// [`rename_new`] with the hard link as a seam (the tests make it fail).
+fn rename_new_by(
+    from: &Path,
+    to: &Path,
+    link: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> io::Result<()> {
+    match link(from, to) {
         Ok(()) => {
             if let Err(err) = fs::remove_file(from) {
                 log::warn!(
@@ -1112,13 +1236,110 @@ fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
             Ok(())
         }
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Err(err),
-        Err(_) => {
-            if fs::symlink_metadata(to).is_ok() {
-                return Err(io::Error::from(io::ErrorKind::AlreadyExists));
-            }
-            fs::rename(from, to)
-        }
+        Err(_) => move_new(from, to),
     }
+}
+
+/// Move `from` to `to` in one step that fails with `AlreadyExists` when `to`
+/// exists (std's `rename` would replace it): `MoveFileExW` without
+/// `MOVEFILE_REPLACE_EXISTING` on Windows (whose `ERROR_ALREADY_EXISTS` and
+/// `ERROR_FILE_EXISTS` std reads as `AlreadyExists`).
+#[cfg(windows)]
+fn move_new(from: &Path, to: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+
+    // Through the folders' own verbatim (`\\?\`) spelling, so a name deep in
+    // a long install path still moves.
+    let wide = |path: &Path| -> io::Result<Vec<u16>> {
+        let folder = path
+            .parent()
+            .filter(|folder| !folder.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        Ok(fs::canonicalize(folder)?
+            .join(name)
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect())
+    };
+    let (from, to) = (wide(from)?, wide(to)?);
+    // SAFETY: both are NUL-terminated UTF-16 strings that live across the call.
+    let moved = unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) };
+    if moved == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// [`move_new`] on Linux (the bench): `renameat2` with `RENAME_NOREPLACE`. A
+/// file system that cannot refuse in the move itself copies into a new file
+/// instead ([`copy_new`]).
+#[cfg(target_os = "linux")]
+fn move_new(from: &Path, to: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path = |path: &Path| {
+        CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+    };
+    let (from_c, to_c) = (c_path(from)?, c_path(to)?);
+    // SAFETY: both are NUL-terminated paths that live across the call.
+    let moved = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            from_c.as_ptr(),
+            libc::AT_FDCWD,
+            to_c.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if moved == 0 {
+        return Ok(());
+    }
+    let err = io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP) => copy_new(from, to),
+        _ => Err(err),
+    }
+}
+
+/// [`move_new`] elsewhere: [`copy_new`].
+#[cfg(not(any(windows, target_os = "linux")))]
+fn move_new(from: &Path, to: &Path) -> io::Result<()> {
+    copy_new(from, to)
+}
+
+/// The last way to put a file in place without writing over one: copy it
+/// into a file made new (`create_new` fails on an existing name), flushed to
+/// disk, then remove the partial file. A copy that fails removes its own new
+/// file and leaves the partial file for the caller.
+#[cfg_attr(windows, allow(dead_code))]
+fn copy_new(from: &Path, to: &Path) -> io::Result<()> {
+    let mut target = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(to)?;
+    let copied = fs::File::open(from)
+        .and_then(|mut source| io::copy(&mut source, &mut target))
+        .and_then(|_| target.sync_all());
+    drop(target);
+    if let Err(err) = copied {
+        // The file this copy made, never one that was there.
+        let _ = fs::remove_file(to);
+        return Err(err);
+    }
+    if let Err(err) = fs::remove_file(from) {
+        log::warn!(
+            "the partial name of a landed download could not be removed ({err}); the next launch removes it"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1173,6 +1394,68 @@ mod tests {
         assert!(
             !cut.contains(" .zip"),
             "no space before the extension: {cut}"
+        );
+    }
+
+    #[test]
+    fn invisible_reordering_characters_never_reach_a_name() {
+        let clean = |raw: &str| clean_file_name(raw);
+        // A right-to-left override makes "Lantern<RLO>piz.exe" read as
+        // "Lanternexe.zip" in Explorer and in the window.
+        assert_eq!(
+            clean("Lantern\u{202e}piz.exe").as_deref(),
+            Some("Lantern_piz.exe")
+        );
+        for hidden in [
+            '\u{200b}', '\u{200e}', '\u{202a}', '\u{2066}', '\u{2069}', '\u{2060}', '\u{feff}',
+            '\u{00ad}', '\u{2028}',
+        ] {
+            let cleaned = clean(&format!("Lantern{hidden}Glow.zip")).unwrap();
+            assert_eq!(cleaned, "Lantern_Glow.zip", "U+{:04X}", u32::from(hidden));
+        }
+    }
+
+    #[test]
+    fn every_device_name_is_kept_from_a_name() {
+        let clean = |raw: &str| clean_file_name(raw);
+        assert_eq!(clean("CONIN$").as_deref(), Some("_CONIN$"));
+        assert_eq!(clean("conout$.zip").as_deref(), Some("_conout$.zip"));
+        assert_eq!(clean("CONINS.zip").as_deref(), Some("CONINS.zip"));
+        // A name the cut leaves as a device name takes its "_" after the cut.
+        let cut = clean(&format!("CON{}z.zip", " ".repeat(200))).unwrap();
+        assert_eq!(cut, "_CON.zip");
+    }
+
+    #[test]
+    fn names_are_measured_the_way_windows_measures_them() {
+        let clean = |raw: &str| clean_file_name(raw);
+        // The "_" of a device name counts too.
+        let device = clean(&format!("CON.{}", "z".repeat(400))).unwrap();
+        assert!(device.starts_with("_CON."), "{device}");
+        assert!(units(&device) <= LONGEST_NAME, "{}", units(&device));
+        // Characters outside the basic plane are two UTF-16 units each.
+        let lanterns = clean(&format!("{}.zip", "\u{1F3EE}".repeat(300))).unwrap();
+        assert!(lanterns.ends_with(".zip"), "{lanterns}");
+        assert!(
+            units(&lanterns) <= LONGEST_NAME,
+            "{} units",
+            units(&lanterns)
+        );
+        assert!(
+            lanterns
+                .trim_end_matches(".zip")
+                .chars()
+                .all(|c| c == '\u{1F3EE}'),
+            "no lantern cut in half"
+        );
+        // An extension the bytes add is measured with the name.
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join(part_name("n-1"));
+        fs::write(&part, b"PK\x03\x04 a zip").unwrap();
+        let named = landing_name(Some(&"\u{1F3EE}".repeat(300)), None, 2207, 9001, &part);
+        assert!(
+            named.ends_with(".zip") && units(&named) <= LONGEST_NAME,
+            "{named}"
         );
     }
 
@@ -1295,6 +1578,61 @@ mod tests {
             land(mods, &sixth, "Lantern", size, &md5).unwrap(),
             Landing::Written("Lantern (2)".into())
         );
+    }
+
+    #[test]
+    fn a_move_where_hard_links_fail_never_writes_over_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join(part_name("m-1"));
+        let to = dir.path().join("Lantern Glow Recolor.zip");
+        fs::write(&from, b"the new archive").unwrap();
+        // A file that appeared after any look: the move itself must refuse it.
+        fs::write(&to, b"the player's own").unwrap();
+        let err = move_new(&from, &to).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists, "{err}");
+        assert_eq!(fs::read(&to).unwrap(), b"the player's own");
+        assert_eq!(fs::read(&from).unwrap(), b"the new archive");
+        // A free name: moved whole, the partial name gone.
+        let free = dir.path().join("Lantern Glow Recolor (2).zip");
+        move_new(&from, &free).unwrap();
+        assert_eq!(fs::read(&free).unwrap(), b"the new archive");
+        assert!(!from.exists());
+    }
+
+    #[test]
+    fn the_last_resort_copy_never_writes_over_a_file_either() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join(part_name("m-3"));
+        let to = dir.path().join("Lantern Glow Recolor.zip");
+        fs::write(&from, b"the new archive").unwrap();
+        fs::write(&to, b"the player's own").unwrap();
+        let err = copy_new(&from, &to).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&to).unwrap(), b"the player's own");
+        assert_eq!(fs::read(&from).unwrap(), b"the new archive");
+        let free = dir.path().join("Lantern Glow Recolor (2).zip");
+        copy_new(&from, &free).unwrap();
+        assert_eq!(fs::read(&free).unwrap(), b"the new archive");
+        assert!(!from.exists());
+    }
+
+    #[test]
+    fn where_hard_links_fail_the_landing_moves_and_still_never_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let no_links = |_: &Path, _: &Path| -> io::Result<()> {
+            Err(io::Error::from(io::ErrorKind::Unsupported))
+        };
+        let from = dir.path().join(part_name("m-2"));
+        let to = dir.path().join("Vernworth Cloaks Collection.zip");
+        fs::write(&from, b"new").unwrap();
+        fs::write(&to, b"old").unwrap();
+        let err = rename_new_by(&from, &to, no_links).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&to).unwrap(), b"old");
+        fs::remove_file(&to).unwrap();
+        rename_new_by(&from, &to, no_links).unwrap();
+        assert_eq!(fs::read(&to).unwrap(), b"new");
+        assert!(!from.exists());
     }
 
     #[test]
