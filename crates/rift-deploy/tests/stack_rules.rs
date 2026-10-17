@@ -3,11 +3,11 @@
 
 mod common;
 
-use common::{assert_no_temporaries, fluffy_mod, journal_text, Bench, TestMod};
+use common::{adopted, assert_no_temporaries, journal_text, Bench, TestMod};
 use rift_core::RiftError;
 use rift_deploy::{
     discard_parked, plan_install, plan_uninstall, preflight, read_game_state, restore_parked,
-    uninstall, Below, BelowOwner, CheckAction, CheckLevel, FluffyLedger, OwnerKind, RemovalAction,
+    uninstall, Below, BelowOwner, CheckAction, CheckLevel, DeployKind, OwnerKind, RemovalAction,
     WriteAction,
 };
 
@@ -259,11 +259,12 @@ fn strays_and_unknown_files_are_never_removed() {
 // A layer whose file something else replaced is no longer the layer below
 // ---------------------------------------------------------------------------
 
-/// Fluffy deploys over X; Y then installs over Fluffy's file. Y's backup
-/// holds FLUFFY's bytes, so uninstalling X must never hand them down into
-/// the bin — in either order, Fluffy's file comes back when both are gone.
+/// Another tool deploys over X; Y then installs over that tool's file. Y's
+/// backup holds THE OTHER TOOL's bytes, so uninstalling X must never hand
+/// them down into the bin — in either order, the other tool's file comes back
+/// when both are gone.
 #[test]
-fn a_fluffy_file_deployed_over_an_install_is_never_handed_down_into_the_bin() {
+fn a_file_another_tool_deployed_over_an_install_is_never_handed_down_into_the_bin() {
     const SHARED: &str = "natives/stm/shared.mesh";
     for lower_first in [true, false] {
         let bench = Bench::new();
@@ -271,25 +272,22 @@ fn a_fluffy_file_deployed_over_an_install_is_never_handed_down_into_the_bin() {
         let y = TestMod::new("Layer Y").loose(SHARED, b"Y bytes!");
         let mut journal = bench.journal();
         x.install(&bench, &mut journal);
-        bench.write(SHARED, b"Fluffy's ermine bytes");
-        let ledger = FluffyLedger {
-            game_install_path: None,
-            mods: vec![fluffy_mod("Ermine-v1", "Ermine Cape", &[SHARED])],
-        };
-        let ctx = bench.ctx_with(Some(&ledger), false);
+        bench.write(SHARED, b"Another's ermine data");
+        let ctx = bench.ctx();
 
         let plan = plan_install(&ctx, &journal, &y.package, &y.option);
         assert_eq!(
             plan.writes[0].action,
-            WriteAction::OverwriteFluffy {
-                section: "Ermine-v1".into()
-            },
-            "the bytes at the path are Fluffy's, not Layer X's"
+            WriteAction::OverwriteUnowned,
+            "the bytes at the path are the other tool's, not Layer X's"
         );
         y.install_with(&ctx, &mut journal).unwrap();
         assert!(matches!(
             &journal.find(&y.id()).unwrap().files[0].below,
-            Below::Backup { owner: BelowOwner::Fluffy { section }, .. } if section == "Ermine-v1"
+            Below::Backup {
+                owner: BelowOwner::Unowned,
+                ..
+            }
         ));
 
         if lower_first {
@@ -302,8 +300,8 @@ fn a_fluffy_file_deployed_over_an_install_is_never_handed_down_into_the_bin() {
         }
         assert_eq!(
             bench.read(SHARED).unwrap(),
-            b"Fluffy's ermine bytes",
-            "lower first = {lower_first}: Fluffy's file survives"
+            b"Another's ermine data",
+            "lower first = {lower_first}: the other tool's file survives"
         );
         assert!(bench.store_files().is_empty());
         assert_no_temporaries(&bench);
@@ -453,7 +451,7 @@ fn a_changed_file_over_a_backup_keeps_the_original_on_record() {
 }
 
 #[test]
-fn a_kept_file_never_goes_back_over_an_install_or_a_fluffy_file() {
+fn a_kept_file_never_goes_back_over_an_install_adopted_or_not() {
     let bench = Bench::new();
     bench.write("natives/stm/glow.mesh", b"original");
     let mut journal = bench.journal();
@@ -472,26 +470,36 @@ fn a_kept_file_never_goes_back_over_an_install_or_a_fluffy_file() {
     cape.uninstall(&bench, &mut journal);
     assert_eq!(bench.read("natives/stm/glow.mesh").unwrap(), b"a rewrite");
 
-    // Fluffy's file sits there now.
-    bench.write("natives/stm/glow.mesh", b"fluffy's glow");
-    let ledger = FluffyLedger {
-        game_install_path: None,
-        mods: vec![fluffy_mod(
-            "Glow-v1",
-            "Fluffy Glow",
-            &["natives/stm/glow.mesh"],
+    // An adopted install owns the file there now: the journal took it over
+    // from what was already in the game.
+    bench.write("natives/stm/glow.mesh", b"adopted glow!");
+    let older = adopted(
+        &mut journal,
+        "adopted#Older Glow-v1",
+        "Older Glow",
+        "Older Glow-v1",
+        &[(
+            "natives/stm/glow.mesh",
+            DeployKind::Loose,
+            13,
+            Below::Nothing,
         )],
-    };
-    let ctx = bench.ctx_with(Some(&ledger), false);
+    );
+    let older_id = older.option_id.clone();
+    journal.installs.push(older);
+    journal.save(bench.state()).unwrap();
+    let ctx = bench.ctx();
     let err = restore_parked(&ctx, &mut journal, &store).unwrap_err();
-    assert!(err.to_string().contains("Fluffy Glow"), "{err}");
+    assert!(err.to_string().contains("Older Glow"), "{err}");
     assert_eq!(
         bench.read("natives/stm/glow.mesh").unwrap(),
-        b"fluffy's glow"
+        b"adopted glow!"
     );
 
-    // Once the path is free, it simply goes back.
-    std::fs::remove_file(bench.root().join("natives/stm/glow.mesh")).unwrap();
+    // Once the adopted install is gone — its file with it, since nothing was
+    // below it — the path is free, and the kept file simply goes back.
+    uninstall(&ctx, &mut journal, &older_id).unwrap();
+    assert!(!bench.exists("natives/stm/glow.mesh"));
     let report = restore_parked(&ctx, &mut journal, &store).unwrap();
     assert!(report.swapped_out.is_none());
     assert_eq!(bench.read("natives/stm/glow.mesh").unwrap(), b"original");

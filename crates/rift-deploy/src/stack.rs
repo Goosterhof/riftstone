@@ -89,22 +89,6 @@ impl PathIndex {
             .max_by_key(|layer| layer.install(journal).seq)
     }
 
-    /// The layer whose backup holds the bytes of the Fluffy mod `section`.
-    pub(crate) fn above_fluffy(
-        &self,
-        journal: &Journal,
-        key: &str,
-        section: &str,
-    ) -> Option<LayerRef> {
-        let wanted = lower_key(section);
-        self.layers(key).iter().copied().find(|layer| {
-            matches!(
-                &layer.file(journal).below,
-                Below::Backup { owner: BelowOwner::Fluffy { section: s }, .. } if lower_key(s) == wanted
-            )
-        })
-    }
-
     /// The whole stack, bottom first.
     #[cfg(test)]
     pub(crate) fn stack(&self, journal: &Journal, key: &str) -> Vec<LayerRef> {
@@ -178,7 +162,7 @@ mod tests {
         journal
             .installs
             .push(layer(1, "a", "natives/STM/x.mesh", Below::Nothing));
-        // C was installed last but adopted layers can sit anywhere: order by link.
+        // C was installed last, but a layer's place is its link, not its seq.
         journal
             .installs
             .push(layer(3, "c", "natives/stm/x.mesh", backup_of("b")));

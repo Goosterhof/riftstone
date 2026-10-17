@@ -1,9 +1,8 @@
 //! What is in the game folder right now: the journal's installs, every pak
-//! in `pak_mods/` with its owner and whether REFramework loaded it, Fluffy's
-//! un-adopted installs, files nobody owns, and files the journal expects but
-//! the disk no longer has. Read-only.
+//! in `pak_mods/` with its owner and whether REFramework loaded it, files no
+//! install claims, and files the journal expects but the disk no longer has.
+//! Read-only.
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -14,7 +13,7 @@ use rift_core::{lower_key, OptionId, PayloadKinds};
 use serde::Serialize;
 
 use crate::engine::{owner_label, DeployContext};
-use crate::fsops::{self, child_ci, join_rel, CaseResolver};
+use crate::fsops::{self, join_rel, CaseResolver};
 use crate::game::GameInstall;
 use crate::journal::{Below, DeployKind, Journal, Origin};
 use crate::paks::{self, PAK_EXTENSION};
@@ -22,7 +21,7 @@ use crate::plan::OwnerKind;
 use crate::reframework::{self, PakLoadReport, RefStatus};
 use crate::stack::PathIndex;
 
-/// Folders whose unowned files count as strays.
+/// Folders (besides `pak_mods/`) where a file no install claims is a stray.
 const STRAY_PLACES: &[&str] = &["natives", "reframework/autorun", "reframework/plugins"];
 
 /// Deep enough for any real `natives/` tree, shallow enough to stay bounded.
@@ -41,9 +40,9 @@ pub struct GameState {
     pub pak_order: Vec<OptionId>,
     /// Every `.pak` in `pak_mods/` (any case, any depth), in load order.
     pub paks: Vec<PakFile>,
-    pub fluffy_unadopted: Vec<FluffyModState>,
     /// Files in `pak_mods/`, `natives/`, `reframework/autorun/` and
-    /// `reframework/plugins/` that nobody owns. Reported, never removed.
+    /// `reframework/plugins/` that no install in the journal claims.
+    /// Reported, never removed.
     pub strays: Vec<StrayFile>,
     /// Files the journal says are installed that are gone.
     pub missing: Vec<MissingFile>,
@@ -52,9 +51,6 @@ pub struct GameState {
     /// [`crate::discard_parked`]).
     pub parked: Vec<ParkedFile>,
     pub pak_load: Option<PakLoadReport>,
-    /// Fluffy renamed the game's crash reporter (`CrashReport_FMMBACKUP.exe`
-    /// present, `CrashReport.exe` absent).
-    pub crash_reporter_renamed: bool,
     /// `.pak` files REFramework would load from `pak_mods/`.
     pub pak_count: usize,
     pub pak_count_warning: usize,
@@ -113,20 +109,19 @@ pub struct PakFile {
     pub load_index: Option<usize>,
 }
 
+/// Who a pak in `pak_mods/` belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum PakOwner {
+    /// An install in the journal: the Riftstone's own, or an adopted one
+    /// (`adopted`).
     #[serde(rename_all = "camelCase")]
     Riftstone {
         option_id: OptionId,
         name: String,
         adopted: bool,
     },
-    #[serde(rename_all = "camelCase")]
-    Fluffy {
-        section: String,
-        name: String,
-    },
+    /// No install claims it: a stray.
     Unowned,
 }
 
@@ -172,7 +167,7 @@ pub struct ParkedFile {
     /// Where it belongs in the game folder.
     pub game_path: String,
     /// Whose bytes it holds, for the window: "the file that was there
-    /// before", a Fluffy mod's name, or an install's name.
+    /// before", or an install's name.
     pub owner: String,
     pub owner_kind: OwnerKind,
     /// Its size in the store; `None` when the kept file is gone from it.
@@ -180,18 +175,8 @@ pub struct ParkedFile {
     pub parked_at: String,
     pub reason: String,
     /// Something sits at `game_path` now: putting the kept file back swaps
-    /// it out (or is refused while an install or Fluffy owns it).
+    /// it out (or is refused while an install owns it).
     pub occupied: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FluffyModState {
-    pub section: String,
-    pub name: String,
-    pub file_count: usize,
-    /// How many of its files are still on disk.
-    pub present_files: usize,
 }
 
 /// Read what is in the game right now. Never writes, never fails: what
@@ -206,20 +191,8 @@ pub fn read_game_state(ctx: &DeployContext, journal: &Journal) -> GameState {
         .and_then(|r| r.log_started.as_deref())
         .and_then(parse_log_time);
 
-    // Who owns which path: any journal layer, else Fluffy (un-adopted).
-    let adopted = journal.adopted_sections();
-    let mut fluffy_owner: HashMap<String, (&str, &str)> = HashMap::new();
-    if let Some(ledger) = ctx.fluffy {
-        for fluffy_mod in ledger.unadopted(&adopted) {
-            for file in &fluffy_mod.files {
-                fluffy_owner.insert(
-                    lower_key(file),
-                    (fluffy_mod.section.as_str(), fluffy_mod.name.as_str()),
-                );
-            }
-        }
-    }
-    let owned = |key: &str| index.claimed(key) || fluffy_owner.contains_key(key);
+    // A path is owned when any journal layer claims it.
+    let owned = |key: &str| index.claimed(key);
 
     // pak_mods/
     let pak_dir = resolver.resolve(PAK_MODS_DIR);
@@ -240,11 +213,6 @@ pub fn read_game_state(ctx: &DeployContext, journal: &Journal) -> GameState {
                 option_id: install.option_id.clone(),
                 name: install.name.clone(),
                 adopted: install.is_adopted(),
-            }
-        } else if let Some((section, name)) = fluffy_owner.get(&key) {
-            PakOwner::Fluffy {
-                section: (*section).to_string(),
-                name: (*name).to_string(),
             }
         } else {
             strays.push(StrayFile {
@@ -322,7 +290,7 @@ pub fn read_game_state(ctx: &DeployContext, journal: &Journal) -> GameState {
         .parked
         .iter()
         .map(|kept| {
-            let (owner, owner_kind) = owner_label(journal, ctx.fluffy, &kept.owner);
+            let (owner, owner_kind) = owner_label(journal, &kept.owner);
             let in_store = |rel: &str| {
                 rift_core::normalize_entry_path(rel).is_ok_and(|n| n == rel)
                     && lower_key(rel).starts_with("backups/")
@@ -373,25 +341,6 @@ pub fn read_game_state(ctx: &DeployContext, journal: &Journal) -> GameState {
         })
         .collect();
 
-    let fluffy_unadopted = ctx
-        .fluffy
-        .map(|ledger| {
-            ledger
-                .unadopted(&adopted)
-                .map(|m| FluffyModState {
-                    section: m.section.clone(),
-                    name: m.name.clone(),
-                    file_count: m.files.len(),
-                    present_files: m
-                        .files
-                        .iter()
-                        .filter(|f| fsops::is_file(&join_rel(root, &resolver.resolve(f))))
-                        .count(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
     let build_changed = match (journal.newest_game_build(), ctx.game.build_id.as_deref()) {
         (Some(recorded), Some(now)) if recorded != now => Some(BuildChange {
             recorded: recorded.to_string(),
@@ -399,8 +348,6 @@ pub fn read_game_state(ctx: &DeployContext, journal: &Journal) -> GameState {
         }),
         _ => None,
     };
-    let crash_reporter_renamed = child_ci(root, "CrashReport_FMMBACKUP.exe").is_some()
-        && child_ci(root, "CrashReport.exe").is_none();
     let outdated_files = journal
         .installs
         .iter()
@@ -417,12 +364,10 @@ pub fn read_game_state(ctx: &DeployContext, journal: &Journal) -> GameState {
         pak_order: journal.pak_order.clone(),
         pak_count: paks_found.iter().filter(|p| p.loads).count(),
         paks: paks_found,
-        fluffy_unadopted,
         strays,
         missing,
         parked,
         pak_load,
-        crash_reporter_renamed,
         pak_count_warning: dd2::PAK_COUNT_WARNING,
         interrupted: journal.pending.is_some(),
         outdated_files,

@@ -20,19 +20,39 @@
 //! [`ParkedBackup`] until the player puts it back or discards it. And the
 //! engine removes only folders it created itself ([`Journal::created_dirs`]),
 //! never one the player made.
+//!
+//! ## Schema 2, and the journals older builds wrote
+//!
+//! Schema 2 knows two origins ([`Origin::Riftstone`], [`Origin::Adopted`])
+//! and two backup owners ([`BelowOwner::Unowned`], [`BelowOwner::Riftstone`]).
+//! A schema-1 journal is lifted in memory as it loads, on the raw JSON, by
+//! rules that name no kind but the two that stay: an origin of any other kind
+//! becomes `adopted` (labelled with its `section`, else the install's name);
+//! an owner of any other kind becomes `unowned`; a stand-in option id — one
+//! whose package half is not a package id's 16 lowercase hex digits — becomes
+//! `adopted#<root half>` everywhere it is mentioned (`#2`, `#3` … when that
+//! is taken). Loading never writes: the file on disk keeps schema 1 until the
+//! next change saves the journal as schema 2.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use rift_core::error::RiftResult;
 use rift_core::{fnv1a64, lower_key, DeployTarget, OptionId, PayloadKinds, RiftError};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 use crate::fsops::with_suffix;
 
-/// The journal format this build reads and writes.
-pub const JOURNAL_SCHEMA: u32 = 1;
+/// The journal format this build writes. It reads every format up to this
+/// one: schema 1 (v0.1 and v0.2) is lifted as it loads.
+pub const JOURNAL_SCHEMA: u32 = 2;
+
+/// The package half every lifted stand-in id carries: an adopted install
+/// that matched no library option is `adopted#<root half>`.
+pub const STAND_IN_PACKAGE: &str = "adopted";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,7 +62,7 @@ pub struct Journal {
     /// Everything installed, in install order.
     pub installs: Vec<InstalledOption>,
     /// Pak-bearing installs, lowest priority first — the last loads last and
-    /// wins. Riftstone installs and adopted Fluffy installs alike.
+    /// wins. The Riftstone's own installs and adopted ones alike.
     pub pak_order: Vec<OptionId>,
     /// The operation in flight. `Some` on disk after a crash.
     pub pending: Option<Intent>,
@@ -102,8 +122,10 @@ pub struct InstalledOption {
 }
 
 impl InstalledOption {
+    /// Did the journal take this install over from files already in the
+    /// game, rather than install it from a package?
     pub fn is_adopted(&self) -> bool {
-        matches!(self.origin, Origin::AdoptedFromFluffy { .. })
+        matches!(self.origin, Origin::Adopted { .. })
     }
 
     pub fn pak_files(&self) -> impl Iterator<Item = &DeployedFile> {
@@ -129,14 +151,18 @@ impl InstalledOption {
     }
 }
 
+/// Where an install came from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Origin {
+    /// The Riftstone installed it from a package.
     Riftstone,
+    /// The journal took it over from files already in the game folder: it
+    /// has no package entries of its own (`DeployedFile::entry` is `None`)
+    /// and uninstalls like any other install. `label` is the name it was
+    /// known by when it was taken over.
     #[serde(rename_all = "camelCase")]
-    AdoptedFromFluffy {
-        section: String,
-    },
+    Adopted { label: String },
 }
 
 /// One file an install put in the game folder.
@@ -188,7 +214,7 @@ pub enum Below {
     /// dir: `backups/<seq>/<game path>`); uninstalling moves it back.
     #[serde(rename_all = "camelCase")]
     Backup { store: String, owner: BelowOwner },
-    /// Unknown — possibly a game file (an adopted Fluffy file in the game
+    /// Unknown — possibly a game file (an adopted file directly in the game
     /// root). Uninstalling leaves the file in place.
     UnknownVanilla,
 }
@@ -197,16 +223,12 @@ pub enum Below {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum BelowOwner {
+    /// No install in the journal: "the file that was there before".
     Unowned,
+    /// An install in the journal — the Riftstone's own or an adopted one. It
+    /// sits directly below the layer holding the backup.
     #[serde(rename_all = "camelCase")]
-    Fluffy {
-        section: String,
-    },
-    /// Another install: it sits directly below the one holding the backup.
-    #[serde(rename_all = "camelCase")]
-    Riftstone {
-        option_id: OptionId,
-    },
+    Riftstone { option_id: OptionId },
 }
 
 /// An operation in flight, saved before its first byte moves.
@@ -335,6 +357,8 @@ impl Journal {
 
     /// The journal for `game_root` in `dir`, or a fresh one when none exists.
     /// A file that cannot be read or parsed is an error — it is never reset.
+    /// A schema-1 journal is lifted in memory (see the module docs) and comes
+    /// back as schema 2; nothing is written until the next save.
     pub fn load(dir: &Path, game_root: &Path) -> Result<Journal, RiftError> {
         let path = journal_path(dir, game_root);
         let bytes = match fs::read(&path) {
@@ -349,19 +373,27 @@ impl Journal {
                 )))
             }
         };
-        let journal: Journal = serde_json::from_slice(&bytes).map_err(|err| {
+        let damaged = |err: serde_json::Error| {
             journal_error(format!(
                 "{} is damaged ({err}). It was left untouched — it is the only record of which files in the game folder the Riftstone installed",
                 path.display()
             ))
-        })?;
-        if journal.schema > JOURNAL_SCHEMA {
+        };
+        let mut raw: Value = serde_json::from_slice(&bytes).map_err(damaged)?;
+        let schema = raw.get("schema").and_then(Value::as_u64);
+        if let Some(newer) = schema.filter(|&s| s > u64::from(JOURNAL_SCHEMA)) {
             return Err(journal_error(format!(
-                "{} was written by a newer Riftstone (format {}, this one reads {JOURNAL_SCHEMA}); update the Riftstone before managing mods",
-                path.display(),
-                journal.schema
+                "{} was written by a newer Riftstone (format {newer}, this one reads formats up to {JOURNAL_SCHEMA}); update the Riftstone before managing mods",
+                path.display()
             )));
         }
+        if schema.is_some_and(|s| s < u64::from(JOURNAL_SCHEMA)) {
+            lift_schema_1(&mut raw);
+            if let Some(object) = raw.as_object_mut() {
+                object.insert("schema".into(), JOURNAL_SCHEMA.into());
+            }
+        }
+        let journal: Journal = serde_json::from_value(raw).map_err(damaged)?;
         if !journal.belongs_to(game_root) {
             return Err(journal_error(format!(
                 "{} records the game folder {}, not {}",
@@ -415,15 +447,11 @@ impl Journal {
         self.position(option_id).is_some()
     }
 
-    /// Lower-cased Fluffy sections already adopted.
-    pub fn adopted_sections(&self) -> HashSet<String> {
-        self.installs
-            .iter()
-            .filter_map(|i| match &i.origin {
-                Origin::AdoptedFromFluffy { section } => Some(lower_key(section)),
-                Origin::Riftstone => None,
-            })
-            .collect()
+    /// Does the journal mention `option_id` anywhere — as an install, in the
+    /// pak order, or as the owner of a backup or of a file kept aside? An id
+    /// it holds can never be given to another install ([`Journal::rekey`]).
+    pub fn holds(&self, option_id: &OptionId) -> bool {
+        self.held_ids().contains(option_id)
     }
 
     /// The game build recorded by the newest install that recorded one.
@@ -434,12 +462,305 @@ impl Journal {
             .max_by_key(|i| i.seq)
             .and_then(|i| i.game_build.as_deref())
     }
+
+    /// Give installs new option ids: for every `from → to` in `map` whose
+    /// `from` the journal holds, every mention of `from` — the install, the
+    /// pak order, the owner of a backup or of a file kept aside — becomes
+    /// `to`. (v0.3: a folder package's id follows its name now, and the
+    /// relink pass finds installs whose package moved; see
+    /// [`crate::relink`].) Entries for ids the journal does not hold, and
+    /// entries onto themselves, change nothing.
+    ///
+    /// Refused — and then nothing changes — while an operation is pending,
+    /// when a `to` is an id the journal already holds ([`Journal::holds`]),
+    /// and when two installs would become one. Returns how many installs took
+    /// a new id. Saving is the caller's ([`crate::engine::rekey`] does both).
+    pub fn rekey(&mut self, map: &BTreeMap<OptionId, OptionId>) -> RiftResult<usize> {
+        self.rekey_with_files(map, &BTreeMap::new())
+    }
+
+    /// [`Journal::rekey`], and each re-keyed install whose NEW id is in
+    /// `package_files` takes that file name as its `package_file` (the name
+    /// the installed list shows while the package is missing again).
+    pub fn rekey_with_files(
+        &mut self,
+        map: &BTreeMap<OptionId, OptionId>,
+        package_files: &BTreeMap<OptionId, String>,
+    ) -> RiftResult<usize> {
+        if self.pending.is_some() {
+            return Err(RiftError::refused(
+                "A change to the game folder is still recorded as unfinished, so no install was given a new id. Restart the Riftstone so it can put the game folder back first.",
+            ));
+        }
+        let held = self.held_ids();
+        let moves: BTreeMap<&OptionId, &OptionId> = map
+            .iter()
+            .filter(|(from, to)| from != to && held.contains(*from))
+            .collect();
+        let mut taken: HashMap<&OptionId, &OptionId> = HashMap::new();
+        for (&from, &to) in &moves {
+            if held.contains(to) {
+                return Err(RiftError::refused(format!(
+                    "The journal already holds \"{to}\", so \"{from}\" cannot take that id. Nothing was re-keyed."
+                )));
+            }
+            if let Some(other) = taken.insert(to, from) {
+                return Err(RiftError::refused(format!(
+                    "\"{other}\" and \"{from}\" would both become \"{to}\". Nothing was re-keyed."
+                )));
+            }
+        }
+        if moves.is_empty() {
+            return Ok(0);
+        }
+        let rename = |id: &mut OptionId| {
+            if let Some(&to) = moves.get(&*id) {
+                id.clone_from(to);
+            }
+        };
+        let mut rekeyed = 0;
+        for install in &mut self.installs {
+            if let Some(&to) = moves.get(&install.option_id) {
+                install.option_id.clone_from(to);
+                if let Some(file) = package_files.get(to) {
+                    install.package_file.clone_from(file);
+                }
+                rekeyed += 1;
+            }
+            for file in &mut install.files {
+                if let Below::Backup {
+                    owner: BelowOwner::Riftstone { option_id },
+                    ..
+                } = &mut file.below
+                {
+                    rename(option_id);
+                }
+            }
+        }
+        for id in &mut self.pak_order {
+            rename(id);
+        }
+        for kept in &mut self.parked {
+            if let BelowOwner::Riftstone { option_id } = &mut kept.owner {
+                rename(option_id);
+            }
+        }
+        Ok(rekeyed)
+    }
+
+    /// Every option id the journal mentions outside a pending intent.
+    fn held_ids(&self) -> HashSet<&OptionId> {
+        let owners = self
+            .installs
+            .iter()
+            .flat_map(|install| &install.files)
+            .filter_map(|file| match &file.below {
+                Below::Backup {
+                    owner: BelowOwner::Riftstone { option_id },
+                    ..
+                } => Some(option_id),
+                _ => None,
+            });
+        let kept = self.parked.iter().filter_map(|kept| match &kept.owner {
+            BelowOwner::Riftstone { option_id } => Some(option_id),
+            BelowOwner::Unowned => None,
+        });
+        self.installs
+            .iter()
+            .map(|install| &install.option_id)
+            .chain(&self.pak_order)
+            .chain(owners)
+            .chain(kept)
+            .collect()
+    }
 }
 
 /// Where the journal of `game_root` lives in `dir`.
 pub fn journal_path(dir: &Path, game_root: &Path) -> PathBuf {
     let key = fnv1a64(root_key(game_root).as_bytes());
     dir.join(format!("journal-{key:016x}.json"))
+}
+
+/// Is `option_id` a stand-in rather than a library option's id: is its
+/// package half something other than a package id's 16 lowercase hex digits?
+/// (Every lifted stand-in reads `adopted#<root half>`.) The empty id of a
+/// reorder's intent is no option at all, and no stand-in either.
+pub fn is_stand_in(option_id: &OptionId) -> bool {
+    stand_in_text(&option_id.0)
+}
+
+fn stand_in_text(id: &str) -> bool {
+    if id.is_empty() {
+        return false;
+    }
+    let package = id.split_once('#').map_or(id, |(package, _)| package);
+    !(package.len() == 16
+        && package
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+}
+
+// ---------------------------------------------------------------------------
+// The schema-1 lift
+// ---------------------------------------------------------------------------
+
+/// Lift a schema-1 journal to schema 2, on the raw JSON, by the rules in the
+/// module docs. Anything the rules do not recognise (an origin or owner
+/// without a `kind`, an id that is not a string) is left as it is, so the
+/// strict read that follows calls the journal damaged instead of guessing.
+fn lift_schema_1(raw: &mut Value) {
+    for install in items_mut(raw, "installs") {
+        lift_origin(install);
+        for file in items_mut(install, "files") {
+            if let Some(owner) = file
+                .get_mut("below")
+                .and_then(|below| below.get_mut("owner"))
+            {
+                lift_owner(owner);
+            }
+        }
+    }
+    for kept in items_mut(raw, "parked") {
+        if let Some(owner) = kept.get_mut("owner") {
+            lift_owner(owner);
+        }
+    }
+    if let Some(pending) = raw.get_mut("pending") {
+        for step in items_mut(pending, "steps") {
+            if let Some(owner) = step.get_mut("owner") {
+                lift_owner(owner);
+            }
+        }
+    }
+    rekey_stand_ins(raw);
+}
+
+/// The elements of the array at `key`, if there is one.
+fn items_mut<'a>(value: &'a mut Value, key: &str) -> impl Iterator<Item = &'a mut Value> {
+    value
+        .get_mut(key)
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+}
+
+/// An origin of any kind but `riftstone` → `adopted`, labelled with its
+/// `section`, else the install's name.
+fn lift_origin(install: &mut Value) {
+    let name = install
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let Some(origin) = install.get_mut("origin") else {
+        return;
+    };
+    match origin.get("kind").and_then(Value::as_str) {
+        None | Some("riftstone") => {}
+        Some(_) => {
+            let label = origin
+                .get("section")
+                .and_then(Value::as_str)
+                .filter(|section| !section.trim().is_empty())
+                .map_or(name, str::to_string);
+            *origin = json!({ "kind": "adopted", "label": label });
+        }
+    }
+}
+
+/// An owner of any kind but `unowned` or `riftstone` → `unowned`.
+fn lift_owner(owner: &mut Value) {
+    match owner.get("kind").and_then(Value::as_str) {
+        None | Some("unowned" | "riftstone") => {}
+        Some(_) => *owner = json!({ "kind": "unowned" }),
+    }
+}
+
+/// Every stand-in id → `adopted#<root half>` (then `#2`, `#3` … while that
+/// is taken), the same everywhere it is mentioned. Ids are handed out in the
+/// order the journal mentions them, so the lift is the same at every load.
+fn rekey_stand_ins(raw: &mut Value) {
+    let mut mentioned: Vec<String> = Vec::new();
+    for_each_id(raw, &mut |slot| {
+        if let Some(id) = slot.as_str() {
+            mentioned.push(id.to_string());
+        }
+    });
+    let mut taken: HashSet<String> = mentioned
+        .iter()
+        .filter(|id| !id.is_empty() && !stand_in_text(id))
+        .cloned()
+        .collect();
+    let mut renamed: HashMap<String, String> = HashMap::new();
+    for id in &mentioned {
+        if !stand_in_text(id) || renamed.contains_key(id) {
+            continue;
+        }
+        let root = id.split_once('#').map_or("", |(_, root)| root);
+        let base = format!("{STAND_IN_PACKAGE}#{root}");
+        let mut candidate = base.clone();
+        let mut n = 2u32;
+        while taken.contains(&candidate) {
+            candidate = format!("{base}#{n}");
+            n += 1;
+        }
+        taken.insert(candidate.clone());
+        renamed.insert(id.clone(), candidate);
+    }
+    if renamed.is_empty() {
+        return;
+    }
+    for_each_id(raw, &mut |slot| {
+        if let Some(new) = slot.as_str().and_then(|id| renamed.get(id)) {
+            *slot = Value::String(new.clone());
+        }
+    });
+}
+
+/// Visit every place a journal names an option id, in a fixed order: the
+/// installs, the pak order, the owners of backups, the owners of files kept
+/// aside, the pending intent and the owners in its steps.
+fn for_each_id(raw: &mut Value, visit: &mut dyn FnMut(&mut Value)) {
+    for install in items_mut(raw, "installs") {
+        if let Some(id) = install.get_mut("optionId") {
+            visit(id);
+        }
+    }
+    for id in items_mut(raw, "pakOrder") {
+        visit(id);
+    }
+    for install in items_mut(raw, "installs") {
+        for file in items_mut(install, "files") {
+            if let Some(id) = file
+                .get_mut("below")
+                .and_then(|below| below.get_mut("owner"))
+                .and_then(|owner| owner.get_mut("optionId"))
+            {
+                visit(id);
+            }
+        }
+    }
+    for kept in items_mut(raw, "parked") {
+        if let Some(id) = kept
+            .get_mut("owner")
+            .and_then(|owner| owner.get_mut("optionId"))
+        {
+            visit(id);
+        }
+    }
+    if let Some(pending) = raw.get_mut("pending") {
+        if let Some(id) = pending.get_mut("optionId") {
+            visit(id);
+        }
+        for step in items_mut(pending, "steps") {
+            if let Some(id) = step
+                .get_mut("owner")
+                .and_then(|owner| owner.get_mut("optionId"))
+            {
+                visit(id);
+            }
+        }
+    }
 }
 
 /// A game root as a comparison key: `/` separators, no trailing separator,
@@ -470,7 +791,7 @@ mod tests {
             option_id: OptionId("00000000000000aa#Glow".into()),
             name: "Lantern Glow Recolor".into(),
             package_file: "Lantern Glow Recolor.zip".into(),
-            package_path: PathBuf::from("/library/Lantern Glow Recolor.zip"),
+            package_path: PathBuf::from("/mods/Lantern Glow Recolor.zip"),
             package_size: 1234,
             option_root: "Glow".into(),
             version: Some("1.2".into()),
@@ -484,8 +805,8 @@ mod tests {
                 entry: Some("Glow/natives/stm/a.mesh".into()),
                 below: Below::Backup {
                     store: "backups/1/natives/stm/a.mesh".into(),
-                    owner: BelowOwner::Fluffy {
-                        section: "Glow-v1".into(),
+                    owner: BelowOwner::Riftstone {
+                        option_id: OptionId("adopted#Glow-v1".into()),
                     },
                 },
                 fingerprint: Some("00".repeat(16)),
@@ -517,14 +838,25 @@ mod tests {
 
     #[test]
     fn the_wire_shape_is_camel_case_and_tagged() {
-        let journal = sample(Path::new("/g"));
+        let mut journal = sample(Path::new("/g"));
         let json = serde_json::to_value(&journal).unwrap();
+        assert_eq!(json["schema"], 2);
         let file = &json["installs"][0]["files"][0];
         assert_eq!(file["gamePath"], "natives/stm/a.mesh");
         assert_eq!(file["below"]["kind"], "backup");
-        assert_eq!(file["below"]["owner"]["kind"], "fluffy");
+        assert_eq!(file["below"]["owner"]["kind"], "riftstone");
+        assert_eq!(file["below"]["owner"]["optionId"], "adopted#Glow-v1");
         assert_eq!(json["installs"][0]["origin"]["kind"], "riftstone");
         assert_eq!(json["nextSeq"], 2);
+        journal.installs[0].origin = Origin::Adopted {
+            label: "Glow-v1".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&journal).unwrap()["installs"][0]["origin"],
+            serde_json::json!({ "kind": "adopted", "label": "Glow-v1" })
+        );
+        let unowned = serde_json::to_value(BelowOwner::Unowned).unwrap();
+        assert_eq!(unowned, serde_json::json!({ "kind": "unowned" }));
         let step = serde_json::to_value(IntentStep::Place {
             game_path: "a".into(),
             size: 1,
@@ -605,16 +937,32 @@ mod tests {
     }
 
     #[test]
+    fn a_schema_2_journal_with_a_kind_it_does_not_know_is_damaged_not_lifted() {
+        let state = tempfile::tempdir().unwrap();
+        let root = Path::new("/g");
+        let mut raw = serde_json::to_value(sample(root)).unwrap();
+        raw["installs"][0]["origin"] = serde_json::json!({ "kind": "fromSomewhere" });
+        let bytes = serde_json::to_vec(&raw).unwrap();
+        fs::write(journal_path(state.path(), root), &bytes).unwrap();
+        assert!(matches!(
+            Journal::load(state.path(), root),
+            Err(RiftError::Journal { .. })
+        ));
+        assert_eq!(fs::read(journal_path(state.path(), root)).unwrap(), bytes);
+    }
+
+    #[test]
     fn a_journal_from_a_newer_riftstone_is_refused() {
         let state = tempfile::tempdir().unwrap();
         let root = Path::new("/g");
         let mut journal = Journal::new(root);
         journal.schema = JOURNAL_SCHEMA + 1;
         journal.save(state.path()).unwrap();
-        assert!(matches!(
-            Journal::load(state.path(), root),
-            Err(RiftError::Journal { .. })
-        ));
+        let err = Journal::load(state.path(), root).unwrap_err();
+        assert!(
+            matches!(&err, RiftError::Journal { detail } if detail.contains("newer")),
+            "{err}"
+        );
     }
 
     #[test]
@@ -622,11 +970,35 @@ mod tests {
         let mut journal = sample(Path::new("/g"));
         let id = OptionId("00000000000000aa#Glow".into());
         assert!(journal.is_installed(&id));
+        assert!(journal.holds(&id));
+        assert!(
+            journal.holds(&OptionId("adopted#Glow-v1".into())),
+            "a backup's owner is held too"
+        );
+        assert!(!journal.holds(&OptionId("00000000000000bb#Glow".into())));
         assert_eq!(journal.newest_game_build(), Some("25290080"));
         assert_eq!(journal.installs[0].kinds().loose, 1);
-        journal.installs[0].origin = Origin::AdoptedFromFluffy {
-            section: "Glow-V1".into(),
+        assert!(!journal.installs[0].is_adopted());
+        journal.installs[0].origin = Origin::Adopted {
+            label: "Glow-V1".into(),
         };
-        assert!(journal.adopted_sections().contains("glow-v1"));
+        assert!(journal.installs[0].is_adopted());
+    }
+
+    #[test]
+    fn stand_ins_are_ids_without_a_package_id() {
+        let id = |s: &str| OptionId(s.into());
+        assert!(!is_stand_in(&id("0123456789abcdef#Glow")));
+        assert!(!is_stand_in(&id("0123456789abcdef#")));
+        assert!(!is_stand_in(&id("0123456789abcdef")));
+        assert!(!is_stand_in(&id("")), "a reorder's empty id is no option");
+        assert!(is_stand_in(&id("adopted#Glow")));
+        assert!(is_stand_in(&id("elsewhere#Glow#2")));
+        assert!(
+            is_stand_in(&id("0123456789ABCDEF#Glow")),
+            "package ids are lowercase"
+        );
+        assert!(is_stand_in(&id("0123456789abcde#Glow")), "15 digits");
+        assert!(is_stand_in(&id("lonely")));
     }
 }

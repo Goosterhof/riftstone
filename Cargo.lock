@@ -3652,8 +3652,6 @@ name = "rift-deploy"
 version = "0.2.1"
 dependencies = [
  "chrono",
- "dirs",
- "encoding_rs",
  "log",
  "rift-archive",
  "rift-core",

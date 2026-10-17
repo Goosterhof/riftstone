@@ -5,12 +5,11 @@ mod common;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use common::{assert_no_temporaries, fluffy_mod, Bench, TestMod};
+use common::{adopted, assert_no_temporaries, Bench, TestMod};
 use rift_core::{DeployTarget, OptionId, RiftError};
 use rift_deploy::{
     install, plan_install, plan_uninstall, recover, uninstall, Below, BelowOwner, DeployKind,
-    FluffyLedger, Intent, IntentAction, IntentStep, PlanWarning, RefStatus, RemovalAction,
-    WriteAction,
+    Intent, IntentAction, IntentStep, PlanWarning, RefStatus, RemovalAction, WriteAction,
 };
 
 // ---------------------------------------------------------------------------
@@ -261,45 +260,6 @@ fn an_unowned_file_is_backed_up_before_it_is_overwritten_and_restored_after() {
     );
     assert!(bench.store_files().is_empty());
     assert_no_temporaries(&bench);
-}
-
-#[test]
-fn a_fluffy_file_is_backed_up_under_its_section() {
-    let bench = Bench::new();
-    bench.write("natives/stm/cape.mesh", b"fluffy's cape");
-    let ledger = FluffyLedger {
-        game_install_path: None,
-        mods: vec![fluffy_mod(
-            "Ermine-v1",
-            "Ermine Cape",
-            &["natives/stm/cape.mesh"],
-        )],
-    };
-    let ctx = bench.ctx_with(Some(&ledger), false);
-    let mut journal = bench.journal();
-    let cape = TestMod::new("Vernworth Cape").loose("natives/stm/cape.mesh", b"vernworth");
-
-    let plan = plan_install(&ctx, &journal, &cape.package, &cape.option);
-    assert_eq!(
-        plan.writes[0].action,
-        WriteAction::OverwriteFluffy {
-            section: "Ermine-v1".into()
-        }
-    );
-    assert!(plan.warnings.contains(&PlanWarning::Conflicts {
-        option_names: vec!["Ermine Cape".into()],
-        paths: 1
-    }));
-    cape.install_with(&ctx, &mut journal).unwrap();
-    assert!(matches!(
-        &journal.installs[0].files[0].below,
-        Below::Backup { owner: BelowOwner::Fluffy { section }, .. } if section == "Ermine-v1"
-    ));
-    uninstall(&ctx, &mut journal, &cape.id()).unwrap();
-    assert_eq!(
-        bench.read("natives/stm/cape.mesh").unwrap(),
-        b"fluffy's cape"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -609,9 +569,9 @@ fn paks_land_flat_in_pak_mods_named_in_load_order() {
 }
 
 #[test]
-fn a_new_pak_sorts_after_fluffys_leftovers_and_stray_zrift_names() {
+fn a_new_pak_sorts_after_numbered_leftovers_and_stray_zrift_names() {
     let bench = Bench::new();
-    bench.write("pak_mods/x0000-Fluffy Leftover.pak", b"KPKA fluffy");
+    bench.write("pak_mods/x0000-Numbered Leftover.pak", b"KPKA oldpak");
     bench.write(
         "pak_mods/zrift-0041-Stray From A Lost Journal.pak",
         b"KPKA stray",
@@ -629,8 +589,8 @@ fn a_new_pak_sorts_after_fluffys_leftovers_and_stray_zrift_names() {
     );
     // The stray and the leftover are untouched.
     assert_eq!(
-        bench.read("pak_mods/x0000-Fluffy Leftover.pak").unwrap(),
-        b"KPKA fluffy"
+        bench.read("pak_mods/x0000-Numbered Leftover.pak").unwrap(),
+        b"KPKA oldpak"
     );
 }
 
@@ -667,7 +627,7 @@ fn pak_numbers_that_run_out_refuse_with_a_way_forward() {
 fn while_the_game_runs_paks_install_with_a_warning_but_never_leave() {
     let bench = Bench::new();
     let mut journal = bench.journal();
-    let running = bench.ctx_with(None, true);
+    let running = bench.ctx_with(true);
     let glow = TestMod::new("Lantern Glow Recolor").pak("glow.pak", b"KPKA glow");
     let cape = TestMod::new("Ermine Cape").loose("natives/stm/cape.mesh", b"cape");
 
@@ -723,20 +683,32 @@ fn missing_requirements_warn_and_never_refuse() {
     let plan = plan_install(&bench.ctx(), &journal, &needy.package, &needy.option);
     assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
 
-    // A Fluffy install satisfies a requirement too.
-    let bench = Bench::new();
-    let journal = bench.journal();
-    let ledger = FluffyLedger {
-        game_install_path: None,
-        mods: vec![fluffy_mod("WardrobeLoader", "Gransys Wardrobe Loader", &[])],
-    };
-    let plan = plan_install(
-        &bench.ctx_with(Some(&ledger), false),
-        &journal,
-        &needy.package,
-        &needy.option,
-    );
-    assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+    // An adopted install satisfies a requirement too: by its name, or by the
+    // label it was taken over under.
+    for (name, label) in [
+        ("Gransys Wardrobe Loader", "WardrobeLoader-v3"),
+        ("Wardrobe Loader (old copy)", "Gransys Wardrobe Loader"),
+    ] {
+        let bench = Bench::new();
+        bench.write("reframework/autorun/wardrobe_loader.lua", b"--");
+        let mut journal = bench.journal();
+        let loader = adopted(
+            &mut journal,
+            "adopted#WardrobeLoader-v3",
+            name,
+            label,
+            &[(
+                "reframework/autorun/wardrobe_loader.lua",
+                DeployKind::Reframework,
+                2,
+                Below::Nothing,
+            )],
+        );
+        journal.installs.push(loader);
+        journal.save(bench.state()).unwrap();
+        let plan = plan_install(&bench.ctx(), &journal, &needy.package, &needy.option);
+        assert!(plan.warnings.is_empty(), "{name}: {:?}", plan.warnings);
+    }
 }
 
 #[test]
@@ -876,11 +848,11 @@ fn a_same_size_file_written_after_a_crash_survives_recovery() {
     crash_at_first_file(&bench, &mut journal, &glow);
     // Before the Riftstone restarts, another tool writes the path — exactly
     // as many bytes as the install planned.
-    bench.write("natives/stm/glow.mesh", b"FLUFFY GLW");
+    bench.write("natives/stm/glow.mesh", b"RIVAL GLOW");
     let mut relaunched = bench.journal();
     let report = recover(&bench.ctx(), &mut relaunched).unwrap().unwrap();
     assert_eq!(report.files_kept, 1);
-    assert_eq!(bench.read("natives/stm/glow.mesh").unwrap(), b"FLUFFY GLW");
+    assert_eq!(bench.read("natives/stm/glow.mesh").unwrap(), b"RIVAL GLOW");
     assert_no_temporaries(&bench);
 }
 
@@ -891,12 +863,12 @@ fn a_same_size_file_written_over_an_original_after_a_crash_survives_recovery() {
     let mut journal = bench.journal();
     let glow = TestMod::new("Lantern Glow Recolor").loose("natives/stm/glow.mesh", b"glow bytes");
     crash_at_first_file(&bench, &mut journal, &glow);
-    bench.write("natives/stm/glow.mesh", b"FLUFFY GLW");
+    bench.write("natives/stm/glow.mesh", b"RIVAL GLOW");
     let mut relaunched = bench.journal();
     recover(&bench.ctx(), &mut relaunched).unwrap().unwrap();
     assert_eq!(
         bench.read("natives/stm/glow.mesh").unwrap(),
-        b"FLUFFY GLW",
+        b"RIVAL GLOW",
         "the other tool's file is never deleted to make room"
     );
     assert_no_temporaries(&bench);

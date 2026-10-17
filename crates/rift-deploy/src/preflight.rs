@@ -33,7 +33,6 @@ pub enum CheckLevel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum CheckAction {
-    AdoptFluffy,
     EnableSwitch {
         #[serde(rename = "switch")]
         switch_key: RefSwitch,
@@ -262,20 +261,10 @@ pub fn preflight(state: &GameState) -> Vec<Check> {
                 "strayPakOrder",
                 CheckLevel::Warn,
                 format!("{overriding} pak(s) the Riftstone does not manage load last"),
-                "Their names sort after the Riftstone's own paks, so they override them. Adopt them from Fluffy or move them out of pak_mods/.".into(),
+                "Their names sort after the Riftstone's own paks, so they override them. Move them out of pak_mods/ if the paks you installed here should win.".into(),
                 None,
             );
         }
-    }
-
-    if !state.fluffy_unadopted.is_empty() {
-        add(
-            "fluffyUnadopted",
-            CheckLevel::Info,
-            format!("{} mod(s) installed by Fluffy", state.fluffy_unadopted.len()),
-            "Adopt them to uninstall them and order their paks from the Riftstone. Fluffy's own files stay untouched.".into(),
-            Some(CheckAction::AdoptFluffy),
-        );
     }
 
     if !state.missing.is_empty() {
@@ -305,8 +294,8 @@ pub fn preflight(state: &GameState) -> Vec<Check> {
         add(
             "strays",
             CheckLevel::Info,
-            format!("{} file(s) in mod folders belong to no one", state.strays.len()),
-            "Neither the Riftstone nor Fluffy installed them. They are listed so nothing hides; the Riftstone never removes them.".into(),
+            format!("{} file(s) in mod folders belong to no install", state.strays.len()),
+            "They sit in pak_mods/, natives/, reframework/autorun/ or reframework/plugins/, and no install in the journal claims them. They are listed so nothing hides; the Riftstone never removes them.".into(),
             None,
         );
     }
@@ -340,16 +329,6 @@ pub fn preflight(state: &GameState) -> Vec<Check> {
             CheckLevel::Warn,
             format!("REFramework flagged {} faulty file(s)", reframework.faulty_files.len()),
             "Its FaultyFileDetector caught files the game could not read. They are listed in reframework_faulty_files.txt in the game folder.".into(),
-            None,
-        );
-    }
-
-    if state.crash_reporter_renamed {
-        add(
-            "crashReporter",
-            CheckLevel::Info,
-            "Fluffy renamed the game's crash reporter".into(),
-            "CrashReport.exe is now CrashReport_FMMBACKUP.exe. Steam's \"Verify integrity of game files\" restores it; the Riftstone leaves it alone.".into(),
             None,
         );
     }

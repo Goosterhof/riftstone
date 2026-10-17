@@ -416,13 +416,13 @@ fn a_same_size_file_over_a_finished_part_survives_recovery() {
         dirs: std::mem::take(&mut journal.created_dirs),
     });
     journal.save(bench.state()).unwrap();
-    bench.write("natives/stm/b.mesh", b"FLUFFY B!!!");
+    bench.write("natives/stm/b.mesh", b"RIVAL BYTES");
 
     let mut relaunched = bench.journal();
     let report = recover(&bench.ctx(), &mut relaunched).unwrap().unwrap();
     assert_eq!((report.files_rolled_back, report.files_kept), (1, 1));
     assert!(!bench.exists("natives/stm/a.mesh"), "its own file went");
-    assert_eq!(bench.read("natives/stm/b.mesh").unwrap(), b"FLUFFY B!!!");
+    assert_eq!(bench.read("natives/stm/b.mesh").unwrap(), b"RIVAL BYTES");
     assert_no_temporaries(&bench);
 }
 

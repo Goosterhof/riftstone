@@ -3,10 +3,11 @@
 
 mod common;
 
-use common::{fluffy_mod, Bench, TestMod};
+use common::{adopted, Bench, TestMod};
+use rift_core::OptionId;
 use rift_deploy::{
-    preflight, read_game_state, CheckAction, CheckLevel, FluffyLedger, GameState, PakLoadState,
-    PakOwner, RefStatus, RefSwitch,
+    preflight, read_game_state, Below, CheckAction, CheckLevel, DeployKind, GameState,
+    PakLoadState, PakOwner, RefStatus, RefSwitch,
 };
 
 const LOG_HEAD: &str = "[2026-10-14 21:34:14.970] [REFramework] [info] REFramework entry\r\n\
@@ -22,15 +23,16 @@ fn injected(file: &str, slot: u32) -> String {
 
 struct World {
     bench: Bench,
-    ledger: FluffyLedger,
     glow: TestMod,
     cape: TestMod,
     late: TestMod,
+    older: OptionId,
 }
 
 /// A lived-in game folder: three installs (one loaded at the last launch,
-/// one installed before it yet never loaded, one installed after it), a
-/// Fluffy leftover, strays, a missing file, a nested pak, a `.PAK`.
+/// one installed before it yet never loaded, one installed after it), an
+/// adopted install holding a numbered pak from another tool, strays, missing
+/// files, a nested pak, a `.PAK`.
 fn world() -> World {
     let bench = Bench::new();
     let mut journal = bench.journal();
@@ -50,11 +52,42 @@ fn world() -> World {
     journal.installs[0].installed_at = "2026-10-01T08:00:00Z".into();
     journal.installs[1].installed_at = "2026-10-01T08:00:00Z".into();
     journal.installs[2].installed_at = "2026-10-15T12:00:00Z".into();
+    // The journal took over a mod another tool had put here: its numbered
+    // pak, a loose file, and one more file that is gone since.
+    bench.write("pak_mods/x0000-Numbered Leftover.pak", b"KPKA oldpak");
+    bench.write("natives/stm/leftover.mesh", b"orphan");
+    let older = adopted(
+        &mut journal,
+        "adopted#Leftover-v1",
+        "Numbered Leftover",
+        "Leftover-v1",
+        &[
+            (
+                "pak_mods/x0000-Numbered Leftover.pak",
+                DeployKind::Pak,
+                11,
+                Below::Nothing,
+            ),
+            (
+                "natives/stm/leftover.mesh",
+                DeployKind::Loose,
+                6,
+                Below::Nothing,
+            ),
+            (
+                "natives/stm/leftover_gone.mesh",
+                DeployKind::Loose,
+                4,
+                Below::Nothing,
+            ),
+        ],
+    );
+    let older_id = older.option_id.clone();
+    journal.installs.push(older);
+    journal.pak_order.insert(0, older_id.clone());
     journal.save(bench.state()).unwrap();
     std::fs::remove_file(bench.root().join("natives/stm/cape/vanishes.mesh")).unwrap();
 
-    bench.write("pak_mods/x0000-Fluffy Leftover.pak", b"KPKA fluffy");
-    bench.write("natives/stm/fluffy.mesh", b"fluffy");
     bench.write("pak_mods/zz-unknown.pak", b"KPKA unknown");
     bench.write("pak_mods/sub/nested.pak", b"KPKA nested");
     bench.write("pak_mods/SHOUTING.PAK", b"KPKA shouting");
@@ -62,34 +95,21 @@ fn world() -> World {
     bench.write("natives/stm/stray.mesh", b"stray");
     bench.write("reframework/autorun/stray.lua", b"-- stray");
     bench.write("reframework/data/runtime.json", b"{}"); // runtime data is not a stray
-    bench.write("CrashReport_FMMBACKUP.exe", b"MZ");
     bench.write(
         "re2_framework_log.txt",
         format!(
             "{LOG_HEAD}{}{}",
-            injected("x0000-Fluffy Leftover.pak", 103),
+            injected("x0000-Numbered Leftover.pak", 103),
             injected("zrift-0000-glow.pak", 104)
         )
         .as_bytes(),
     );
-    let ledger = FluffyLedger {
-        game_install_path: None,
-        mods: vec![fluffy_mod(
-            "Leftover-v1",
-            "Fluffy Leftover",
-            &[
-                "pak_mods/x0000-Fluffy Leftover.pak",
-                "natives/stm/fluffy.mesh",
-                "natives/stm/fluffy_gone.mesh",
-            ],
-        )],
-    };
     World {
         bench,
-        ledger,
         glow,
         cape,
         late,
+        older: older_id,
     }
 }
 
@@ -98,7 +118,7 @@ fn state_of(w: &World) -> GameState {
     bench_game.build_id = Some("25300000".into());
     let ctx = rift_deploy::DeployContext {
         game: &bench_game,
-        ..w.bench.ctx_with(Some(&w.ledger), false)
+        ..w.bench.ctx_with(false)
     };
     read_game_state(&ctx, &w.bench.journal())
 }
@@ -113,7 +133,7 @@ fn the_state_lists_every_pak_with_its_owner_and_load_state() {
         [
             "pak_mods/SHOUTING.PAK",
             "pak_mods/sub/nested.pak",
-            "pak_mods/x0000-Fluffy Leftover.pak",
+            "pak_mods/x0000-Numbered Leftover.pak",
             "pak_mods/zrift-0000-glow.pak",
             "pak_mods/zrift-0001-cape.pak",
             "pak_mods/zrift-0002-late.pak",
@@ -133,8 +153,13 @@ fn the_state_lists_every_pak_with_its_owner_and_load_state() {
         PakOwner::Riftstone { option_id, adopted: false, .. } if *option_id == w.glow.id()
     ));
     assert!(matches!(
-        &pak("x0000-Fluffy Leftover.pak").owner,
-        PakOwner::Fluffy { section, .. } if section == "Leftover-v1"
+        &pak("x0000-Numbered Leftover.pak").owner,
+        PakOwner::Riftstone { option_id, name, adopted: true }
+            if *option_id == w.older && name == "Numbered Leftover"
+    ));
+    assert!(matches!(
+        &pak("x0000-Numbered Leftover.pak").load,
+        PakLoadState::Loaded { slot: 103, .. }
     ));
     assert_eq!(pak("zz-unknown.pak").owner, PakOwner::Unowned);
     assert!(pak("nested.pak").nested);
@@ -158,11 +183,22 @@ fn the_state_lists_every_pak_with_its_owner_and_load_state() {
         .find(|i| i.option_id == w.late.id())
         .unwrap();
     assert_eq!(late.paks[0].load, PakLoadState::Pending);
-    assert_eq!(state.pak_order.len(), 3);
+    assert_eq!(state.pak_order.len(), 4);
+    assert_eq!(state.pak_order[0], w.older, "the numbered pak loads first");
+    let older = state
+        .installs
+        .iter()
+        .find(|i| i.option_id == w.older)
+        .unwrap();
+    assert!(
+        matches!(&older.origin, rift_deploy::Origin::Adopted { label } if label == "Leftover-v1")
+    );
+    assert_eq!(older.paks.len(), 1);
+    assert_eq!((older.kinds.pak, older.kinds.loose), (1, 2));
 }
 
 #[test]
-fn the_state_finds_strays_missing_files_and_fluffys_leftovers() {
+fn the_state_finds_strays_and_the_missing_files_of_every_install() {
     let w = world();
     let state = state_of(&w);
     let strays: Vec<&str> = state.strays.iter().map(|s| s.game_path.as_str()).collect();
@@ -177,13 +213,19 @@ fn the_state_finds_strays_missing_files_and_fluffys_leftovers() {
             "reframework/autorun/stray.lua",
         ]
     );
-    assert_eq!(state.missing.len(), 1);
-    assert_eq!(state.missing[0].game_path, "natives/stm/cape/vanishes.mesh");
-    assert_eq!(state.missing[0].option_name, "Ermine Cape");
-    assert_eq!(state.fluffy_unadopted.len(), 1);
-    assert_eq!(state.fluffy_unadopted[0].file_count, 3);
-    assert_eq!(state.fluffy_unadopted[0].present_files, 2);
-    assert!(state.crash_reporter_renamed);
+    let missing: Vec<(&str, &str)> = state
+        .missing
+        .iter()
+        .map(|m| (m.game_path.as_str(), m.option_name.as_str()))
+        .collect();
+    assert_eq!(
+        missing,
+        [
+            ("natives/stm/cape/vanishes.mesh", "Ermine Cape"),
+            ("natives/stm/leftover_gone.mesh", "Numbered Leftover"),
+        ],
+        "an adopted install's files are watched like any other's"
+    );
     let change = state.build_changed.clone().unwrap();
     assert_eq!(
         (change.recorded.as_str(), change.now.as_str()),
@@ -197,7 +239,37 @@ fn the_state_finds_strays_missing_files_and_fluffys_leftovers() {
         json["paks"][3]["load"]["nativeName"],
         "re_chunk_000.pak.sub_000.pak.patch_002.pak"
     );
-    assert_eq!(json["crashReporterRenamed"], true);
+    assert_eq!(json["paks"][2]["owner"]["kind"], "riftstone");
+    assert_eq!(json["paks"][2]["owner"]["adopted"], true);
+    assert_eq!(json["installs"][3]["origin"]["kind"], "adopted");
+    let mut keys: Vec<&str> = json
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "buildChanged",
+            "game",
+            "installs",
+            "interrupted",
+            "missing",
+            "outdatedFiles",
+            "pakCount",
+            "pakCountWarning",
+            "pakLoad",
+            "pakOrder",
+            "paks",
+            "parked",
+            "reframework",
+            "running",
+            "strays",
+        ],
+        "the state carries exactly these fields"
+    );
 }
 
 #[test]
@@ -205,22 +277,23 @@ fn preflight_names_every_problem_most_severe_first() {
     let w = world();
     let state = state_of(&w);
     let checks = preflight(&state);
-    let ids: Vec<&str> = checks.iter().map(|c| c.id.as_str()).collect();
-    for expected in [
-        "reframework",
-        "paksLoaded",
-        "pakNested",
-        "pakExtension",
-        "strayPakOrder",
-        "fluffyUnadopted",
-        "missingFiles",
-        "strays",
-        "buildChanged",
-        "outdatedFormats",
-        "crashReporter",
-    ] {
-        assert!(ids.contains(&expected), "{expected} missing from {ids:?}");
-    }
+    let mut ids: Vec<&str> = checks.iter().map(|c| c.id.as_str()).collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        [
+            "buildChanged",
+            "missingFiles",
+            "outdatedFormats",
+            "pakExtension",
+            "pakNested",
+            "paksLoaded",
+            "reframework",
+            "strayPakOrder",
+            "strays",
+        ],
+        "exactly these checks, no others"
+    );
     assert!(checks.windows(2).all(|pair| pair[0].level >= pair[1].level));
     let check = |id: &str| checks.iter().find(|c| c.id == id).unwrap();
     assert_eq!(check("reframework").level, CheckLevel::Ok);
@@ -229,12 +302,17 @@ fn preflight_names_every_problem_most_severe_first() {
         CheckLevel::Warn,
         "one managed pak never loaded"
     );
+    assert!(check("missingFiles").detail.contains("Reinstall"));
+    let strays = check("strays");
+    assert_eq!(strays.level, CheckLevel::Info);
     assert_eq!(
-        check("fluffyUnadopted").action,
-        Some(CheckAction::AdoptFluffy)
+        strays.title,
+        "6 file(s) in mod folders belong to no install"
     );
-    assert!(!ids.contains(&"pakDirectory") && !ids.contains(&"looseFileLoader"));
-    assert!(!ids.contains(&"interrupted") && !ids.contains(&"gameRunning"));
+    assert!(strays
+        .detail
+        .contains("no install in the journal claims them"));
+    assert_eq!(strays.action, None);
 }
 
 #[test]

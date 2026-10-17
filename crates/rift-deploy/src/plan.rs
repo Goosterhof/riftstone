@@ -39,17 +39,15 @@ pub struct PlannedWrite {
 pub enum WriteAction {
     /// Nothing is there yet.
     Create,
-    /// Another Riftstone install's file is there: it is backed up and comes
-    /// back when this one is uninstalled.
+    /// A file an install in the journal owns (an adopted one too) is there:
+    /// it is backed up and comes back when this one is uninstalled.
     #[serde(rename_all = "camelCase")]
     OverwriteRiftstone {
         option_name: String,
         option_id: OptionId,
     },
-    /// A file Fluffy installed (per its ledger) is there: backed up.
-    #[serde(rename_all = "camelCase")]
-    OverwriteFluffy { section: String },
-    /// A file nobody claims is there: backed up.
+    /// A file no install claims is there: backed up, and it comes back when
+    /// this one is uninstalled.
     OverwriteUnowned,
     /// The option is already installed; this file is its own.
     Reinstall,
@@ -69,7 +67,7 @@ pub enum PlanWarning {
     /// A `requires=` name that is not installed.
     #[serde(rename_all = "camelCase")]
     RequiresMissing { name: String },
-    /// Installed options (or Fluffy mods) this install overwrites.
+    /// Installs in the journal (adopted ones too) this install overwrites.
     #[serde(rename_all = "camelCase")]
     Conflicts {
         option_names: Vec<String>,
@@ -138,12 +136,15 @@ pub enum RemovalAction {
     AlreadyGone,
 }
 
-/// Whose bytes a backup holds.
+/// Whose bytes a backup holds, for the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum OwnerKind {
+    /// No install: "the file that was there before".
     Unowned,
-    Fluffy,
+    /// An adopted install ([`crate::Origin::Adopted`]).
+    Adopted,
+    /// One of the Riftstone's own installs.
     Riftstone,
 }
 
@@ -162,26 +163,6 @@ pub struct UninstallReport {
     /// file at their path: kept aside in the backup store, on record
     /// ([`crate::Journal::parked`]), never deleted.
     pub parked: Vec<ParkedBackup>,
-}
-
-/// What adopting Fluffy's installs did.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AdoptReport {
-    pub adopted: usize,
-    pub already_adopted: usize,
-    /// Files Fluffy lists that are no longer on disk (skipped).
-    pub missing_files: usize,
-    /// Files outside the places the Riftstone manages (left to Fluffy).
-    pub refused_files: usize,
-    /// Files whose bytes belong to another layer (a later Fluffy mod
-    /// overwrote them, or a Riftstone install sits on them).
-    pub shared_files: usize,
-    /// Fluffy sections no library option matched (adopted under their
-    /// Fluffy name).
-    pub unmatched: Vec<String>,
-    /// The option ids the adopted installs now carry.
-    pub adopted_ids: Vec<OptionId>,
 }
 
 /// What recovery rolled back at launch.

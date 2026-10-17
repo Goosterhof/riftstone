@@ -78,7 +78,6 @@ fn a_real_zip_installs_through_rift_archive_and_uninstalls_clean() {
     ];
     let package = Package {
         id: id.clone(),
-        root_id: "custom-bench".into(),
         path: zip_path.clone(),
         file_name: "Lantern Glow Recolor.zip".into(),
         display_name: "Lantern Glow Recolor".into(),
@@ -231,7 +230,6 @@ fn cloaks_collection(library: &std::path::Path) -> (PathBuf, Package, ModOption)
         .collect();
     let package = Package {
         id: id.clone(),
-        root_id: "custom-bench".into(),
         path: zip_path.clone(),
         file_name: "Vernworth Cloaks Collection.zip".into(),
         display_name: "Vernworth Cloaks Collection".into(),
