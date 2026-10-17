@@ -2,18 +2,32 @@
 // and routes each one to the composables that care. The only module that
 // knows every composable — none of them import it, so no cycles.
 
-import { EVENTS, type InstallProgressEvent, type ScanProgressEvent, type UpdatesProgressEvent } from "@/types/rift";
-import { rift } from "@/services/rift";
+import {
+  EVENTS,
+  type DownloadProgressEvent,
+  type InstallProgressEvent,
+  type NxmReceivedEvent,
+  type ScanProgressEvent,
+  type UpdatesProgressEvent,
+} from "@/types/rift";
+import { asRiftFailure, rift } from "@/services/rift";
+import { voice, voicedLine } from "@/services/voice";
+import { resetDownloads, useDownloads } from "./useDownloads";
 import { resetFarWorld, useFarWorld } from "./useFarWorld";
 import { resetInstalled, useInstalled } from "./useInstalled";
 import { resetLabels, useLabels } from "./useLabels";
+import { resetLaunch, useLaunch } from "./useLaunch";
+import { resetLibrary, useLibrary } from "./useLibrary";
 import { resetNavigation, useNavigation } from "./useNavigation";
+import { resetNexusAccount } from "./useNexusAccount";
+import { resetNxmHandler } from "./useNxmHandler";
 import { resetPackage, usePackage } from "./usePackage";
+import { resetPreflight } from "./usePreflight";
 import { resetSearch, useSearch } from "./useSearch";
 import { resetSettings, useSettings } from "./useSettings";
 import { resetStone, useStone } from "./useStone";
 import { resetThumbnails } from "./useThumbnails";
-import { resetToasts } from "./useToasts";
+import { resetToasts, useToasts } from "./useToasts";
 import { resetWorld, useWorld } from "./useWorld";
 
 let unsubscribers: (() => void)[] = [];
@@ -24,35 +38,57 @@ async function onLibraryChanged(): Promise<void> {
   await Promise.all([
     stone.refreshOverview(),
     stone.refreshTroubled(),
-    stone.refreshRootCounts(),
     useSearch().run(),
+    useLibrary().load(),
     usePackage().reload(),
     useLabels().load(),
   ]);
 }
 
+/** v0.3: also when the game watcher sees Dragon's Dogma 2 start or stop. */
 async function onGameChanged(): Promise<void> {
   const tasks: Promise<void>[] = [
     useStone().refreshOverview(),
     useSearch().run(),
+    useLibrary().load(),
     useWorld().refresh(),
     usePackage().reload(),
   ];
   if (useInstalled().view.value || useNavigation().page.value === "world") tasks.push(useInstalled().load());
   await Promise.all(tasks);
+  // after the overview: the running state Play reads is in it
+  await useLaunch().onGameChanged();
 }
 
-/** A check found (or cleared) updates, or a link changed: the far world,
- *  every card's badge and labels, and the open detail — its labels decide
- *  the "adult" veil, so a stale detail would show what its card now blurs. */
+/** A check found (or cleared) updates, a link changed, a download landed or
+ *  the account's standing changed: the far world, every card's badge and
+ *  labels, the tree, and the open detail — its labels decide the "adult"
+ *  veil, so a stale detail would show what its card now blurs. */
 async function onUpdatesChanged(): Promise<void> {
   await Promise.all([
     useFarWorld().load(),
     useSearch().run(),
     useStone().refreshOverview(),
     useLabels().load(),
+    useLibrary().load(),
     useWorld().refresh(),
   ]);
+}
+
+/** v0.3: an nxm:// link reached the stone (the site's Mod Manager Download
+ *  button). The spine brought the window forward; the window says what became
+ *  of the link and shows THE FAR WORLD, where downloads live. A link that was
+ *  neither taken nor refused (nxm://premium only re-validates the account)
+ *  has nothing to say. */
+async function onNxmReceived(event: NxmReceivedEvent): Promise<void> {
+  const { push } = useToasts();
+  if (event.accepted) {
+    push("rift", "A Mod Manager Download link reached the stone: the download is on its way to your mods folder.");
+  } else if (event.refusal) {
+    push("ember", voicedLine(voice(asRiftFailure(event.refusal), "nxm")));
+  }
+  useNavigation().go("nexus");
+  await useDownloads().load();
 }
 
 async function subscribe(): Promise<void> {
@@ -65,10 +101,14 @@ async function subscribe(): Promise<void> {
     backend.on(EVENTS.gameChanged, () => void onGameChanged()),
     backend.on<UpdatesProgressEvent>(EVENTS.updatesProgress, (e) => useFarWorld().onProgress(e)),
     backend.on(EVENTS.updatesChanged, () => void onUpdatesChanged()),
+    backend.on(EVENTS.downloadsChanged, () => void useDownloads().onChanged()),
+    backend.on<DownloadProgressEvent>(EVENTS.downloadProgress, (e) => useDownloads().onProgress(e)),
+    backend.on<NxmReceivedEvent>(EVENTS.nxmReceived, (e) => void onNxmReceived(e)),
   ]);
 }
 
-/** First frame: overview, settings, search, the troubled list, root counts. */
+/** First frame: overview, settings, search, the library tree, the troubled
+ *  list, the far world, the labels and this session's downloads. */
 export async function wakeRiftstone(): Promise<void> {
   await subscribe();
   const stone = useStone();
@@ -76,10 +116,11 @@ export async function wakeRiftstone(): Promise<void> {
   await Promise.all([
     useSettings().loadSettings(),
     useSearch().run(),
+    useLibrary().load(),
     stone.refreshTroubled(),
-    stone.refreshRootCounts(),
     useFarWorld().load(),
     useLabels().load(),
+    useDownloads().load(),
   ]);
 }
 
@@ -93,6 +134,7 @@ export function resetRiftstone(): void {
   sleepRiftstone();
   resetStone();
   resetSearch();
+  resetLibrary();
   resetWorld();
   resetInstalled();
   resetFarWorld();
@@ -102,4 +144,9 @@ export function resetRiftstone(): void {
   resetToasts();
   resetThumbnails();
   resetPackage();
+  resetLaunch();
+  resetDownloads();
+  resetNexusAccount();
+  resetNxmHandler();
+  resetPreflight();
 }

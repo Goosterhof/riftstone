@@ -59,7 +59,7 @@ describe("PARKED", () => {
     await wakeOnParked();
     expect(part(slip(SKY_STORE), ".park__occ")).toBe(PARKED_OCCUPIED_LINE);
     expect(within(SKY_STORE, ".park__putback").title).toBe(
-      `Something sits at ${SKY} now: putting this back keeps that one aside in its turn, unless an install or Fluffy owns it — then the stone holds back and says who.`,
+      `Something sits at ${SKY} now: putting this back keeps that one aside in its turn, unless an install owns it — then the stone holds back and says which.`,
     );
     const restore = vi.spyOn(spine(), "restoreParked");
 

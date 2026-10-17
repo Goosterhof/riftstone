@@ -2,6 +2,9 @@
 // §8.1 — THE RIFT, the search-first library: a cold column of answers and,
 // beside it, the warm pane of Your World. The Rift also holds one package's
 // tree and the lookbook, which folds Your World to its sliver.
+// v0.3 (§16.1): with no words in the well and no facet narrowing, the answers
+// give way to THE LIBRARY TREE; any word or narrowing brings the flat,
+// uncapped answers back, and clearing returns the tree as it was left.
 import { computed, nextTick, ref, watch } from "vue";
 import { useSearch, type SortKey } from "@/composables/useSearch";
 import { useStone } from "@/composables/useStone";
@@ -10,6 +13,8 @@ import { useNavigation } from "@/composables/useNavigation";
 import { useSettings } from "@/composables/useSettings";
 import { usePackage } from "@/composables/usePackage";
 import { usePreflight } from "@/composables/usePreflight";
+import { useLibrary } from "@/composables/useLibrary";
+import LibraryTree from "@/components/LibraryTree.vue";
 import { formatBytes, plural } from "@/services/format";
 import { adultnessOf, veils } from "@/services/ledger";
 import OptionCard from "@/components/OptionCard.vue";
@@ -28,6 +33,8 @@ const nav = useNavigation();
 const pkg = usePackage();
 const preflight = usePreflight();
 const { settings } = useSettings();
+const tree = useLibrary();
+const libraryTree = ref<InstanceType<typeof LibraryTree> | null>(null);
 
 const list = ref<HTMLElement | null>(null);
 const lookbook = ref<InstanceType<typeof LookbookGrid> | null>(null);
@@ -36,8 +43,6 @@ const worldFolded = ref(true);
 const query = computed(() => search.settledText.value.trim());
 const library = computed(() => stone.overview.value?.library ?? null);
 const empty = computed(() => library.value !== null && library.value.packages === 0 && !stone.scanning.value);
-const rootLabels = computed(() => new Map((stone.overview.value?.roots ?? []).map((r) => [r.id, r.label])));
-const anyRootOff = computed(() => search.offRoots.value.length > 0);
 /** Trouble cards carry no labels: under a label filter they would lead a
  *  column they do not belong to. */
 const showTroubled = computed(() => !query.value && !search.labelFiltered.value && stone.troubled.value.length > 0);
@@ -51,6 +56,8 @@ const labelsBody = computed(() => {
     : `None of the ${plural(n, "option")} in view ${n === 1 ? "carries" : "carry"} that.`;
   return `${search.labelReading.value ?? ""}: ${lowerFirst(found)} Labels come from Nexus: an unlinked package carries none, so a label filter hides it too.`;
 });
+/** R16.1: the Rift is idle (no settled words, no narrowing) → the library tree. */
+const treeMode = computed(() => search.idle.value && !empty.value && !search.failure.value);
 const lookbookMode = computed(() => nav.riftMode.value === "lookbook");
 
 const SORTS: { id: SortKey; label: string }[] = [
@@ -81,13 +88,21 @@ async function focusCard(index: number): Promise<void> {
 
 /** The last trouble card left with the focus: the first creation takes it, else the well (§8.1.1). */
 function onTroubleEmptied(): void {
-  if (search.results.value.length) void focusCard(0);
+  if (treeMode.value) void focusTree();
+  else if (search.results.value.length) void focusCard(0);
   else document.getElementById("rift-search")?.focus();
 }
 
 function open(optionId: string, index: number): void {
   search.activeIndex.value = index;
+  // R16.7: the tree remembers it, so clearing the well shows this option open
+  if (tree.reveal(optionId)) tree.focusedKey.value = optionId;
   void world.open(optionId);
+}
+
+/** ↓ from the well with the tree on screen: the tree's tab stop takes the keyboard. */
+async function focusTree(): Promise<void> {
+  await libraryTree.value?.focusFirst();
 }
 
 function zoom(optionId: string, name: string): void {
@@ -148,7 +163,7 @@ watch([() => nav.riftMode.value, () => nav.packageId.value], ([mode]) => {
   if (mode === "package" && world.selectedId.value && window.matchMedia(NARROW).matches) world.close();
 });
 
-defineExpose({ focusCard });
+defineExpose({ focusCard, focusTree });
 </script>
 
 <template>
@@ -156,7 +171,19 @@ defineExpose({ focusCard });
     <main class="rift" aria-label="The Rift">
       <!-- results header, 48 px, sticky -->
       <header class="rift__head">
-        <template v-if="nav.riftMode.value === 'results'">
+        <template v-if="nav.riftMode.value === 'results' && treeMode">
+          <p class="rift__echo">
+            <b>Library</b
+            ><span v-if="library" class="rift__dim">
+              · {{ plural(library.packages, "package") }} · {{ plural(library.options, "option") }}</span
+            >
+          </p>
+          <div class="rift__tools">
+            <RiftButton size="sm" @click="libraryTree?.expandAll()">Expand all</RiftButton>
+            <RiftButton size="sm" @click="tree.collapseAll()">Collapse all</RiftButton>
+          </div>
+        </template>
+        <template v-else-if="nav.riftMode.value === 'results'">
           <p class="rift__echo" aria-live="polite">
             <template v-if="query"
               ><b>{{ search.results.value.length }}</b> answered “{{ query }}”<span
@@ -191,7 +218,9 @@ defineExpose({ focusCard });
         </template>
         <template v-else>
           <p class="rift__echo">
-            <button type="button" class="rift__back" @click="nav.backToResults()">‹ Answers</button>
+            <button type="button" class="rift__back" @click="nav.backToResults()">
+              {{ search.idle.value ? "‹ Library" : "‹ Answers" }}
+            </button>
             <b>{{ pkg.detail.value?.package.displayName ?? "Package" }}</b>
             <span v-if="pkg.detail.value" class="rift__dim"
               >· {{ plural(pkg.detail.value.package.optionCount, "option") }} ·
@@ -235,10 +264,11 @@ defineExpose({ focusCard });
         <RiftInscription
           v-if="empty"
           inscription="THE RIFT IS QUIET"
-          body="No mods in your library roots yet. Add the folder where your downloads land, or adopt what Fluffy already has."
+          body="No mods in your mods folder yet. Put a mod's zip, 7z, rar or folder in it, and the stone reads it."
         >
-          <RiftButton variant="primary" @click="preflight.addRoot()">Add library folder…</RiftButton>
-          <RiftButton @click="nav.go('world')">Adopt Fluffy's library</RiftButton>
+          <RiftButton variant="primary" :busy="preflight.busy.value === 'mods'" @click="preflight.openModsFolder()"
+            >Open mods folder</RiftButton
+          >
         </RiftInscription>
 
         <FailureNotice
@@ -261,7 +291,6 @@ defineExpose({ focusCard });
           <RiftButton v-if="!search.includeMenuOnly.value" variant="primary" @click="search.setMenuOnly(true)"
             >Include menu-only</RiftButton
           >
-          <RiftButton v-if="anyRootOff" @click="search.allRoots()">Search all roots</RiftButton>
           <RiftButton @click="search.clearText()">Clear search</RiftButton>
         </RiftInscription>
 
@@ -269,7 +298,9 @@ defineExpose({ focusCard });
           <!-- §8.1.1 the trouble, carved as one line above the first creation,
                outside the listbox: its cards are not options -->
           <TroubleFold v-if="!query && !search.labelFiltered.value" @emptied="onTroubleEmptied" />
+          <LibraryTree v-if="treeMode" ref="libraryTree" :class="{ 'is-after-fold': showTroubled }" />
           <div
+            v-else
             id="rift-answers"
             ref="list"
             class="rift__list"
@@ -294,7 +325,6 @@ defineExpose({ focusCard });
                   :selected="world.selectedId.value === hit.optionId"
                   :active="search.activeIndex.value === search.results.value.indexOf(hit)"
                   :veiled="veils(settings.veil, adultnessOf(hit))"
-                  :root-label="rootLabels.get(hit.rootId) ?? ''"
                   @open="open(hit.optionId, search.results.value.indexOf(hit))"
                   @crumb="crumb"
                   @zoom="zoom(hit.optionId, hit.name)"
@@ -311,7 +341,6 @@ defineExpose({ focusCard });
                 :selected="world.selectedId.value === hit.optionId"
                 :active="search.activeIndex.value === i || (search.activeIndex.value < 0 && i === 0)"
                 :veiled="veils(settings.veil, adultnessOf(hit))"
-                :root-label="rootLabels.get(hit.rootId) ?? ''"
                 @open="open(hit.optionId, i)"
                 @crumb="crumb"
                 @zoom="zoom(hit.optionId, hit.name)"

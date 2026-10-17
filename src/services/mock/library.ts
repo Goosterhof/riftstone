@@ -3,12 +3,15 @@
 // Nexus-named download with an update waiting, a pak pair that conflicts, a
 // pack built for the old engine, an archive that will not open). Every name
 // here is invented. No real mod, author or file from anyone's library.
+// v0.3: everything lives in ONE invented mods folder (MOCK_MODS_DIR); a folder
+// package's id follows its name, an archive's its name and size (rift-core
+// PackageId); two hood variants share a NameAsBundle, so the trees carry a
+// bundle node the way the spine's do.
 
 import type {
   ArchiveEntry,
   NexusCandidate,
   NexusLabels,
-  LibraryRoot,
   ModInfo,
   ModOption,
   NexusLink,
@@ -26,22 +29,8 @@ export interface MockPackage {
   entries: ArchiveEntry[];
 }
 
-export const MOCK_ROOTS: LibraryRoot[] = [
-  {
-    id: "fluffy",
-    path: "C:\\Modding\\Fluffy\\Games\\DragonsDogma2\\Mods",
-    label: "Fluffy's Mods folder",
-    kind: "fluffy",
-    dd2ShapedOnly: false,
-  },
-  {
-    id: "downloads",
-    path: "C:\\Users\\arisen\\Downloads",
-    label: "Downloads",
-    kind: "downloads",
-    dd2ShapedOnly: true,
-  },
-];
+/** The one library: an invented folder beside an invented install. */
+export const MOCK_MODS_DIR = "C:\\Games\\Stone Bench\\mods";
 
 function fnv(text: string): string {
   let hash = 0xcbf29ce484222325n;
@@ -98,10 +87,9 @@ function join(root: string, rel: string): string {
   return root ? `${root}/${rel}` : rel;
 }
 
-function buildPackage(seed: {
+export interface PackageSeed {
   fileName: string;
   displayName: string;
-  rootId: string;
   format: PackageFormat;
   size: number;
   modifiedMs: number;
@@ -109,9 +97,16 @@ function buildPackage(seed: {
   problems?: Problem[];
   extraEntries?: { path: string; size: number }[];
   options: OptionSeed[];
-}): MockPackage {
-  const id = fnv(`archive|${seed.fileName.toLowerCase()}|${seed.size}`);
-  const root = MOCK_ROOTS.find((r) => r.id === seed.rootId) ?? MOCK_ROOTS[0];
+}
+
+/** rift-core PackageId: a folder by its name, an archive by its name and size. */
+function packageId(seed: Pick<PackageSeed, "fileName" | "format" | "size">): string {
+  const name = seed.fileName.toLowerCase();
+  return fnv(seed.format === "folder" ? `folder|${name}` : `archive|${name}|${seed.size}`);
+}
+
+export function buildPackage(seed: PackageSeed): MockPackage {
+  const id = packageId(seed);
   const entries: ArchiveEntry[] = [...(seed.extraEntries ?? [])];
   const options: ModOption[] = seed.options.map((o) => {
     const payload: PayloadFile[] = (o.payload ?? []).map((p) => ({
@@ -163,8 +158,7 @@ function buildPackage(seed: {
   return {
     summary: {
       id,
-      rootId: root.id,
-      path: `${root.path}\\${seed.fileName}`,
+      path: `${MOCK_MODS_DIR}\\${seed.fileName}`,
       fileName: seed.fileName,
       displayName: seed.displayName,
       format: seed.format,
@@ -277,11 +271,15 @@ for (const [i, colour] of CAPE_COLOURS.entries()) {
   });
 }
 const HOOD_LOOKS = ["Undyed wool", "Ink-black with a pilgrim's badge", "Sun-faded ochre", "Bakbattahli silk"];
+/** The two southern dyes share a NameAsBundle: under their menu they gather
+ *  into one bundle node, the way the spine's tree::nest gathers them. */
+const HOOD_BUNDLE = "Pilgrim Hood - Southern Dyes";
 for (const [i, look] of HOOD_LOOKS.entries()) {
   wardrobeOptions.push({
     root: `${WARDROBE}/PilgrimHood-Variation${i + 1}`,
     name: `Pilgrim Hood - Variation ${i + 1}`,
     info: {
+      ...(i >= 2 ? { nameAsBundle: HOOD_BUNDLE } : {}),
       addonFor: "Pilgrim Hood (Menu Option)",
       author: "Hennig of Melve",
       version: "1.0",
@@ -351,7 +349,6 @@ export const MOCK_PACKAGES: MockPackage[] = [
   buildPackage({
     fileName: `${WARDROBE}.zip`,
     displayName: WARDROBE,
-    rootId: "fluffy",
     format: "zip",
     size: 241_172_480,
     modifiedMs: NOW - 3 * DAY,
@@ -370,7 +367,6 @@ export const MOCK_PACKAGES: MockPackage[] = [
   buildPackage({
     fileName: "Lantern Glow Recolor 412 2.1 2026-09-30T08-12Z aB3dE9fQ1.zip",
     displayName: "Lantern Glow Recolor",
-    rootId: "downloads",
     format: "zip",
     size: 12_582_912,
     modifiedMs: NOW - 16 * DAY,
@@ -406,7 +402,6 @@ export const MOCK_PACKAGES: MockPackage[] = [
   buildPackage({
     fileName: "Battahli Sun Bleach-889-1-0-1709876543.7z",
     displayName: "Battahli Sun Bleach",
-    rootId: "fluffy",
     format: "sevenZip",
     size: 318_767_104,
     modifiedMs: NOW - 40 * DAY,
@@ -437,7 +432,6 @@ export const MOCK_PACKAGES: MockPackage[] = [
   buildPackage({
     fileName: "REFramework.zip",
     displayName: "REFramework",
-    rootId: "fluffy",
     format: "zip",
     size: 13_272_178,
     modifiedMs: NOW - 5 * DAY,
@@ -454,7 +448,6 @@ export const MOCK_PACKAGES: MockPackage[] = [
   buildPackage({
     fileName: "Pawn Chatter Filter.rar",
     displayName: "Pawn Chatter Filter",
-    rootId: "fluffy",
     format: "rar",
     size: 137_284,
     modifiedMs: NOW - 9 * DAY,
@@ -488,7 +481,6 @@ export const MOCK_PACKAGES: MockPackage[] = [
   buildPackage({
     fileName: "Ox Cart Express",
     displayName: "Ox Cart Express",
-    rootId: "fluffy",
     format: "folder",
     size: 3_343,
     modifiedMs: NOW - 2 * DAY,
@@ -508,7 +500,6 @@ export const MOCK_PACKAGES: MockPackage[] = [
   buildPackage({
     fileName: "Brine Water Clarity.zip",
     displayName: "Brine Water Clarity",
-    rootId: "fluffy",
     format: "zip",
     size: 52_428_800,
     modifiedMs: NOW - 12 * DAY,
@@ -530,7 +521,6 @@ export const MOCK_PACKAGES: MockPackage[] = [
   buildPackage({
     fileName: "Sacred Arbor Fog Removal.zip",
     displayName: "Sacred Arbor Fog Removal",
-    rootId: "fluffy",
     format: "zip",
     size: 31_457_280,
     modifiedMs: NOW - 11 * DAY,
@@ -552,7 +542,6 @@ export const MOCK_PACKAGES: MockPackage[] = [
   buildPackage({
     fileName: "Old Road Armor Pack.zip",
     displayName: "Old Road Armor Pack",
-    rootId: "fluffy",
     format: "zip",
     size: 88_080_384,
     modifiedMs: NOW - 200 * DAY,
@@ -594,7 +583,6 @@ export const MOCK_PACKAGES: MockPackage[] = [
   buildPackage({
     fileName: "Corrupted Download.7z",
     displayName: "Corrupted Download",
-    rootId: "downloads",
     format: "sevenZip",
     size: 4_194_304,
     modifiedMs: NOW - 1 * DAY,
@@ -610,7 +598,6 @@ export const MOCK_PACKAGES: MockPackage[] = [
   buildPackage({
     fileName: "Readme Only.zip",
     displayName: "Readme Only",
-    rootId: "downloads",
     format: "zip",
     size: 8_192,
     modifiedMs: NOW - 6 * DAY,
@@ -630,6 +617,60 @@ export const MOCK_PACKAGES: MockPackage[] = [
 
 export const MOCK_NOW = NOW;
 export const MOCK_DAY = DAY;
+
+/** v0.3: what a download lands as — the archive under Nexus's own file name,
+ *  one option, linked to the exact mod and file it came from (source
+ *  "download"), as the spine links a landed download in nexus.json. */
+export function downloadedPackage(seed: {
+  /** The archive's name in the mods folder. */
+  fileName: string;
+  displayName: string;
+  size: number;
+  modId: number;
+  fileId: number;
+  groupId: number | null;
+  version: string | null;
+  uploadedMs: number;
+  author: string | null;
+}): MockPackage {
+  const slug =
+    seed.displayName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_|_$/g, "") || "download";
+  const half = Math.max(1, Math.floor(seed.size / 2));
+  return buildPackage({
+    fileName: seed.fileName,
+    displayName: seed.displayName,
+    format: "zip",
+    size: seed.size,
+    modifiedMs: Date.now(),
+    nexus: {
+      modId: seed.modId,
+      fileId: seed.fileId,
+      groupId: seed.groupId,
+      sqid: null,
+      version: seed.version,
+      uploadedMs: seed.uploadedMs,
+      source: "download",
+    },
+    options: [
+      {
+        root: seed.displayName,
+        name: seed.displayName,
+        info: {
+          author: seed.author,
+          version: seed.version,
+          description: "Downloaded from Nexus by the stone, straight into the mods folder.",
+        },
+        payload: [
+          { rel: `natives/stm/effect/${slug}/${slug}_00.tex.251211553`, size: half },
+          { rel: `natives/stm/effect/${slug}/${slug}_01.tex.251211553`, size: seed.size - half },
+        ],
+      },
+    ],
+  });
+}
 
 // --- v0.2: what Nexus says each linked mod is --------------------------------
 // Invented labels in Nexus's own shape: one category per mod, tags often none,

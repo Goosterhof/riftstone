@@ -1,42 +1,56 @@
 // The Error Manifesto, as one module. Every RiftFailure the window shows
 // passes through `voice()`: kind + detail in, three parts out —
 //   voice    what happened, in the Rift's register (an inscription + a line),
-//   empathy  that we understand what you tried, and what did NOT change,
+//   empathy  that the stone understands what you tried, and what did NOT change,
 //   recovery the action(s) that get you moving again (always at least one).
 // Components never compose failure copy themselves.
+//
+// v0.3: a "nexus" failure carries a NexusReason code beside its sentence
+// (`detail: { detail, reason? }`). The code is read FIRST and decides the
+// voice; the sentence's words are read only when no code came (an odd answer,
+// or an older spine), through the regexes the v0.2 voice used.
 
-import {
-  FLUFFY_STAND_IN_PREFIX,
-  type InstalledRow,
-  type PackageSummary,
-  type Problem,
-  type ProblemKind,
-  type RiftError,
-} from "@/types/rift";
+import type { InstalledRow, NexusReason, PackageSummary, Problem, ProblemKind, RiftError } from "@/types/rift";
 import type { RiftFailure } from "./rift";
 
-/** What the user was doing when the failure struck. */
-export type VoiceContext =
-  | "install"
-  | "uninstall"
-  | "scan"
-  | "package"
-  | "search"
-  | "reorder"
-  | "adopt"
-  | "switch"
-  | "roots"
-  | "game"
-  | "nexusCheck"
-  | "nexusKey"
-  | "nexusLink"
-  /** v0.2: Find on Nexus by name. Nothing is linked by a find, so a failure
-   *  leaves the package exactly as it was. */
-  | "nexusFind"
-  | "settings"
-  /** v0.2: Put back / Discard on a PARKED file. The caller adds `gamePath`
-   *  and `act` ("putBack" | "discard") to the detail. */
-  | "parked";
+/** What the user was doing when the failure struck. The specs walk every one
+ *  of them, so a context added here is voiced in every kind before it ships. */
+export const VOICE_CONTEXTS = [
+  "install",
+  "uninstall",
+  "scan",
+  "package",
+  "search",
+  "reorder",
+  "switch",
+  "game",
+  "nexusCheck",
+  "nexusKey",
+  "nexusLink",
+  // v0.2: Find on Nexus by name. Nothing is linked by a find, so a failure
+  // leaves the package exactly as it was.
+  "nexusFind",
+  "settings",
+  // v0.2: Put back / Discard on a PARKED file. The caller adds `gamePath` and
+  // `act` ("putBack" | "discard") to the detail.
+  "parked",
+  // v0.3: Play (plan_launch / launch_game).
+  "launch",
+  // v0.3: a download into the mods folder (start, cancel, clear, or a row that failed).
+  "download",
+  // v0.3: validating the stored key again (refresh_nexus_account).
+  "nexusAccount",
+  // v0.3: browsing Nexus, or reading one mod's files and patch notes.
+  "browse",
+  // v0.3: tracked mods and endorsements (get_nexus_standings, set_tracked, set_endorsement).
+  "standings",
+  // v0.3: an nxm:// link that reached the stone, or the handler switch.
+  "nxm",
+  // v0.3: opening the mods folder in Explorer.
+  "modsFolder",
+] as const;
+
+export type VoiceContext = (typeof VOICE_CONTEXTS)[number];
 
 export type RecoveryKind =
   | "retry"
@@ -46,6 +60,10 @@ export type RecoveryKind =
   | "showInFolder"
   | "replaceKey"
   | "openPreflight"
+  /** v0.3: the Nexus page the failure belongs to (a file's page for a
+   *  download: its Mod Manager Download button makes a fresh link). The
+   *  caller knows which page; the voice only offers the door. */
+  | "openNexusPage"
   | "dismiss";
 
 export interface Recovery {
@@ -59,7 +77,7 @@ export interface Voiced {
   inscription: string | null;
   /** What happened. */
   voice: string;
-  /** We understand what you tried; what is still safe. */
+  /** The stone understands what you tried; what is still safe. */
   empathy: string;
   /** Always ≥ 1. */
   recovery: Recovery[];
@@ -72,6 +90,9 @@ const COPY: Recovery = { kind: "copyDetails", label: "Copy details" };
 const RESCAN: Recovery = { kind: "rescan", label: "Rescan" };
 const SHOW: Recovery = { kind: "showInFolder", label: "Show in folder" };
 const DISMISS: Recovery = { kind: "dismiss", label: "Dismiss" };
+const REPLACE_KEY: Recovery = { kind: "replaceKey", label: "Replace key…" };
+const ADD_KEY: Recovery = { kind: "replaceKey", label: "Add key…" };
+const OPEN_PAGE: Recovery = { kind: "openNexusPage", label: "Open its Nexus page" };
 
 /** The first non-empty detail value among `keys`. */
 export function pick(detail: Detail, ...keys: string[]): string | null {
@@ -91,7 +112,6 @@ const CROSSING_INSCRIPTION: Partial<Record<VoiceContext, string>> = {
   install: "THE CROSSING FAILED",
   uninstall: "THE RETURN FAILED",
   reorder: "THE ORDER HELD",
-  adopt: "THE ADOPTION FAILED",
 };
 
 /** "the stone put back the 4 files already placed" — only when the spine says so. */
@@ -115,13 +135,47 @@ function writeFailure(d: Detail, context: VoiceContext): Voiced {
   };
 }
 
+/** v0.3: the io failures of the new acts, each in its own words. */
+const IO_VOICES: Partial<Record<VoiceContext, (why: string) => Voiced>> = {
+  launch: (why) => ({
+    kind: "io",
+    inscription: "THE WORLD STAYS ASLEEP",
+    voice: `The stone couldn't start Dragon's Dogma 2: ${why}.`,
+    empathy: "Nothing in your game folder changed. Steam can start the game meanwhile.",
+    recovery: [RETRY, COPY],
+  }),
+  download: (why) => ({
+    kind: "io",
+    inscription: null,
+    voice: `The stone couldn't write the download into your mods folder: ${why}.`,
+    empathy: "Its partial file was removed; nothing else in your mods folder was touched.",
+    recovery: [RETRY, COPY],
+  }),
+  modsFolder: (why) => ({
+    kind: "io",
+    inscription: null,
+    voice: `The stone couldn't open your mods folder: ${why}.`,
+    empathy: "Nothing in it changed. Its path is on PREFLIGHT, so Explorer can open it too.",
+    recovery: [RETRY, COPY],
+  }),
+  nxm: (why) => ({
+    kind: "io",
+    inscription: null,
+    voice: `The stone couldn't change which program answers nxm:// links: ${why}.`,
+    empathy: "The Windows setting is as it was.",
+    recovery: [RETRY, COPY],
+  }),
+};
+
 function ioFailure(d: Detail, context: VoiceContext): Voiced {
   if (CROSSING_INSCRIPTION[context]) return writeFailure(d, context);
+  const own = IO_VOICES[context];
+  if (own) return own(stripStop(reasonOf(d, "Windows refused")));
   return {
     kind: "io",
     inscription: null,
     voice: `The stone couldn't read or write a file: ${stripStop(reasonOf(d, "the disk refused"))}.`,
-    empathy: "Nothing in your game folder or your library was changed.",
+    empathy: "Nothing in your game folder or your mods folder was changed.",
     recovery: [RETRY, COPY],
   };
 }
@@ -157,7 +211,7 @@ function goneFromLibrary(): Voiced {
   return {
     kind: "entryNotFound",
     inscription: null,
-    voice: "That mod has left the library since the last scan.",
+    voice: "That mod has left your mods folder since the last scan.",
     empathy: "Nothing was written. A rescan brings the list up to date.",
     recovery: [RESCAN],
   };
@@ -176,7 +230,25 @@ function noGame(): Voiced {
 /** The engine's running-game wording ("Dragon's Dogma 2 is running and holds
  *  … open", Windows' "being used by another process") — not the bare word
  *  "open", which a path like opening_title.tex carries too. */
-const RUNNING = /\b(?:is|are) running\b|\bin use\b|being used by another process|\bholds\b.{0,120}\bopen\b/i;
+const RUNNING =
+  /\b(?:is|are)(?: already)? running\b|\bin use\b|being used by another process|\bholds\b.{0,120}\bopen\b/i;
+
+const CLOSE_AND_RETRY = "Nothing was changed. Close Dragon's Dogma 2, then try again.";
+
+/** What a refusal left as it was, by what was refused. */
+const REFUSED_EMPATHY: Partial<Record<VoiceContext, string>> = {
+  reorder: CLOSE_AND_RETRY,
+  switch: CLOSE_AND_RETRY,
+  launch: "Nothing was started, and your game folder is as it was.",
+  download: "Nothing in your mods folder changed.",
+  nxm: "Nothing was downloaded, and no setting changed.",
+  modsFolder: "Nothing in your mods folder changed.",
+  standings: "Nothing changed on Nexus.",
+};
+
+/** A refusal these acts meet is a fact about the moment, not a press that
+ *  failed: trying the same press again cannot help. */
+const REFUSED_FOR_GOOD: ReadonlySet<VoiceContext> = new Set(["download", "nxm", "standings"]);
 
 function refused(d: Detail, context: VoiceContext): Voiced {
   if (context === "parked") return parkedRefused(d);
@@ -186,11 +258,8 @@ function refused(d: Detail, context: VoiceContext): Voiced {
     kind: "refused",
     inscription: running ? "THE WORLD IS AWAKE" : null,
     voice: `The stone held back: ${stripStop(reason)}.`,
-    empathy:
-      context === "reorder" || context === "switch"
-        ? "Nothing was changed. Close Dragon's Dogma 2, then try again."
-        : "Nothing was written. Close Dragon's Dogma 2 if it's running, then try again.",
-    recovery: [RETRY],
+    empathy: REFUSED_EMPATHY[context] ?? "Nothing was written. Close Dragon's Dogma 2 if it's running, then try again.",
+    recovery: REFUSED_FOR_GOOD.has(context) ? [DISMISS] : [RETRY],
   };
 }
 
@@ -251,108 +320,237 @@ function journalFailure(d: Detail, context: VoiceContext): Voiced {
   };
 }
 
+// ---------------------------------------------------------------------------
+// The far world — Nexus. The reason code first; the words only as a fallback.
+// ---------------------------------------------------------------------------
+
+const NEXUS_REASONS: readonly NexusReason[] = [
+  "offline",
+  "rateLimited",
+  "noKey",
+  "keyRejected",
+  "premiumRequired",
+  "linkExpired",
+  "linkNotYours",
+  "linkRefused",
+  "fileGone",
+  "sizeMismatch",
+  "notTheFile",
+  "endorseNotDownloaded",
+  "endorseTooSoon",
+  "endorseOwnMod",
+];
+
+/** The spine's reason code, when the detail carries a known one. */
+export function nexusReasonOf(d: Detail): NexusReason | null {
+  const raw = pick(d, "reason");
+  return NEXUS_REASONS.find((r) => r === raw) ?? null;
+}
+
+/** The spine's sentence for a nexus failure: its `detail`, never the code. A
+ *  `reason` that is not a code (an older spine's free text) is a sentence too. */
+function nexusSentence(d: Detail, fallback: string): string {
+  const reason = pick(d, "reason");
+  const sentence = pick(d, "detail", "message", "error");
+  if (sentence) return sentence;
+  return reason && !nexusReasonOf(d) ? reason : fallback;
+}
+
 const NEXUS_REFUSED = /\b(401|403)\b|reject|invalid key|unauthori[sz]ed|forbidden/i;
 const NEXUS_QUOTA = /\b429\b|quota|rate limit/i;
+/** An answer the spine could not use means Nexus WAS reached: not offline. */
+const NEXUS_UNREADABLE = /could not use|not graphql|unexpected shape|HTTP status \d{3}/i;
 
-function nexusRefused(): Voiced {
-  return {
-    kind: "nexus",
-    inscription: "THE FAR WORLD REFUSES",
-    voice: "Nexus didn't accept that key: it may have been regenerated.",
-    empathy: "Nothing else changed.",
-    recovery: [{ kind: "replaceKey", label: "Replace key…" }],
-  };
+/** Every way the far world can fail: a reason code, an answer the stone could
+ *  not read, or (linking only) a link that leads nowhere. */
+type FarCase = NexusReason | "odd" | "badLink";
+
+/** The code when one came; else what the sentence's words say (the v0.2 voice). */
+function farCase(d: Detail, context: VoiceContext): FarCase {
+  const coded = nexusReasonOf(d);
+  if (coded) return coded;
+  const raw = Object.values(d).join(" ");
+  if (NEXUS_QUOTA.test(raw)) return "rateLimited";
+  if (NEXUS_REFUSED.test(raw)) return "keyRejected";
+  if (NEXUS_UNREADABLE.test(raw)) return "odd";
+  return context === "nexusLink" ? "badLink" : "offline";
 }
 
-function nexusQuota(d: Detail): Voiced {
-  return {
-    kind: "nexus",
-    inscription: null,
-    voice: `Nexus has rationed the stone for now: ${stripStop(reasonOf(d, "the hourly request quota is spent"))}.`,
-    empathy: "Update status below is from the last check. Nothing was lost.",
-    recovery: [RETRY],
-  };
-}
+/** What a far-world failure left as it was, by what was being done. */
+const FAR_UNCHANGED: Partial<Record<VoiceContext, string>> = {
+  nexusCheck: "Update status below is from the last check.",
+  nexusKey: "Nothing else changed.",
+  nexusLink: "The package stays as it was.",
+  download: "Nothing was written to your mods folder.",
+  nexusAccount: "Your key is still stored, and nothing else changed.",
+  browse: "Your mods folder is as it was.",
+  standings: "Nothing changed on Nexus.",
+  nxm: "Nothing was downloaded.",
+};
 
-function nexusOffline(): Voiced {
-  return {
-    kind: "nexus",
-    inscription: "THE FAR WORLD IS OUT OF REACH",
-    voice: "The stone can't reach Nexus right now.",
-    empathy: "Update status below is from the last check. Everything else works offline.",
-    recovery: [RETRY],
-  };
-}
+const unchanged = (context: VoiceContext): string =>
+  FAR_UNCHANGED[context] ?? "Nothing in your game folder or your mods folder changed.";
+
+type FarVoice = (d: Detail, context: VoiceContext) => Voiced;
+
+const far = (inscription: string | null, voiceLine: string, empathy: string, recovery: Recovery[]): Voiced => ({
+  kind: "nexus",
+  inscription,
+  voice: voiceLine,
+  empathy,
+  recovery,
+});
+
+/** The press the site's Mod Manager Download button gives again. */
+const FRESH_LINK = "Press Mod Manager Download on the file's Nexus page again for a fresh one.";
+
+const FAR_VOICES: Record<Exclude<FarCase, "badLink">, FarVoice> = {
+  offline: (_d, c) =>
+    far(
+      "THE FAR WORLD IS OUT OF REACH",
+      "The stone can't reach Nexus right now.",
+      `${unchanged(c)} Everything else works offline.`,
+      [RETRY],
+    ),
+  rateLimited: (d, c) =>
+    far(
+      null,
+      `Nexus has rationed the stone for now: ${stripStop(nexusSentence(d, "the hourly request quota is spent")).replace(/^rate limit:\s*/i, "")}.`,
+      `${unchanged(c)} Nothing was lost.`,
+      [RETRY],
+    ),
+  noKey: (_d, c) =>
+    far(
+      null,
+      "That needs your Nexus personal API key, and the stone holds none.",
+      `${unchanged(c)} Update checks, browsing and patch notes work without one.`,
+      [ADD_KEY],
+    ),
+  keyRejected: (_d, c) =>
+    far("THE FAR WORLD REFUSES", "Nexus didn't accept that key: it may have been regenerated.", unchanged(c), [
+      REPLACE_KEY,
+    ]),
+  premiumRequired: (_d, c) =>
+    far(
+      null,
+      "Nexus lets only premium accounts download from inside the stone.",
+      `${unchanged(c)} Press Mod Manager Download on the file's Nexus page instead: while the stone answers nxm:// links, the file comes here.`,
+      [OPEN_PAGE],
+    ),
+  linkExpired: (_d, c) =>
+    far(null, "That Mod Manager Download link has expired.", `${unchanged(c)} ${FRESH_LINK}`, [OPEN_PAGE]),
+  linkNotYours: (_d, c) =>
+    far(
+      null,
+      "That link was made for another Nexus account than the one whose key the stone holds.",
+      `${unchanged(c)} Sign in to Nexus with that key's account, or replace the key, then press Mod Manager Download again.`,
+      [OPEN_PAGE, REPLACE_KEY],
+    ),
+  linkRefused: (_d, c) =>
+    far(null, "Nexus refused that link for this file.", `${unchanged(c)} ${FRESH_LINK}`, [OPEN_PAGE]),
+  fileGone: (_d, c) =>
+    far(
+      null,
+      "That file is gone from Nexus: its author removed or archived it.",
+      `${unchanged(c)} The mod's other files may still be there.`,
+      [OPEN_PAGE],
+    ),
+  sizeMismatch: () =>
+    far(
+      null,
+      "The download arrived at the wrong size, so the stone let it go.",
+      "Nothing was left in your mods folder. A second try usually arrives whole.",
+      [RETRY],
+    ),
+  notTheFile: () =>
+    far(
+      null,
+      "What arrived is not the file that was asked for: its fingerprint names another file on Nexus.",
+      "The stone let it go; nothing was left in your mods folder.",
+      [RETRY, COPY],
+    ),
+  endorseNotDownloaded: () =>
+    far(
+      null,
+      "Nexus takes an endorsement only from an account that downloaded the mod from Nexus.",
+      "Nothing changed on Nexus. Download it with this account first, then endorse it.",
+      [DISMISS],
+    ),
+  endorseTooSoon: () =>
+    far(
+      null,
+      "Nexus wants 15 minutes between a download and an endorsement.",
+      "Nothing changed on Nexus. Endorse it again in a little while.",
+      [RETRY],
+    ),
+  endorseOwnMod: () =>
+    far(null, "Nexus does not let an author endorse their own mod.", "Nothing changed on Nexus.", [DISMISS]),
+  odd: (_d, c) =>
+    far(null, "Nexus answered, but the stone could not read its answer.", `${unchanged(c)} Try again later.`, [RETRY]),
+};
 
 function nexusLink(d: Detail): Voiced {
-  return {
-    kind: "nexus",
-    inscription: null,
-    voice: `That link didn't lead to a Dragon's Dogma 2 mod: ${stripStop(reasonOf(d, "no mod id in it"))}.`,
-    empathy: "The package stays as it was. Paste a nexusmods.com/dragonsdogma2/mods/… link or a bare mod id.",
-    recovery: [RETRY],
-  };
+  return far(
+    null,
+    `That link didn't lead to a Dragon's Dogma 2 mod: ${stripStop(nexusSentence(d, "no mod id in it"))}.`,
+    "The package stays as it was. Paste a nexusmods.com/dragonsdogma2/mods/… link or a bare mod id.",
+    [RETRY],
+  );
 }
 
 /** Find on Nexus could not ask. Offline is the far world's absence, not the
  *  player's mistake: the package stays as it was, and a URL still links it.
- *  The find is anonymous (it sends no key), so a 401/403 is the search turned
+ *  The find is anonymous (it sends no key), so a refusal is the search turned
  *  away, never a key; and an answer the spine could not use means Nexus WAS
  *  reached, so it is not voiced as offline. */
-const FIND_UNREADABLE = /could not use|not graphql|unexpected shape|HTTP status \d{3}/i;
 const UNCHANGED = "Nothing was linked; the package stays as it was.";
 
 function findQuota(d: Detail): Voiced {
   // the spine's detail is "rate limit: <its own sentence>"; its retry hint stands as the voice
-  const reason = stripStop(reasonOf(d, "")).replace(/^rate limit:\s*/i, "");
+  const reason = stripStop(nexusSentence(d, "")).replace(/^rate limit:\s*/i, "");
   const wait = /try again in ([^.;]+)/i.exec(reason)?.[1]?.trim();
-  return {
-    kind: "nexus",
-    inscription: null,
-    voice: wait
-      ? `Nexus asked the stone to slow down: try again in ${wait}.`
-      : "Nexus asked the stone to slow down for now.",
-    empathy: `${UNCHANGED} Find again after that, or paste its Nexus page.`,
-    recovery: [RETRY],
-  };
+  return far(
+    null,
+    wait ? `Nexus asked the stone to slow down: try again in ${wait}.` : "Nexus asked the stone to slow down for now.",
+    `${UNCHANGED} Find again after that, or paste its Nexus page.`,
+    [RETRY],
+  );
 }
 
-function nexusFind(d: Detail, raw: string): Voiced {
-  if (NEXUS_QUOTA.test(raw)) return findQuota(d);
-  if (NEXUS_REFUSED.test(raw)) {
-    return {
-      kind: "nexus",
-      inscription: "THE FAR WORLD REFUSES",
-      voice: "Nexus turned the search away, so it could not be asked about this package.",
-      empathy: `The search sends no key, so no key of yours was refused. ${UNCHANGED} Try again later, or paste its Nexus page.`,
-      recovery: [RETRY],
-    };
-  }
-  if (FIND_UNREADABLE.test(raw)) {
-    return {
-      kind: "nexus",
-      inscription: null,
-      voice: "Nexus answered, but the stone could not read its answer.",
-      empathy: `${UNCHANGED} Try again later; its Nexus page's URL still links it.`,
-      recovery: [RETRY],
-    };
-  }
-  return {
-    kind: "nexus",
-    inscription: "THE FAR WORLD IS OUT OF REACH",
-    voice: "The stone can't reach Nexus right now, so it could not be asked about this package.",
-    empathy: `${UNCHANGED} Find again when you're online, or paste its Nexus page.`,
-    recovery: [RETRY],
-  };
+const FIND_VOICES: Partial<Record<FarCase, (d: Detail) => Voiced>> = {
+  rateLimited: findQuota,
+  keyRejected: () =>
+    far(
+      "THE FAR WORLD REFUSES",
+      "Nexus turned the search away, so it could not be asked about this package.",
+      `The search sends no key, so no key of yours was refused. ${UNCHANGED} Try again later, or paste its Nexus page.`,
+      [RETRY],
+    ),
+  odd: () =>
+    far(
+      null,
+      "Nexus answered, but the stone could not read its answer.",
+      `${UNCHANGED} Try again later; its Nexus page's URL still links it.`,
+      [RETRY],
+    ),
+};
+
+function nexusFind(d: Detail, which: FarCase): Voiced {
+  const own = FIND_VOICES[which];
+  if (own) return own(d);
+  return far(
+    "THE FAR WORLD IS OUT OF REACH",
+    "The stone can't reach Nexus right now, so it could not be asked about this package.",
+    `${UNCHANGED} Find again when you're online, or paste its Nexus page.`,
+    [RETRY],
+  );
 }
 
 function nexusFailure(d: Detail, context: VoiceContext): Voiced {
-  const raw = Object.values(d).join(" ");
-  if (context === "nexusFind") return nexusFind(d, raw);
-  if (NEXUS_REFUSED.test(raw)) return nexusRefused();
-  if (NEXUS_QUOTA.test(raw)) return nexusQuota(d);
-  if (context === "nexusLink") return nexusLink(d);
-  return nexusOffline();
+  const which = farCase(d, context);
+  if (context === "nexusFind") return nexusFind(d, which);
+  if (which === "badLink") return nexusLink(d);
+  return FAR_VOICES[which](d, context);
 }
 
 type Handler = (detail: Detail, context: VoiceContext) => Voiced;
@@ -455,9 +653,12 @@ export function troubleLine(pkg: Pick<PackageSummary, "fileName" | "problems">, 
   return { kind: problem.kind, ember: false, line: why ? `${name} ${verdict}: ${why}` : `${name} ${verdict}.` };
 }
 
-/** Why an installed row has no package, worded for the two ways that happens. */
-export function missingPackageTitle(row: Pick<InstalledRow, "optionId">): string {
-  return row.optionId.startsWith(FLUFFY_STAND_IN_PREFIX)
-    ? "Adopted from Fluffy: no package in your library matches it"
-    : "The package is no longer in your library";
+/** Why an installed row has no package, worded for the two ways that happens:
+ *  an adopted install that no package in the mods folder matches, or an
+ *  install whose package has left the folder. The option id is opaque: the
+ *  row's origin says which, never the id's spelling. */
+export function missingPackageTitle(row: Pick<InstalledRow, "origin">): string {
+  return row.origin === "adopted"
+    ? "Adopted: no package in your mods folder matches it. Uninstall still works: the journal knows every file."
+    : "The package is no longer in your mods folder. Uninstall still works: the journal knows every file.";
 }

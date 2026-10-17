@@ -8,35 +8,33 @@
 // answer set (the same words and filters, no labels) is counted per chip in
 // the window, so a chip's number is what pressing it would show right now —
 // not the library total, which stops predicting the moment anything narrows.
+// v0.3: one mods folder, so no root facet; `limit: 0` is no cap (every match),
+// so the answers and the chips' counts are never cut. With no words and no
+// facet narrowing the Rift is IDLE: it shows the library tree (useLibrary).
 
 import { computed, ref } from "vue";
 import type { SearchFilters, SearchQuery, SearchResult } from "@/types/rift";
 import { asRiftFailure, rift, type RiftBackend } from "@/services/rift";
 import { searchTokens } from "@/services/highlight";
 import { voice, type Voiced } from "@/services/voice";
-import { useStone } from "./useStone";
 
 export type StateFacet = "all" | "notInstalled" | "installed" | "conflict" | "update";
 export type SortKey = "best" | "name" | "package";
 export type SeamState = "rest" | "answered" | "silent";
 
 export const DEBOUNCE_MS = 120;
-/** The spine's default answer cap (SearchQuery.limit 0). */
-export const ANSWER_LIMIT = 200;
-/** The label-free count query asks for this many; a reply this long was cut,
- *  so its counts would lie and the chips fall back to the library totals. */
-export const COUNT_LIMIT = 5000;
+/** v0.3: SearchQuery.limit 0 asks for every match (the spine caps nothing). */
+export const NO_CAP = 0;
 
 const text = ref("");
 const settledText = ref("");
 const stateFacet = ref<StateFacet>("all");
-const offRoots = ref<string[]>([]);
 const includeMenuOnly = ref(false);
 const categories = ref<string[]>([]);
 const tags = ref<string[]>([]);
 /** The same query without its labels: what each chip's count is read from.
  *  null when nothing narrows the library (the spine's totals then predict
- *  exactly) or when the label-free answers were cut at COUNT_LIMIT. */
+ *  exactly). */
 const unlabeledBase = ref<SearchResult[] | null>(null);
 const sort = ref<SortKey>("best");
 const grouped = ref(false);
@@ -56,16 +54,9 @@ function installedFilter(): boolean | null {
   return null;
 }
 
-function rootFilter(): string[] {
-  if (!offRoots.value.length) return [];
-  const roots = useStone().overview.value?.roots ?? [];
-  return roots.map((r) => r.id).filter((id) => !offRoots.value.includes(id));
-}
-
 function filters(): SearchFilters {
   return {
     installed: installedFilter(),
-    rootIds: rootFilter(),
     includeMenuOnly: includeMenuOnly.value,
     categories: [...categories.value],
     tags: [...tags.value],
@@ -116,12 +107,7 @@ const groups = computed(() => {
 function narrows(query: SearchQuery): boolean {
   const f = query.filters;
   return Boolean(
-    query.text.trim() ||
-    f.installed !== null ||
-    f.rootIds.length ||
-    f.categories.length ||
-    f.tags.length ||
-    stateFacet.value !== "all",
+    query.text.trim() || f.installed !== null || f.categories.length || f.tags.length || stateFacet.value !== "all",
   );
 }
 
@@ -133,18 +119,14 @@ async function countBase(
 ): Promise<SearchResult[] | null> {
   if (!narrows(query)) return null;
   const labelled = query.filters.categories.length > 0 || query.filters.tags.length > 0;
-  if (!labelled && hits.length < ANSWER_LIMIT) return hits;
-  const base = await backend.search({
-    text: query.text,
-    filters: { ...query.filters, categories: [], tags: [] },
-    limit: COUNT_LIMIT,
-  });
-  return base.length >= COUNT_LIMIT ? null : base;
+  // uncapped answers are every match: without labels they ARE the label-free set
+  if (!labelled) return hits;
+  return backend.search({ text: query.text, filters: { ...query.filters, categories: [], tags: [] }, limit: NO_CAP });
 }
 
 async function run(answer = false): Promise<void> {
   const mine = ++requestSeq;
-  const query: SearchQuery = { text: text.value, filters: filters(), limit: 0 };
+  const query: SearchQuery = { text: text.value, filters: filters(), limit: NO_CAP };
   try {
     const backend = await rift();
     const hits = await backend.search(query);
@@ -206,6 +188,19 @@ function toggleIn(list: string[], name: string): string[] {
 
 const labelFiltered = computed(() => categories.value.length > 0 || tags.value.length > 0);
 
+/** v0.3: the Rift's idle view (WINDOW-CONTRACT § v0.3 The library tree): no
+ *  settled words in the well and no facet narrowing — state, menu-only,
+ *  labels. Idle shows the tree; anything else shows the flat answers. Read
+ *  from the SETTLED words, so the tree gives way only once answers arrived. */
+const idle = computed(
+  () =>
+    !settledText.value.trim() &&
+    stateFacet.value === "all" &&
+    !includeMenuOnly.value &&
+    !categories.value.length &&
+    !tags.value.length,
+);
+
 /** Drop chosen labels the library no longer carries (a chip that is gone
  *  would hide everything with nothing on screen to undo it). */
 function pruneLabels(known: { categories: string[]; tags: string[] }): void {
@@ -245,11 +240,11 @@ export function useSearch() {
     settledText,
     tokens,
     stateFacet,
-    offRoots,
     includeMenuOnly,
     categories,
     tags,
     labelFiltered,
+    idle,
     labelReading,
     beforeLabels,
     categoryPrediction,
@@ -267,13 +262,6 @@ export function useSearch() {
     clearText,
     run,
     setStateFacet: (facet: StateFacet) => refacet(() => (stateFacet.value = facet)),
-    toggleRoot: (rootId: string) =>
-      refacet(() => {
-        offRoots.value = offRoots.value.includes(rootId)
-          ? offRoots.value.filter((r) => r !== rootId)
-          : [...offRoots.value, rootId];
-      }),
-    allRoots: () => refacet(() => (offRoots.value = [])),
     setMenuOnly: (on: boolean) => refacet(() => (includeMenuOnly.value = on)),
     toggleCategory: (name: string) => refacet(() => (categories.value = toggleIn(categories.value, name))),
     toggleTag: (name: string) => refacet(() => (tags.value = toggleIn(tags.value, name))),
@@ -295,7 +283,6 @@ export function resetSearch(): void {
   text.value = "";
   settledText.value = "";
   stateFacet.value = "all";
-  offRoots.value = [];
   includeMenuOnly.value = false;
   categories.value = [];
   tags.value = [];

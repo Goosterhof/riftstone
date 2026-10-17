@@ -9,8 +9,10 @@ import type { RiftBackend } from "./rift";
 
 export type { NexusQuota } from "@/types/rift";
 
-/** The key's last known standing. "none" is not an error: checks run without one. */
-export type NexusKeyState = "connected" | "none" | "rejected" | "offline";
+/** The key's last known standing. "none" is not an error: checks run without one.
+ *  v0.3: "unchecked" — a key is stored and Nexus has not validated it this
+ *  session yet (the launch validation is pending, or Nexus was out of reach). */
+export type NexusKeyState = "connected" | "unchecked" | "none" | "rejected" | "offline";
 
 export interface PendingBackend {
   /** Packages with problems, including those that yielded zero options. */
@@ -28,8 +30,11 @@ export function quotaProbe(backend: RiftBackend | PendingBackend): (() => Promis
   return typeof candidate.nexusQuota === "function" ? candidate.nexusQuota : null;
 }
 
+/** v0.3: read from the summary's own standing (NexusSummary.key, which the
+ *  spine sets from validate.json), with what this session just saw on top: a
+ *  key the player's paste got refused, or a check that could not reach Nexus. */
 export function keyStateOf(summary: NexusSummary, rejected: boolean, offline: boolean): NexusKeyState {
-  if (rejected) return "rejected";
+  if (rejected || summary.key === "rejected") return "rejected";
   if (offline) return "offline";
-  return summary.hasApiKey ? "connected" : "none";
+  return summary.key;
 }

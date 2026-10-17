@@ -13,6 +13,8 @@ import { useNavigation } from "@/composables/useNavigation";
 import { useSearch } from "@/composables/useSearch";
 import { usePreflight } from "@/composables/usePreflight";
 import { useSettings } from "@/composables/useSettings";
+import { useDownloads } from "@/composables/useDownloads";
+import { useNexusAccount } from "@/composables/useNexusAccount";
 import { kindsPresent, formatDate, plural } from "@/services/format";
 import { adultnessOf, veils } from "@/services/ledger";
 import ConflictMap from "./ConflictMap.vue";
@@ -56,6 +58,22 @@ const unlabeledLine = computed(() =>
 const veiled = computed(() => veils(settings.value.veil, adultnessOf(detail.labels)));
 
 const update = computed(() => (detail.update?.state.kind === "updateAvailable" ? detail.update.state.newer : null));
+
+// v0.3 (R16.23): the update line's Download door. Premium brings the newer
+// file into the mods folder from here; free starts a waiting download and
+// opens the file's Nexus page. Cyan, never gold: it lands in the Rift, and the
+// install stays the player's next press.
+const downloads = useDownloads();
+const nexusAccount = useNexusAccount();
+const updateDoor = computed(() => {
+  const newer = update.value;
+  if (!newer || nexusId.value === null || !nexusAccount.connected.value) return null;
+  const mine = downloads.forPackage(detail.package.id);
+  if (mine && mine.fileId === newer.fileId && mine.phase !== "failed" && mine.phase !== "cancelled") return null;
+  let label = "Get it on Nexus";
+  if (nexusAccount.premium.value) label = newer.version ? `Download v${newer.version.replace(/^v/i, "")}` : "Download";
+  return { modId: nexusId.value, fileId: newer.fileId, label };
+});
 
 const conflictSentence = computed(() => {
   const own = option.value.id;
@@ -119,14 +137,20 @@ function crumb(name: string): void {
       <button v-if="update" type="button" class="odetail__upd" @click="nav.go('nexus')">
         · UPDATE v{{ update.version ?? "?" }} ▸
       </button>
+      <RiftButton
+        v-if="updateDoor"
+        class="odetail__dl"
+        size="sm"
+        variant="primary"
+        :busy="downloads.busy.value === `start:${updateDoor.modId}:${updateDoor.fileId}`"
+        @click="downloads.start(updateDoor.modId, updateDoor.fileId, detail.package.id)"
+        >{{ updateDoor.label }}</RiftButton
+      >
     </p>
     <p v-if="installedHere && detail.installed" class="odetail__in">
       In your world since {{ formatDate(detail.installed.installedAt)
-      }}<template v-if="detail.installed.origin === 'fluffy'"> · adopted from Fluffy</template
+      }}<template v-if="detail.installed.origin === 'adopted'"> · adopted</template
       ><template v-if="detail.installed.gameBuild"> · build {{ detail.installed.gameBuild }}</template>
-    </p>
-    <p v-else-if="detail.fluffyInstalled" class="odetail__in">
-      Fluffy installed this. Adopt it on Your World to uninstall or reorder it here.
     </p>
     <div class="odetail__labels" aria-label="Nexus labels">
       <template v-if="labels && (labels.category || labels.tags.length)">
@@ -257,6 +281,10 @@ function crumb(name: string): void {
   color: var(--rs-verdant);
   font: inherit;
   cursor: pointer;
+}
+.odetail__dl {
+  margin-left: var(--rs-space-2);
+  vertical-align: middle;
 }
 .odetail__nexus {
   padding: 0;

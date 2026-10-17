@@ -1,13 +1,16 @@
 // v0.2 — the honest sentences (services/ledger.ts): what THE RETURN will do
-// to each file, and what an uninstall, an adoption or a putting-back actually
-// did. Every count the spine returns is said out loud, a zero says nothing,
-// and THE RETURN's heading counts only the rows that move a file: "already
-// gone" is its own clause, never a file that "leaves your game".
+// to each file, and what an uninstall or a putting-back actually did. Every
+// count the spine returns is said out loud, a zero says nothing, and THE
+// RETURN's heading counts only the rows that move a file: "already gone" is
+// its own clause, never a file that "leaves your game".
+// v0.3: Play's route and warnings, and what a download came to.
 
 import { afterEach, describe, expect, it } from "vitest";
-import type { AdoptResultView, RemovalAction, UninstallResultView } from "@/types/rift";
+import type { DownloadView, RemovalAction, UninstallResultView } from "@/types/rift";
 import {
-  adoptSummary,
+  downloadName,
+  landedLine,
+  launchedLine,
   parkedRestoreSummary,
   recoverySentence,
   removalWords,
@@ -33,16 +36,6 @@ const uninstalled = (counts: Partial<UninstallResultView>): UninstallResultView 
   filesHandedDown: 0,
   parked: 0,
   restartNeeded: false,
-  ...counts,
-});
-
-const adopted = (counts: Partial<AdoptResultView>): AdoptResultView => ({
-  adopted: 0,
-  alreadyAdopted: 0,
-  missingFiles: 0,
-  refusedFiles: 0,
-  sharedFiles: 0,
-  unmatched: [],
   ...counts,
 });
 
@@ -78,29 +71,6 @@ describe("returnedSummary()", () => {
     expect(returnedSummary(uninstalled({ parked: 1 }))).toBe(
       "Nothing was left to remove. 1 file was kept aside instead of deleted: put it back or discard it under PARKED on Your World.",
     );
-  });
-});
-
-describe("adoptSummary()", () => {
-  it("should say what came into the journal and what stayed Fluffy's", () => {
-    expect(adoptSummary(adopted({ adopted: 1, alreadyAdopted: 5, refusedFiles: 2, sharedFiles: 1 }))).toBe(
-      "Adopted 1 install. 5 installs were already the stone's. 2 files sit outside the places the stone manages, so they stay Fluffy's to remove. 1 file is also another mod's file, so the stone records it without taking ownership. Fluffy's own files were not changed.",
-    );
-    expect(
-      adoptSummary(
-        adopted({
-          adopted: 2,
-          alreadyAdopted: 1,
-          missingFiles: 1,
-          refusedFiles: 1,
-          sharedFiles: 2,
-          unmatched: ["Ox Cart Express", "Pawn Banter Quieter"],
-        }),
-      ),
-    ).toBe(
-      "Adopted 2 installs. 1 install was already the stone's. 1 file Fluffy listed was already gone. 1 file sits outside the places the stone manages, so it stays Fluffy's to remove. 2 files are also other mods' files, so the stone records them without taking ownership. Adopted under their Fluffy names: Ox Cart Express, Pawn Banter Quieter. Fluffy's own files were not changed.",
-    );
-    expect(adoptSummary(adopted({}))).toBe("Adopted 0 installs. Fluffy's own files were not changed.");
   });
 });
 
@@ -198,19 +168,6 @@ describe("THE RETURN's rows and heading", () => {
       "Ermine Cape - Variation 2 has returned to the Rift. 2 files removed; 1 file left in place (changed since, or the game's own).";
     await until(() => useToasts().toasts.value.some((t) => t.line === line), "the returned toast", 4000);
   });
-
-  it("should put the adoption's refused and shared counts on Your World", async () => {
-    await wakeOn();
-    useNavigation().go("world");
-    await until(() => hasButton("Adopt Fluffy's installs"), "the adoption door");
-    button("Adopt Fluffy's installs").click();
-    await until(() => hasButton("Adopt 1 install"), "the adoption plan");
-    button("Adopt 1 install").click();
-    await until(() => document.querySelector(".home__adopt .home__line.is-world") !== null, "the adoption done");
-    expect(textOf(document.querySelector(".home__adopt .home__line.is-world") ?? document.body).trim()).toBe(
-      "Adopted 1 install. 5 installs were already the stone's. 2 files sit outside the places the stone manages, so they stay Fluffy's to remove. 1 file is also another mod's file, so the stone records it without taking ownership. Fluffy's own files were not changed.",
-    );
-  });
 });
 
 describe("the other v0.2 sentences", () => {
@@ -229,5 +186,49 @@ describe("the other v0.2 sentences", () => {
   it("should count the unlabeled packages in agreement with the number", () => {
     expect(unlabeledLine(1)).toBe("1 package carries no Nexus labels yet.");
     expect(unlabeledLine(5)).toBe("5 packages carry no Nexus labels yet.");
+  });
+});
+
+describe("the v0.3 sentences", () => {
+  it("should say how the game is starting and carry every warning Play found, none of them a blocker", () => {
+    expect(launchedLine("steam", [])).toBe("Dragon's Dogma 2 is starting through Steam.");
+    expect(
+      launchedLine("exe", [
+        { kind: "pakFolderOff", paks: 1 },
+        { kind: "buildChanged", recorded: "25290080", now: "25391144" },
+      ]),
+    ).toBe(
+      "Dragon's Dogma 2 is starting from its game folder. REFramework's Alternate PAK Folder is off, so 1 installed pak won't load. Steam updated the game from build 25290080 to 25391144 since your newest install: script mods are the first to break.",
+    );
+  });
+
+  const landed: DownloadView = {
+    id: "download-1",
+    modId: 412,
+    fileId: 2391,
+    modName: "Lantern Glow Recolor",
+    fileName: "Lantern Glow Recolor",
+    version: "2.2",
+    forPackageId: null,
+    phase: "landed",
+    bytesDone: 12_845_056,
+    bytesTotal: 12_845_056,
+    landedAs: "Lantern Glow Recolor-412-2-2-1791234567.zip",
+    packageId: "pkg",
+    alreadyHad: false,
+    failure: null,
+    nexusPageUrl: null,
+    startedMs: 0,
+    finishedMs: 1,
+  };
+
+  it("should say where a download landed, or that the mods folder had it already", () => {
+    expect(landedLine(landed)).toBe(
+      "Lantern Glow Recolor landed in your mods folder as Lantern Glow Recolor-412-2-2-1791234567.zip. Install it from the Rift.",
+    );
+    expect(landedLine({ ...landed, alreadyHad: true })).toBe(
+      "Lantern Glow Recolor was in your mods folder already, so nothing new was written.",
+    );
+    expect(downloadName({ ...landed, fileName: null, modName: null })).toBe("Nexus mod 412, file 2391");
   });
 });

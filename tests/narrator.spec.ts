@@ -5,10 +5,10 @@
 // own source for the words a desk uses, so the next line can't slip back.
 
 import { describe, expect, it } from "vitest";
-import type { ProblemKind, RiftError } from "@/types/rift";
+import type { NexusReason, ProblemKind, RiftError } from "@/types/rift";
 import { RiftFailure } from "@/services/rift";
-import { TROUBLE_KINDS, troubleLine, voice, type VoiceContext } from "@/services/voice";
-import { askNexusToast, recoverySentence } from "@/services/ledger";
+import { TROUBLE_KINDS, VOICE_CONTEXTS, troubleLine, voice } from "@/services/voice";
+import { askNexusToast, landedLine, launchedLine, recoverySentence } from "@/services/ledger";
 
 /** The words a support desk speaks in. "US" (capitals) is a country, not a desk. */
 const DESK = /\b(?:[Ww]e|[Ww]e're|[Ww]e'll|[Ww]e've|[Uu]s|[Oo]ur|[Oo]urs)\b/;
@@ -27,23 +27,25 @@ const KINDS: RiftError["kind"][] = [
   "io",
 ];
 
-const CONTEXTS: VoiceContext[] = [
-  "install",
-  "uninstall",
-  "scan",
-  "package",
-  "search",
-  "reorder",
-  "adopt",
-  "switch",
-  "roots",
-  "game",
-  "nexusCheck",
-  "nexusKey",
-  "nexusLink",
-  "nexusFind",
-  "settings",
-  "parked",
+/** Every context the window can be in (services/voice.ts VOICE_CONTEXTS). */
+const CONTEXTS = VOICE_CONTEXTS;
+
+/** v0.3: every reason Nexus can give, so each far-world voice is walked. */
+const REASONS: NexusReason[] = [
+  "offline",
+  "rateLimited",
+  "noKey",
+  "keyRejected",
+  "premiumRequired",
+  "linkExpired",
+  "linkNotYours",
+  "linkRefused",
+  "fileGone",
+  "sizeMismatch",
+  "notTheFile",
+  "endorseNotDownloaded",
+  "endorseTooSoon",
+  "endorseOwnMod",
 ];
 
 /** Details that walk each handler down its other branches. */
@@ -57,6 +59,8 @@ const DETAILS: Record<string, string>[] = [
   { detail: "Nexus answered in a shape the stone could not use" },
   { gamePath: "natives/stm/cape_301.mesh.260421070", act: "discard", reason: "could not remove x: in use" },
   { gamePath: "natives/stm/cape_301.mesh.260421070", act: "putBack" },
+  { reason: "Dragon's Dogma 2 is already running; switch to its window, or close it before you start it again." },
+  ...REASONS.map((reason) => ({ detail: "Nexus said no.", reason })),
 ];
 
 function everyLine(): string[] {
@@ -80,6 +84,34 @@ function everyLine(): string[] {
   }
   const offline = voice(new RiftFailure({ kind: "nexus", detail: { detail: "connection refused" } }), "nexusCheck");
   lines.push(askNexusToast({ before: 4, after: 4, hadLabels: false, failure: offline }).line);
+  lines.push(
+    launchedLine("steam", [
+      { kind: "reframeworkMissing", paks: 2 },
+      { kind: "pakFolderOff", paks: 1 },
+      { kind: "looseLoaderOff", files: 3 },
+      { kind: "buildChanged", recorded: "25290080", now: "25391144" },
+    ]),
+  );
+  const download = {
+    id: "download-1",
+    modId: 412,
+    fileId: 2391,
+    modName: "Lantern Glow Recolor",
+    fileName: null,
+    version: "2.2",
+    forPackageId: null,
+    phase: "landed" as const,
+    bytesDone: 1,
+    bytesTotal: 1,
+    landedAs: "Lantern Glow Recolor-412-2-2-1791234567.zip",
+    packageId: null,
+    alreadyHad: false,
+    failure: null,
+    nexusPageUrl: null,
+    startedMs: 0,
+    finishedMs: 1,
+  };
+  lines.push(landedLine(download), landedLine({ ...download, alreadyHad: true }));
   return lines;
 }
 
@@ -118,12 +150,18 @@ const SOURCES = import.meta.glob<string>(["../src/**/*.ts", "../src/**/*.vue", "
 
 const blank = (match: string) => match.replace(/[^\n]/g, " ");
 
-/** The source with its comments blanked, so line numbers still point home. */
+/** The contract's own codes that happen to be desk words: v0.3's
+ *  NxmHandlerState names the stone's own handler "ours". A code is data the
+ *  window compares, never a line the stone says. */
+const CONTRACT_CODES = /"ours"/g;
+
+/** The source with its comments (and the contract's codes) blanked, so line numbers still point home. */
 function spoken(source: string): string {
   return source
     .replace(/<!--[\s\S]*?-->/g, blank)
     .replace(/\/\*[\s\S]*?\*\//g, blank)
-    .replace(/(^|[^:\\])\/\/.*$/gm, (match, lead: string) => lead + blank(match.slice(lead.length)));
+    .replace(/(^|[^:\\])\/\/.*$/gm, (match, lead: string) => lead + blank(match.slice(lead.length)))
+    .replace(CONTRACT_CODES, blank);
 }
 
 describe("the window's source", () => {
@@ -150,5 +188,8 @@ describe("the window's source", () => {
     expect(DESK.test(spoken(`// we keep this\nconst b = 1; /* our note */\n<!-- us -->`))).toBe(false);
     expect(DESK.test(spoken(`const url = "https://www.nexusmods.com/"; // we`))).toBe(false);
     expect(DESK.test(spoken(`const status = "your hour"; // wE`))).toBe(false);
+    // the contract's handler code is data; the same word in a sentence is still caught
+    expect(DESK.test(spoken(`if (state === "ours") open();`))).toBe(false);
+    expect(DESK.test(spoken(`const line = "The link is ours now";`))).toBe(true);
   });
 });

@@ -145,6 +145,8 @@ async function surfaces(name: Subject, settle: () => Promise<void>): Promise<Rec
 
   world.close();
   nav.backToResults();
+  // v0.3: the idle Rift is the tree; a facet brings the flat answers (every option)
+  useSearch().setMenuOnly(true);
   await until(() => document.querySelector(`#rift-answers .card`) !== null, "the Rift's answers");
   const card = cardVeiled(optionId);
 
@@ -187,6 +189,7 @@ describe("the veil on the card, the detail and the lookbook", () => {
     await wakeOn();
     await useSettings().setVeil("adult");
     useSearch().grouped.value = true;
+    useSearch().setMenuOnly(true);
     await until(() => document.querySelector("#rift-answers .rift__groupbox .card") !== null, "the grouped answers");
     expect(SUBJECTS.map((name) => [name, cardVeiled(packageOf(name).optionId)])).toStrictEqual(
       SUBJECTS.map((name) => [name, EXPECTED.adult[name]]),
@@ -245,6 +248,7 @@ describe("the veil control on Preflight", () => {
 
     // and the Rift obeys it: the unlinked water mod is blurred as unknown
     useNavigation().go("rift");
+    useSearch().setMenuOnly(true);
     const brine = packageOf("Brine Water Clarity");
     await until(() => document.querySelector("#rift-answers .card") !== null, "the Rift's answers");
     expect(cardVeiled(brine.optionId)).toBe(true);

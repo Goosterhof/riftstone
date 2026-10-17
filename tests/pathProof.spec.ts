@@ -61,7 +61,6 @@ const HIT: SearchResult = {
   bundle: null,
   packageName: "Vernworth Wardrobe Collection",
   packageFormat: "zip",
-  rootId: "r1",
   author: null,
   version: null,
   category: null,

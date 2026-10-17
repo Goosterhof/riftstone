@@ -5,8 +5,8 @@
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import App from "@/App.vue";
 import { resetRiftstone } from "@/composables/boot";
-import { setRiftBackend, type RiftBackend } from "@/services/rift";
-import { createMockBackend } from "@/services/mock/index";
+import { setRiftBackend } from "@/services/rift";
+import { createMockBackend, type MockBackend } from "@/services/mock/index";
 
 /** A node's text. Typed on Node, where the DOM lib (every TS version the
  *  gates run) still says `string | null`, so neither vue-tsc nor tsgolint
@@ -19,25 +19,67 @@ export function textAt(selector: string): string | null {
   return el ? textOf(el).trim() : null;
 }
 
-export type Scene =
+/** The mock's scenarios (src/services/mock/index.ts header). */
+export type SceneName =
   | ""
   | "empty"
+  | "emptymods"
   | "nogame"
   | "scanning"
   | "refoff"
   | "patched"
   | "offline"
   | "fresh"
+  | "firstrun"
   | "key"
+  | "premium"
+  | "rejected"
   | "quotalow"
+  | "running"
+  | "nxmother"
   | "nocreations";
 
+/** One scenario, or two combined: the mock reads its query string comma-separated. */
+export type Scene = SceneName | `${Exclude<SceneName, "">},${Exclude<SceneName, "">}`;
+
 let mounted: VueWrapper | null = null;
-let backend: RiftBackend | null = null;
+let backend: MockBackend | null = null;
+/** Bumped by every wake and every sleep: a backend answers only in its own. */
+let generation = 0;
+
+/** An answer that never lands. */
+const NEVER: Promise<never> = new Promise<never>(() => undefined);
+
+/** The mock's calls answer only while their spec is awake. A read still in
+ *  flight when a spec sleeps (a reload after an uninstall, a plan read after
+ *  a game change) would otherwise land in the NEXT spec's freshly reset stone
+ *  and show it the previous scene. Such an answer never lands, so a `finally`
+ *  waiting on it never runs either: resetRiftstone() resets every composable,
+ *  busy flags included. Spies and stand-ins wrap these calls, so they see the
+ *  same backend a spec always saw. */
+function answersWhileAwake(mock: MockBackend): MockBackend {
+  const mine = ++generation;
+  const awake = (): boolean => generation === mine;
+  const calls = mock as unknown as Record<string, unknown>;
+  for (const [name, member] of Object.entries(calls)) {
+    if (typeof member !== "function") continue;
+    const call = member as (...args: unknown[]) => unknown;
+    calls[name] = (...args: unknown[]): unknown => {
+      const answer = call(...args);
+      if (!(answer instanceof Promise)) return answer;
+      return answer.then(
+        (value: unknown) => (awake() ? value : NEVER),
+        (reason: unknown) => (awake() ? Promise.reject(reason as Error) : NEVER),
+      );
+    };
+  }
+  return mock;
+}
 
 /** The mock spine this spec's window talks to: spy on it to read what the
- *  window sent, or stand in for one of its answers. */
-export function spine(): RiftBackend {
+ *  window sent, stand in for one of its answers, or play the world outside
+ *  the window through its hooks (closeGame, deliverNxm). */
+export function spine(): MockBackend {
   if (!backend) throw new Error("No spine is awake: call wakeOn() first");
   return backend;
 }
@@ -55,7 +97,7 @@ export async function until(probe: () => boolean, what: string, timeoutMs = 3000
 export async function wakeOn(scene: Scene = ""): Promise<VueWrapper> {
   window.history.replaceState(null, "", scene ? `/?mock=${scene}` : "/");
   resetRiftstone();
-  backend = createMockBackend();
+  backend = answersWhileAwake(createMockBackend());
   setRiftBackend(backend);
   const host = document.createElement("div");
   document.body.append(host);
@@ -66,6 +108,7 @@ export async function wakeOn(scene: Scene = ""): Promise<VueWrapper> {
 }
 
 export function sleep(): void {
+  generation += 1;
   mounted?.unmount();
   mounted = null;
   resetRiftstone();

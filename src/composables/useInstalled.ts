@@ -1,28 +1,26 @@
 // Your World — Installed: what is in the game now, the pak load order (last
-// wins), who overrides whom, REFramework's proof that the paks loaded, strays,
-// and Fluffy's installs waiting to be adopted. Nothing touches disk until the
-// user presses Apply order / Adopt.
+// wins), who overrides whom, REFramework's proof that the paks loaded, and
+// strays. Nothing touches disk until the user presses Apply order. Every row,
+// a load-order row too, has an uninstall door: an install whose package left
+// the mods folder (or an adopted one that never had one) still uninstalls,
+// because the journal knows every file it placed.
 // v0.2: PARKED — files the stone kept aside rather than delete or force back,
 // each with Put back (restore_parked, saying what was swapped out) and Discard
 // (discard_parked, behind a confirm: it is the one act here that loses bytes).
 
 import { computed, ref } from "vue";
-import type { AdoptResultView, InstalledRow, InstalledView, UninstallPlanView } from "@/types/rift";
+import type { InstalledRow, InstalledView, UninstallPlanView } from "@/types/rift";
 import { asRiftFailure, rift } from "@/services/rift";
 import { voice, voicedLine, type Voiced } from "@/services/voice";
 import { useToasts } from "./useToasts";
-import { adoptSummary, parkedRestoreSummary, returnedSummary } from "@/services/ledger";
+import { parkedRestoreSummary, returnedSummary } from "@/services/ledger";
 import { restoredSentence } from "./useWorld";
-
-export type AdoptStage = "closed" | "plan" | "adopting" | "done";
 
 const view = ref<InstalledView | null>(null);
 const loadFailure = ref<Voiced | null>(null);
 const pendingOrder = ref<string[] | null>(null);
 const applying = ref(false);
 const announcement = ref("");
-const adoptStage = ref<AdoptStage>("closed");
-const adoptResult = ref<AdoptResultView | null>(null);
 const returning = ref<UninstallPlanView | null>(null);
 const returnBusy = ref(false);
 /** The store handle whose Put back / Discard is running. */
@@ -97,19 +95,6 @@ async function applyOrder(): Promise<void> {
 function resetOrder(): void {
   pendingOrder.value = null;
   announcement.value = "Load order put back as it is on disk";
-}
-
-async function confirmAdopt(): Promise<void> {
-  adoptStage.value = "adopting";
-  try {
-    const backend = await rift();
-    adoptResult.value = await backend.adoptFluffy();
-    adoptStage.value = "done";
-    await load();
-  } catch (raw) {
-    adoptStage.value = "plan";
-    useToasts().push("ember", voicedLine(voice(asRiftFailure(raw), "adopt")));
-  }
 }
 
 async function planReturn(optionId: string): Promise<void> {
@@ -191,9 +176,6 @@ async function discard(store: string): Promise<void> {
   }
 }
 
-/** One line for the adoption's "done" state. */
-const adoptLine = computed(() => (adoptResult.value ? adoptSummary(adoptResult.value) : ""));
-
 export function useInstalled() {
   return {
     view,
@@ -204,8 +186,6 @@ export function useInstalled() {
     otherRows,
     applying,
     announcement,
-    adoptStage,
-    adoptResult,
     returning,
     returnBusy,
     load,
@@ -213,9 +193,6 @@ export function useInstalled() {
     moveBy,
     applyOrder,
     resetOrder,
-    openAdoption: () => (adoptStage.value = "plan"),
-    closeAdoption: () => (adoptStage.value = "closed"),
-    confirmAdopt,
     planReturn,
     cancelReturn: () => (returning.value = null),
     confirmReturn,
@@ -223,7 +200,6 @@ export function useInstalled() {
     discarding,
     parkedNote,
     parkedSummons,
-    adoptLine,
     putBack,
     discard,
     keepParked: () => (discarding.value = null),
@@ -239,8 +215,6 @@ export function resetInstalled(): void {
   pendingOrder.value = null;
   applying.value = false;
   announcement.value = "";
-  adoptStage.value = "closed";
-  adoptResult.value = null;
   returning.value = null;
   returnBusy.value = false;
   parkedBusy.value = null;

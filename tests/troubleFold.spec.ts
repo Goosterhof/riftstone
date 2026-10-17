@@ -46,9 +46,10 @@ describe("the trouble fold (§8.1.1)", () => {
     expect(must(document.getElementById("rift-trouble"), "cards region").hidden).toBe(true);
     // the count is an inscription, never a button label (§10)
     expect(must(document.getElementById("rift-trouble-count"), "count").tagName).toBe("P");
-    const answers = must(document.getElementById("rift-answers"), "answers");
-    expect(answers.contains(must(fold(), "fold"))).toBe(false);
-    const order = must(fold(), "fold").compareDocumentPosition(answers);
+    // v0.3: the idle Rift is the library tree; the fold sits above it, outside its role (R16.8)
+    const tree = must(document.getElementById("rift-tree"), "tree");
+    expect(tree.contains(must(fold(), "fold"))).toBe(false);
+    const order = must(fold(), "fold").compareDocumentPosition(tree);
     expect(Boolean(order & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
   });
 
@@ -92,7 +93,7 @@ describe("the trouble fold (§8.1.1)", () => {
     expect(must(fold(), "fold").classList.contains("is-ember")).toBe(false);
   });
 
-  it("should hand focus on as cards leave, and to the first creation with the last", async () => {
+  it("should hand focus on as cards leave, and to the library tree with the last", async () => {
     await wakeOn();
     await until(() => !!fold(), "the line");
     button("Show ▸").click();
@@ -105,8 +106,8 @@ describe("the trouble fold (§8.1.1)", () => {
     await until(() => focusedCard() === "Old Road Armor Pack", "focus on the last card");
     hideFirst();
     await until(() => !fold(), "the line gone with the last card");
-    await until(() => document.activeElement?.matches('[data-index="0"]') === true, "focus on the first creation");
-    expect(document.activeElement?.closest("#rift-answers")?.id).toBe("rift-answers");
+    await until(() => document.activeElement?.matches('#rift-tree [role="treeitem"]') === true, "focus on the tree");
+    expect(document.activeElement?.getAttribute("tabindex")).toBe("0");
   });
 
   it("should hand focus to the card above when the last card in the list leaves", async () => {
@@ -170,12 +171,15 @@ describe("the trouble fold (§8.1.1)", () => {
     expect(text()).toContain("3 WON'T ANSWER");
   });
 
-  it("should still send ↓ from the well to the first creation, past the fold", async () => {
+  it("should still send ↓ from the well to the tree's first row, past the fold", async () => {
     await wakeOn();
-    await until(() => !!fold() && !!document.querySelector('[data-index="0"]'), "the line and the answers");
+    await until(() => !!fold() && !!document.querySelector('#rift-tree [role="treeitem"]'), "the line and the tree");
     must(document.getElementById("rift-search"), "search well").focus();
     press("ArrowDown");
-    await until(() => document.activeElement?.matches('[data-index="0"]') === true, "the first creation");
+    await until(
+      () => document.activeElement?.matches('#rift-tree [role="treeitem"][aria-posinset="1"]') === true,
+      "the tree's first row",
+    );
     expect(document.activeElement?.closest(".trouble-fold")).toBeNull();
   });
 });

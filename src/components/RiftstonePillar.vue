@@ -10,6 +10,7 @@ import { useStone } from "@/composables/useStone";
 import { useNavigation, type Page } from "@/composables/useNavigation";
 import { useFarWorld } from "@/composables/useFarWorld";
 import RiftSearchWell from "./RiftSearchWell.vue";
+import PlayStone from "./PlayStone.vue";
 import FarWorldLabels from "./FarWorldLabels.vue";
 import { useLabels } from "@/composables/useLabels";
 import { seamReach } from "@/services/seam";
@@ -87,10 +88,6 @@ function onType(value: string): void {
   search.setText(value);
 }
 
-function rootLabel(label: string, path: string): string {
-  return label || path;
-}
-
 onMounted(() => {
   const el = well.value?.el;
   if (el?.parentElement) {
@@ -141,17 +138,6 @@ defineExpose({ focusSearch: () => well.value?.focus() });
     </button>
 
     <div class="pillar__facets" :class="{ 'is-dark': !awake }" :inert="!awake">
-      <h2 class="pillar__head rs-inscription">LIBRARY ROOTS</h2>
-      <label v-for="root in stone.overview.value?.roots ?? []" :key="root.id" class="facet" :title="root.path">
-        <input
-          type="checkbox"
-          :checked="!search.offRoots.value.includes(root.id)"
-          @change="search.toggleRoot(root.id)"
-        />
-        <span class="facet__label">{{ rootLabel(root.label, root.path) }}</span>
-        <span class="facet__n">{{ stone.rootCounts.value[root.id] ?? 0 }}</span>
-      </label>
-
       <h2 class="pillar__head rs-inscription">STATE</h2>
       <div role="radiogroup" aria-label="State">
         <label v-for="s in STATES" :key="s.id" class="facet">
@@ -195,6 +181,9 @@ defineExpose({ focusSearch: () => well.value?.focus() });
         </span>
       </button>
     </nav>
+
+    <!-- §16.2: Play, its own pinned slab between the rooms and the foot -->
+    <PlayStone />
 
     <footer class="pillar__foot" aria-label="Game state">
       <span v-if="game">build {{ game.buildId ?? "?" }}</span>
@@ -352,10 +341,6 @@ defineExpose({ focusSearch: () => well.value?.focus() });
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.facet__n {
-  color: var(--rs-faint);
-  font: 12px var(--rs-font-mono);
 }
 .pillar__facets.is-dark,
 .pillar__nav.is-dark {

@@ -3,7 +3,7 @@
 
 import type { SearchResult } from "@/types/rift";
 
-export type ChipState = "installed" | "notInstalled" | "update" | "conflict" | "switchOff" | "fluffy" | "menu";
+export type ChipState = "installed" | "notInstalled" | "update" | "conflict" | "switchOff" | "menu";
 
 /** The rail's temperature: ember beats gold beats cyan. */
 export type RailState = "rift" | "world" | "ember" | "menu";
@@ -13,8 +13,7 @@ export function chipsFor(hit: Pick<SearchResult, "conflicted" | "update" | "inst
   const chips: ChipState[] = [];
   if (hit.conflicted) chips.push("conflict");
   if (hit.update === "available") chips.push("update");
-  if (hit.installed?.origin === "fluffyUnadopted") chips.push("fluffy");
-  else chips.push(hit.installed ? "installed" : "notInstalled");
+  chips.push(hit.installed ? "installed" : "notInstalled");
   return chips.slice(0, 2);
 }
 

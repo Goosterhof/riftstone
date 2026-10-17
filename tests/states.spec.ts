@@ -1,21 +1,48 @@
 // §9 — the voiced states, each from its own ?mock= scenario, with its exact
 // copy and its recovery present (the Error Manifesto: voice, empathy, recovery).
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useNavigation } from "@/composables/useNavigation";
-import { button, hasButton, sleep, text, textOf, until, wakeOn, idle } from "./harness";
+import { button, hasButton, sleep, spine, text, textOf, until, wakeOn, idle } from "./harness";
 
-afterEach(() => sleep());
+afterEach(() => {
+  vi.restoreAllMocks();
+  sleep();
+});
 
 describe("the voiced states (§9)", () => {
-  it("should speak THE RIFT IS QUIET over an empty library, with both ways out", async () => {
+  it("should speak THE RIFT IS QUIET over an empty mods folder, and open the folder", async () => {
     await wakeOn("empty");
     await until(() => text().includes("THE RIFT IS QUIET"), "the quiet Rift");
     expect(text()).toContain(
-      "No mods in your library roots yet. Add the folder where your downloads land, or adopt what Fluffy already has.",
+      "No mods in your mods folder yet. Put a mod's zip, 7z, rar or folder in it, and the stone reads it.",
     );
-    expect(hasButton("Add library folder…")).toBe(true);
-    expect(hasButton("Adopt Fluffy's library")).toBe(true);
+    const opens = vi.spyOn(spine(), "openModsFolder");
+    button("Open mods folder").click();
+    await until(() => opens.mock.calls.length === 1, "the folder opened");
+  });
+
+  it("should keep the game's installs over an emptied mods folder, each one without its package", async () => {
+    await wakeOn("emptymods");
+    await until(() => text().includes("THE RIFT IS QUIET"), "the quiet Rift");
+    useNavigation().go("world");
+    await until(() => document.querySelectorAll("[aria-label^='Uninstall ']").length > 0, "Your World");
+    // every install stays uninstallable from the journal: a door on each
+    expect(document.querySelectorAll("[aria-label^='Uninstall ']").length).toBe(7);
+    expect(text()).toContain("no package");
+  });
+
+  it("should draw the mods folder as Preflight's own row, with the spine's empty-folder check inside it", async () => {
+    await wakeOn("emptymods");
+    useNavigation().go("preflight");
+    await until(() => document.querySelector(".pre__row--mods") !== null, "the Mods folder row");
+    const row = textOf(document.querySelector(".pre__row--mods") ?? document.body).replace(/\s+/g, " ");
+    expect(row).toContain("C:\\Games\\Stone Bench\\mods · The mods folder is empty");
+    expect(row).toContain("Put a mod's zip, 7z, rar or folder in it, and the stone reads it.");
+    // drawn once: the page's own row, never again among the spine's checks below it
+    expect(text().split("The mods folder is empty").length - 1).toBe(1);
+    expect(hasButton("Open mods folder")).toBe(true);
+    expect(hasButton("Scan")).toBe(true);
   });
 
   it("should say NO WORLD ANSWERS when no game is found, and offer the folder and a retry", async () => {
@@ -103,7 +130,8 @@ describe("the voiced states (§9)", () => {
 
   it("should show none of those states on a healthy library (the control: each state needs its scenario)", async () => {
     await wakeOn();
-    await until(() => document.querySelector("#rift-answers .card") !== null, "the library");
+    // v0.3: the idle Rift is the library tree (§16.1)
+    await until(() => document.querySelector('#rift-tree [role="treeitem"]') !== null, "the library");
     for (const line of ["THE RIFT IS QUIET", "NO WORLD ANSWERS", "READING THE RIFT", "YOUR WORLD HAS CHANGED"]) {
       expect(text()).not.toContain(line);
     }
