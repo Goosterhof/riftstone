@@ -18,10 +18,15 @@ use rift_core::RiftError;
 
 use crate::state::AppState;
 
+pub mod browse;
 pub mod deploy;
+pub mod downloads;
 pub mod library;
 pub mod nexus;
+pub mod nxm;
 pub mod overview;
+pub mod play;
+pub mod standings;
 
 /// The managed state as the wrappers receive it.
 pub type Spine<'a> = tauri::State<'a, Arc<AppState>>;

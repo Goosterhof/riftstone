@@ -1,13 +1,15 @@
 //! The home frame: `get_overview`, `rescan`, the settings, the troubled list.
 
-use rift_core::{Package, ProblemKind, RiftError};
-use rift_deploy::Journal;
+use std::path::Path;
 
-use crate::commands::library::package_summary;
+use rift_core::{Package, ProblemKind, RiftError};
+use rift_deploy::GameInstall;
+
+use crate::commands::library::{mods_folder_view, package_summary};
 use crate::commands::{blocking, Spine};
 use crate::dto::{
-    self, path_text, BuildChanged, Check, CheckAction, CheckLevel, FluffySummary, GameSummary,
-    LibraryRoot, LibraryStats, Overview, PackageSummary, ReframeworkSummary, Settings,
+    self, path_text, BuildChanged, Check, CheckAction, CheckLevel, GameSummary, LaunchRoute,
+    LibraryStats, Overview, PackageSummary, ReframeworkSummary, Settings,
 };
 use crate::library::Shelf;
 use crate::nexus::NexusStore;
@@ -24,45 +26,43 @@ pub const TROUBLE: [ProblemKind; 4] = [
     ProblemKind::FilesSkipped,
 ];
 
+/// The game as the window shows it: where it is, its build, whether it runs
+/// (the game watcher's word) and since when, and how Play starts it.
+pub fn game_summary(state: &AppState, game: &GameInstall, snapshot: &Snapshot) -> GameSummary {
+    let run = state.game_run();
+    GameSummary {
+        root: path_text(&game.root),
+        build_id: game.build_id.clone(),
+        source: game.source.into(),
+        running: run.running,
+        started_ms: run.started_ms,
+        launch: LaunchRoute::from(&rift_deploy::launch_route(game)),
+        build_changed: snapshot
+            .game_state
+            .as_ref()
+            .and_then(|s| s.build_changed.as_ref())
+            .map(|change| BuildChanged {
+                recorded: change.recorded.clone(),
+                now: change.now.clone(),
+            }),
+    }
+}
+
 pub fn get_overview_impl(state: &AppState) -> Result<Overview, RiftError> {
     let snapshot = state.refresh_snapshot();
     let shelf = state.shelf();
-    let (game, fluffy, installed_options, journal_problem) = {
+    let (game, installed_options, journal_problem) = {
         let world = state.world();
-        let game = world.game.as_ref().map(|game| GameSummary {
-            root: path_text(&game.root),
-            build_id: game.build_id.clone(),
-            source: game.source.into(),
-            running: snapshot.running,
-            build_changed: snapshot
-                .game_state
-                .as_ref()
-                .and_then(|s| s.build_changed.as_ref())
-                .map(|change| BuildChanged {
-                    recorded: change.recorded.clone(),
-                    now: change.now.clone(),
-                }),
-        });
-        let adopted = world
-            .journal
-            .ready()
-            .map(Journal::adopted_sections)
-            .unwrap_or_default();
-        let fluffy = world.fluffy.as_ref().map(|fluffy| FluffySummary {
-            root: path_text(&fluffy.root),
-            mods_dir: path_text(&fluffy.mods_dir),
-            installed_count: snapshot.ledger.as_ref().map_or(0, |l| l.mods.len()),
-            unadopted_count: snapshot
-                .ledger
-                .as_ref()
-                .map_or(0, |l| l.unadopted(&adopted).count()),
-        });
+        let game = world
+            .game
+            .as_ref()
+            .map(|game| game_summary(state, game, &snapshot));
         let installed = world.journal.ready().map_or(0, |j| j.installs.len());
         let problem = match &world.journal {
             JournalSlot::Damaged(err) => Some(err.to_string()),
             _ => None,
         };
-        (game, fluffy, installed, problem)
+        (game, installed, problem)
     };
     let nexus = crate::commands::nexus::summary(state, &shelf);
     let library = LibraryStats {
@@ -84,12 +84,7 @@ pub fn get_overview_impl(state: &AppState) -> Result<Overview, RiftError> {
     Ok(Overview {
         game,
         reframework: snapshot.ref_status.as_ref().map(ReframeworkSummary::from),
-        fluffy,
-        roots: state
-            .roots_snapshot()
-            .iter()
-            .map(LibraryRoot::from)
-            .collect(),
+        mods: mods_folder_view(state),
         library,
         scan: state.scan_state(),
         checks,
@@ -98,8 +93,45 @@ pub fn get_overview_impl(state: &AppState) -> Result<Overview, RiftError> {
     })
 }
 
+/// What the mods folder is like right now (the `mods` check).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModsFolderState {
+    /// It holds at least one package.
+    Holds,
+    /// It holds no package (a `desktop.ini`, a download in flight and a
+    /// hidden name are no packages).
+    Empty,
+    /// It is there, but its list of files could not be read: why.
+    Unlistable(String),
+    /// It is not there: why it could not be made.
+    Missing(String),
+}
+
+/// Look at the mods folder (one listing, no archive opened). `unmade` is
+/// why it could not be made at launch, when it could not.
+pub fn mods_folder_state(folder: &Path, unmade: Option<&str>) -> ModsFolderState {
+    if !folder.is_dir() {
+        return ModsFolderState::Missing(
+            unmade
+                .unwrap_or(
+                    "it is not there any more; the Riftstone makes it again at its next start",
+                )
+                .to_string(),
+        );
+    }
+    if let Err(err) = std::fs::read_dir(folder) {
+        return ModsFolderState::Unlistable(err.to_string());
+    }
+    if rift_catalog::scan::list_library(folder).is_empty() {
+        ModsFolderState::Empty
+    } else {
+        ModsFolderState::Holds
+    }
+}
+
 /// rift-deploy's preflight plus the spine's own: the game, the journal, the
-/// roots, the packages that would not open.
+/// mods folder, the installs found again after a move, the packages that
+/// would not open, the player's files that could not be read.
 fn checks(
     state: &AppState,
     snapshot: &Snapshot,
@@ -149,18 +181,57 @@ fn checks(
             None,
         );
     }
+    let folder = state.library_dir();
+    match mods_folder_state(folder, state.mods_unmade()) {
+        ModsFolderState::Holds => {}
+        ModsFolderState::Empty => add(
+            "mods",
+            CheckLevel::Info,
+            "The mods folder is empty".into(),
+            format!(
+                "Put each mod's zip, 7z or rar, or its unpacked folder, directly in {}. The Riftstone reads it, never changes what is there, and sees new mods by itself.",
+                folder.display()
+            ),
+            Some(CheckAction::OpenModsFolder),
+        ),
+        ModsFolderState::Unlistable(why) => add(
+            "mods",
+            CheckLevel::Warn,
+            "The mods folder could not be read".into(),
+            format!(
+                "{} is there, but its list of files could not be read ({why}). Check the folder's permissions, then rescan.",
+                folder.display()
+            ),
+            Some(CheckAction::Rescan),
+        ),
+        ModsFolderState::Missing(why) => add(
+            "mods",
+            CheckLevel::Error,
+            "The mods folder is missing".into(),
+            format!(
+                "The Riftstone keeps your mods in {}, and that folder could not be made ({why}). Make it by hand, or install the Riftstone where it may write, then start it again.",
+                folder.display()
+            ),
+            None,
+        ),
+    }
+    let relinked = state.relinked_count();
+    if relinked > 0 {
+        add(
+            "relinked",
+            CheckLevel::Info,
+            format!("{relinked} install(s) found again in the mods folder"),
+            "Their mods had moved. Each was matched to the same option in the mods folder by its files, so it shows, updates and uninstalls as before. Nothing in the game folder changed.".into(),
+            None,
+        );
+    }
     let held = state.held_files();
     for file in &held {
         let (id, title, what) = match file.what {
-            "roots" => (
-                "rootsUnreadable",
-                "Your mod folders could not be read",
-                "the folders the Riftstone reads mods from",
-            ),
             "nexus" => (
                 "nexusUnreadable",
                 "Your Nexus links could not be read",
-                "which download is which Nexus mod",
+                "which mod is which Nexus mod",
             ),
             _ => (
                 "settingsUnreadable",
@@ -180,16 +251,6 @@ fn checks(
             None,
         );
     }
-    if state.roots_snapshot().is_empty() && !held.iter().any(|file| file.what == "roots") {
-        add(
-            "roots",
-            CheckLevel::Info,
-            "No mod folders yet".into(),
-            "Add the folder your downloads live in. The Riftstone reads it and never writes to it."
-                .into(),
-            None,
-        );
-    }
     let count = |kind: ProblemKind| {
         shelf
             .packages()
@@ -202,7 +263,7 @@ fn checks(
         add(
             "unreadable",
             CheckLevel::Warn,
-            format!("{unreadable} download(s) could not be opened"),
+            format!("{unreadable} mod(s) in the mods folder could not be opened"),
             "They are listed in the Rift with the reason. A damaged or half-finished download usually needs downloading again.".into(),
             Some(CheckAction::Rescan),
         );
@@ -212,7 +273,7 @@ fn checks(
         add(
             "nothingToInstall",
             CheckLevel::Info,
-            format!("{empty} download(s) hold nothing the game loads"),
+            format!("{empty} mod(s) in the mods folder hold nothing the game loads"),
             "They opened fine, but no file in them goes into natives/, reframework/, pak_mods/ or beside the game.".into(),
             None,
         );
@@ -310,8 +371,8 @@ mod tests {
     use rift_catalog::catalog::CachedPackage;
     use rift_catalog::CatalogCache;
     use rift_core::{
-        DeployTarget, LibraryRoot as CoreRoot, ModOption, OptionId, PackageFormat, PackageId,
-        PayloadFile, PayloadKinds, Problem, RootKind,
+        DeployTarget, ModOption, OptionId, PackageFormat, PackageId, PayloadFile, PayloadKinds,
+        Problem,
     };
     use std::path::PathBuf;
 
@@ -347,8 +408,7 @@ mod tests {
         let id = PackageId::for_archive(file, 1);
         Package {
             id: id.clone(),
-            root_id: "a".into(),
-            path: PathBuf::from(format!("/library/{file}")),
+            path: PathBuf::from(format!("/mods/{file}")),
             file_name: file.into(),
             display_name: file.trim_end_matches(".zip").into(),
             format: PackageFormat::Zip,
@@ -386,14 +446,7 @@ mod tests {
                 package,
             })
             .collect();
-        let root = CoreRoot {
-            id: "a".into(),
-            path: PathBuf::from("/library"),
-            label: "a".into(),
-            kind: RootKind::Custom,
-            dd2_shaped_only: false,
-        };
-        Shelf::from_cache(&[root], &cache)
+        Shelf::from_cache(Path::new("/mods"), &cache)
     }
 
     /// The window's voice module, as it is built.
@@ -466,5 +519,29 @@ mod tests {
             ],
             "the problems stay in the catalog's order: the card picks its own lead"
         );
+    }
+
+    #[test]
+    fn the_mods_folder_is_told_apart_missing_empty_or_holding() {
+        let dir = tempfile::tempdir().unwrap();
+        let mods = dir.path().join("mods");
+        assert!(matches!(
+            mods_folder_state(&mods, Some("access is denied")),
+            ModsFolderState::Missing(why) if why == "access is denied"
+        ));
+        assert!(matches!(
+            mods_folder_state(&mods, None),
+            ModsFolderState::Missing(why) if why.contains("not there")
+        ));
+        std::fs::create_dir_all(&mods).unwrap();
+        assert_eq!(mods_folder_state(&mods, None), ModsFolderState::Empty);
+        // Windows' folder settings, a hidden name and a browser's download in
+        // flight are no packages.
+        std::fs::write(mods.join("desktop.ini"), b"[.ShellClassInfo]").unwrap();
+        std::fs::write(mods.join(".riftstone-a1.part"), b"half").unwrap();
+        std::fs::write(mods.join("Lantern Glow Recolor.zip.crdownload"), b"PK").unwrap();
+        assert_eq!(mods_folder_state(&mods, None), ModsFolderState::Empty);
+        std::fs::write(mods.join("Lantern Glow Recolor.zip"), b"PK").unwrap();
+        assert_eq!(mods_folder_state(&mods, None), ModsFolderState::Holds);
     }
 }

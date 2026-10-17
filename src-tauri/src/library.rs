@@ -12,20 +12,17 @@
 //!   entries a pass goes by (every `screenshot.png` of 256 KiB or less), so a
 //!   grid of small screenshots decompresses once; a larger entry decompresses
 //!   its block again on every read. Idle packages are closed by a timer.
-//! - [`match_fluffy`] — which library option a Fluffy install is.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use rift_catalog::{Catalog, CatalogCache, LabelFacets, PackageLabels, SearchHit, SearchQuery};
 use rift_core::{
-    ArchiveEntry, LibraryRoot, ModOption, OptionId, Package, PackageFormat, PackageId,
-    PackageSource, RiftError,
+    ArchiveEntry, ModOption, OptionId, Package, PackageFormat, PackageId, PackageSource, RiftError,
 };
-use rift_deploy::FluffyMod;
 
 /// What the window searches and browses: one catalog, swapped whole — or,
 /// for new Nexus labels alone, relabeled in place ([`Shelf::set_labels`]).
@@ -50,10 +47,11 @@ impl Shelf {
         }
     }
 
-    /// The library as the last scan left it, for these roots, without
-    /// touching the disk (no labels yet: [`Shelf::with_labels`]).
-    pub fn from_cache(roots: &[LibraryRoot], cache: &CatalogCache) -> Shelf {
-        Shelf::scanned(Catalog::from_cache(roots, cache))
+    /// The mods folder as the last scan left it, without touching the disk
+    /// (no labels yet: [`Shelf::with_labels`]). A cache written beside
+    /// another mods folder shows nothing.
+    pub fn from_cache(library: &Path, cache: &CatalogCache) -> Shelf {
+        Shelf::scanned(Catalog::from_cache(library, cache))
     }
 
     /// This shelf with these labels ([`Shelf::set_labels`]).
@@ -114,11 +112,6 @@ impl Shelf {
         self.catalog.search(query, is_installed)
     }
 
-    /// Options whose display name equals `name` (case-insensitive, trimmed).
-    pub fn options_named(&self, name: &str) -> Vec<&ModOption> {
-        self.catalog.options_named(name)
-    }
-
     /// Every option in library order.
     pub fn options(&self) -> impl Iterator<Item = (&Package, &ModOption)> {
         self.packages()
@@ -133,63 +126,6 @@ impl Shelf {
     pub fn entry_count(&self) -> usize {
         self.packages().iter().map(|p| p.entry_count).sum()
     }
-}
-
-/// How names compare: trimmed, case-insensitive.
-pub fn name_key(name: &str) -> String {
-    name.trim().to_lowercase()
-}
-
-/// The folder a Fluffy section is named after: the option root's last
-/// segment — or, for an option at the package root, the package's own name.
-fn root_folder_name(package: &Package, option: &ModOption) -> String {
-    let segment = rift_core::path::file_name(&option.root);
-    if segment.is_empty() {
-        package.display_name.clone()
-    } else {
-        segment.to_string()
-    }
-}
-
-/// Which library option a Fluffy install is: its `ModName=` against option
-/// names, else its section (the mod's folder in the archive) against option
-/// root folders, case-insensitive. Options that install something beat menu
-/// entries; ties go to the most recently modified package, then library order.
-pub fn match_fluffy<'a>(shelf: &'a Shelf, fluffy_mod: &FluffyMod) -> Option<&'a ModOption> {
-    let by_name = shelf.options_named(&fluffy_mod.name);
-    let candidates: Vec<&ModOption> = if by_name.is_empty() {
-        let section = name_key(&fluffy_mod.section);
-        if section.is_empty() {
-            return None;
-        }
-        shelf
-            .options()
-            .filter(|(package, option)| name_key(&root_folder_name(package, option)) == section)
-            .map(|(_, option)| option)
-            .collect()
-    } else {
-        by_name
-    };
-    let installable: Vec<&ModOption> = candidates
-        .iter()
-        .copied()
-        .filter(|o| !o.menu_only)
-        .collect();
-    let pool = if installable.is_empty() {
-        candidates
-    } else {
-        installable
-    };
-    let mut best: Option<(&ModOption, u64)> = None;
-    for option in pool {
-        let modified = shelf
-            .package(&option.package_id)
-            .map_or(0, |p| p.modified_ms);
-        if best.is_none_or(|(_, newest)| modified > newest) {
-            best = Some((option, modified));
-        }
-    }
-    best.map(|(option, _)| option)
 }
 
 // ---------------------------------------------------------------------------
@@ -366,7 +302,7 @@ impl SourcePool {
 mod tests {
     use super::*;
     use rift_catalog::catalog::CachedPackage;
-    use rift_core::{DeployTarget, ModInfo, PackageFormat, PayloadFile, PayloadKinds, RootKind};
+    use rift_core::{DeployTarget, ModInfo, PackageFormat, PayloadFile, PayloadKinds};
 
     fn option(package: &PackageId, root: &str, name: &str, menu_only: bool) -> ModOption {
         ModOption {
@@ -401,17 +337,11 @@ mod tests {
         }
     }
 
-    fn package(
-        root_id: &str,
-        file: &str,
-        modified_ms: u64,
-        options: &[(&str, &str, bool)],
-    ) -> Package {
+    fn package(dir: &str, file: &str, modified_ms: u64, options: &[(&str, &str, bool)]) -> Package {
         let id = PackageId::for_archive(file, modified_ms);
         Package {
             id: id.clone(),
-            root_id: root_id.into(),
-            path: PathBuf::from(format!("/library/{file}")),
+            path: PathBuf::from(format!("/{dir}/{file}")),
             file_name: file.into(),
             display_name: file.trim_end_matches(".zip").into(),
             format: PackageFormat::Zip,
@@ -424,16 +354,6 @@ mod tests {
                 .collect(),
             nexus: None,
             problems: Vec::new(),
-        }
-    }
-
-    fn root(id: &str) -> LibraryRoot {
-        LibraryRoot {
-            id: id.into(),
-            path: PathBuf::from(format!("/{id}")),
-            label: id.into(),
-            kind: RootKind::Custom,
-            dd2_shaped_only: false,
         }
     }
 
@@ -456,24 +376,25 @@ mod tests {
     }
 
     #[test]
-    fn a_cached_shelf_keeps_only_live_roots_in_root_then_name_order() {
+    fn a_cached_shelf_holds_the_mods_folder_only_in_name_order() {
         let cache = cache(vec![
-            package("b", "Zeta.zip", 1, &[("Zeta", "Zeta", false)]),
+            package("mods", "Zeta.zip", 1, &[("Zeta", "Zeta", false)]),
             package(
-                "a",
+                "mods",
                 "Vernworth Cloaks.zip",
                 2,
                 &[("Cloaks", "Ermine Cape", false)],
             ),
             package(
-                "a",
+                "mods",
                 "Lantern Glow.zip",
                 3,
                 &[("Glow", "Lantern Glow Recolor", false)],
             ),
-            package("gone", "Old.zip", 4, &[("Old", "Old", false)]),
+            // Cached beside another mods folder: not this library.
+            package("elsewhere", "Old.zip", 4, &[("Old", "Old", false)]),
         ]);
-        let shelf = Shelf::from_cache(&[root("a"), root("b")], &cache);
+        let shelf = Shelf::from_cache(Path::new("/mods"), &cache);
         let names: Vec<&str> = shelf
             .packages()
             .iter()
@@ -494,7 +415,6 @@ mod tests {
         assert_eq!(hits.len(), 1);
         let (_, found) = shelf.option(&hits[0].option_id).unwrap();
         assert_eq!(found.name, "Ermine Cape");
-        assert_eq!(shelf.options_named("  ermine CAPE ").len(), 1);
         assert!(Shelf::empty().packages().is_empty());
     }
 
@@ -504,8 +424,7 @@ mod tests {
         std::fs::create_dir_all(root.join("natives/stm")).unwrap();
         std::fs::write(root.join("natives/stm/glow.tex.251211553"), b"glow").unwrap();
         Package {
-            id: PackageId::for_folder(&root),
-            root_id: "a".into(),
+            id: PackageId::for_folder("Lantern Glow Recolor"),
             path: root,
             file_name: "Lantern Glow Recolor".into(),
             display_name: "Lantern Glow Recolor".into(),
@@ -573,66 +492,5 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
-    }
-
-    #[test]
-    fn fluffy_installs_match_by_name_then_folder_newest_package_first() {
-        let cache = cache(vec![
-            package(
-                "a",
-                "Glow v1.zip",
-                10,
-                &[("Glow", "Lantern Glow Recolor", false)],
-            ),
-            package(
-                "a",
-                "Glow v2.zip",
-                20,
-                &[("Glow", "Lantern Glow Recolor", false)],
-            ),
-            package(
-                "a",
-                "Cloaks.zip",
-                5,
-                &[
-                    ("Pack/ErmineCape", "Ermine Cape", false),
-                    ("Pack/Menu", "Ermine Cape", true),
-                ],
-            ),
-        ]);
-        let shelf = Shelf::from_cache(&[root("a")], &cache);
-        let by_name = FluffyMod {
-            section: "LanternGlow-v2.1".into(),
-            name: "lantern glow recolor".into(),
-            files: vec![],
-        };
-        let matched = match_fluffy(&shelf, &by_name).unwrap();
-        assert_eq!(
-            shelf.package(&matched.package_id).unwrap().file_name,
-            "Glow v2.zip",
-            "a tie goes to the newest package"
-        );
-        let by_folder = FluffyMod {
-            section: "erminecape".into(),
-            name: "Tops314-ErmineCape".into(),
-            files: vec![],
-        };
-        let matched = match_fluffy(&shelf, &by_folder).unwrap();
-        assert_eq!(matched.root, "Pack/ErmineCape");
-        let menu_tie = FluffyMod {
-            section: "x".into(),
-            name: "Ermine Cape".into(),
-            files: vec![],
-        };
-        assert!(
-            !match_fluffy(&shelf, &menu_tie).unwrap().menu_only,
-            "an installable option beats a menu entry"
-        );
-        let nobody = FluffyMod {
-            section: "Ox Cart".into(),
-            name: "Ox Cart Express".into(),
-            files: vec![],
-        };
-        assert!(match_fluffy(&shelf, &nobody).is_none());
     }
 }

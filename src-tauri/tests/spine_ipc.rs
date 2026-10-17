@@ -16,13 +16,16 @@ use tauri::webview::InvokeRequest;
 use tauri::Manager;
 
 use riftstone_lib::dto::{
-    AdoptResultView, CheckAction, GameSummary, InstallPlanView, InstallResultView, InstalledView,
-    LabelFacets, LibraryRoot, Md5Result, NexusFindings, NexusSummary, OptionDetail, Overview,
-    OwnerKind, PackageDetail, PackageSummary, ParkedRestoreReport, SearchResult, Settings,
-    UninstallPlanView, UninstallResultView, UpdateRow, UpdatesView, VeilMode,
+    CheckAction, GameSummary, InstallPlanView, InstallResultView, InstalledView, LabelFacets,
+    LaunchPlanView, LaunchReport, LaunchRoute, LibraryView, Md5Result, NexusBrowsePage,
+    NexusFindings, NexusKeyStanding, NexusModFiles, NexusStandings, NexusSummary, NxmHandlerState,
+    NxmHandlerView, OptionDetail, Overview, OwnerKind, PackageDetail, PackageSummary,
+    ParkedRestoreReport, SearchResult, Settings, UninstallPlanView, UninstallResultView, UpdateRow,
+    UpdatesView, VeilMode,
 };
 use riftstone_lib::events::{GAME_CHANGED, LIBRARY_CHANGED};
 use riftstone_lib::persist::DataDirs;
+use riftstone_lib::play::Launched;
 use riftstone_lib::state::AppState;
 use support::{Answer, Bench, StandIn, ERMINE_MESH};
 
@@ -95,6 +98,7 @@ fn every_command_answers_the_window_by_its_invoke_name_and_argument_keys() {
     // -- the home frame --------------------------------------------------------
     let home: Overview = window.call("get_overview", json!({}));
     assert_eq!(home.library.packages, 3);
+    assert_eq!(home.mods.path, bench.mods.to_string_lossy());
     let settings: Settings = window.call("get_settings", json!({}));
     assert!(settings.auto_check_updates);
     let settings: Settings = window.call(
@@ -107,24 +111,37 @@ fn every_command_answers_the_window_by_its_invoke_name_and_argument_keys() {
     assert!(troubled.is_empty());
 
     // -- the library -------------------------------------------------------------
+    let library: LibraryView = window.call("get_library", json!({}));
+    assert_eq!(library.packages.len(), 3);
+    assert!(library.mods.exists);
+    assert_eq!(
+        window.invoke("open_mods_folder", json!({})),
+        Ok(Value::Null)
+    );
+    assert_eq!(
+        bench.launcher.seen(),
+        vec![Launched::Folder(bench.mods.clone())],
+        "shown Rust-side, through the launcher"
+    );
     let hits: Vec<SearchResult> = window.call(
         "search",
-        json!({ "query": { "text": "ermine", "filters": { "installed": null, "rootIds": [], "includeMenuOnly": false, "categories": [], "tags": [] }, "limit": 0 } }),
+        json!({ "query": { "text": "ermine", "filters": { "installed": null, "includeMenuOnly": false, "categories": [], "tags": [] }, "limit": 0 } }),
     );
     let ermine = hits[0].option_id.clone();
     let package_id = hits[0].package_id.clone();
     assert_eq!(hits[0].nexus_category, None, "no check has run");
     assert!(hits[0].nexus_tags.is_empty() && !hits[0].adult);
+    // A v0.2 query (a root filter) still reads; the filter is ignored.
     let lantern = window
         .call::<Vec<SearchResult>>(
             "search",
-            json!({ "query": { "text": "lantern", "filters": { "installed": null, "rootIds": ["fluffy"], "includeMenuOnly": false, "categories": [], "tags": [] }, "limit": 5 } }),
+            json!({ "query": { "text": "lantern", "filters": { "installed": null, "rootIds": ["custom-1"], "includeMenuOnly": false, "categories": [], "tags": [] }, "limit": 5 } }),
         )[0]
         .option_id
         .clone();
     let by_label: Vec<SearchResult> = window.call(
         "search",
-        json!({ "query": { "text": "", "filters": { "installed": null, "rootIds": [], "includeMenuOnly": false, "categories": ["Armour"], "tags": ["Cloaks"] }, "limit": 0 } }),
+        json!({ "query": { "text": "", "filters": { "installed": null, "includeMenuOnly": false, "categories": ["Armour"], "tags": ["Cloaks"] }, "limit": 0 } }),
     );
     assert!(
         by_label.is_empty(),
@@ -172,8 +189,6 @@ fn every_command_answers_the_window_by_its_invoke_name_and_argument_keys() {
     assert_eq!(back.removals.len(), 1);
     let gone: UninstallResultView = window.call("uninstall", json!({ "optionId": ermine }));
     assert_eq!(gone.files_removed, 1);
-    let adopted: AdoptResultView = window.call("adopt_fluffy", json!({}));
-    assert_eq!(adopted.adopted, 1);
     assert_eq!(
         window.invoke(
             "set_reframework_switch",
@@ -188,13 +203,32 @@ fn every_command_answers_the_window_by_its_invoke_name_and_argument_keys() {
         json!({ "path": bench.game.to_string_lossy() }),
     );
     assert_eq!(game.root, bench.game.to_string_lossy());
+    assert_eq!(game.launch, LaunchRoute::Exe);
     let refused = window
         .invoke(
             "set_game_root",
-            json!({ "path": bench.fluffy.to_string_lossy() }),
+            json!({ "path": bench.mods.to_string_lossy() }),
         )
         .unwrap_err();
     assert_eq!(refused["kind"], "gameNotFound");
+
+    // -- Play (v0.3) ---------------------------------------------------------------------
+    let plan: LaunchPlanView = window.call("plan_launch", json!({}));
+    assert_eq!(plan.launch, LaunchRoute::Exe);
+    assert!(plan.refused.is_none(), "{plan:?}");
+    let report: LaunchReport = window.call("launch_game", json!({}));
+    assert_eq!(report.launch, LaunchRoute::Exe);
+    assert!(report.launched_ms > 0);
+    assert!(
+        matches!(bench.launcher.seen().last(), Some(Launched::Game(_))),
+        "started through the launcher: {:?}",
+        bench.launcher.seen()
+    );
+    // The bench's launch started the game: a second Play is refused in words.
+    let again = window.invoke("launch_game", json!({})).unwrap_err();
+    assert_eq!(again["kind"], "refused", "{again}");
+    bench.game_watch.set(false);
+    state.sample_game();
 
     // -- files kept aside (v0.2) --------------------------------------------------------
     // A file that was there before the cape; the cape backs it up; another
@@ -281,25 +315,8 @@ fn every_command_answers_the_window_by_its_invoke_name_and_argument_keys() {
     }
     assert_eq!(game_changed(), heard + 2, "a refusal emits nothing");
 
-    // -- roots -----------------------------------------------------------------------
-    let extra = bench.dir.path().join("Mods I Keep");
-    std::fs::create_dir_all(&extra).unwrap();
-    let root: LibraryRoot = window.call("add_root", json!({ "path": extra.to_string_lossy() }));
-    assert_eq!(root.label, "Mods I Keep");
-    assert!(root.id.starts_with("custom-"));
-    assert_eq!(
-        window.invoke("remove_root", json!({ "rootId": root.id })),
-        Ok(Value::Null)
-    );
-    // add_root started a background scan; let it land before the next one.
+    // -- a rescan --------------------------------------------------------------------
     let deadline = Instant::now() + Duration::from_secs(20);
-    while !matches!(
-        window.call::<Overview>("get_overview", json!({})).scan,
-        riftstone_lib::dto::ScanState::Idle
-    ) {
-        assert!(Instant::now() < deadline, "the scan settles");
-        std::thread::sleep(Duration::from_millis(25));
-    }
     let heard = events.named(LIBRARY_CHANGED).len();
     assert_eq!(window.invoke("rescan", json!({})), Ok(Value::Null));
     while events.named(LIBRARY_CHANGED).len() == heard {
@@ -333,12 +350,72 @@ fn every_command_answers_the_window_by_its_invoke_name_and_argument_keys() {
     );
     let summary: NexusSummary = window.call("set_nexus_key", json!({ "key": null }));
     assert!(!summary.has_api_key);
+    assert_eq!(summary.key, NexusKeyStanding::None);
+    assert!(summary.account.is_none());
     assert_eq!(window.invoke("get_nexus_quota", json!({})), Ok(Value::Null));
     let labels: LabelFacets = window.call("get_labels", json!({}));
     assert!(labels.categories.is_empty() && labels.tags.is_empty());
     assert_eq!(
         labels.unlabeled_packages, 3,
         "no check has heard any labels: every package is unlabeled"
+    );
+
+    // -- the key's extras (v0.3): no key is stored, nothing listens ------------------------
+    let account: NexusSummary = window.call("refresh_nexus_account", json!({}));
+    assert_eq!(
+        account.key,
+        NexusKeyStanding::None,
+        "no key: nothing to validate"
+    );
+    // Each answer is a RiftError of the spine's own (so the arguments mapped).
+    let reason = |answer: Value| answer["detail"]["reason"].as_str().map(str::to_string);
+    let offline = window
+        .invoke("get_mod_files", json!({ "modId": 2207 }))
+        .unwrap_err();
+    assert_eq!(offline["kind"], "nexus", "{offline}");
+    let offline = window
+        .invoke(
+            "browse_nexus",
+            json!({ "query": { "text": "lantern", "sort": "updated", "offset": 20 } }),
+        )
+        .unwrap_err();
+    assert_eq!(offline["kind"], "nexus", "{offline}");
+    for (command, args) in [
+        ("get_nexus_standings", json!({ "refresh": false })),
+        ("set_tracked", json!({ "modId": 2207, "tracked": true })),
+        (
+            "set_endorsement",
+            json!({ "modId": 2207, "status": "endorsed" }),
+        ),
+        (
+            "start_download",
+            json!({ "modId": 2207, "fileId": 9001, "forPackageId": null }),
+        ),
+    ] {
+        let refused = window.invoke(command, args).unwrap_err();
+        assert_eq!(refused["kind"], "nexus", "{command}: {refused}");
+        assert_eq!(reason(refused), Some("noKey".to_string()), "{command}");
+    }
+    let rows: Vec<Value> = window.call("get_downloads", json!({}));
+    assert!(rows.is_empty());
+    let stale = window
+        .invoke("cancel_download", json!({ "id": "no-such-download" }))
+        .unwrap_err();
+    assert_eq!(stale["kind"], "refused", "{stale}");
+    assert_eq!(window.invoke("clear_downloads", json!({})), Ok(Value::Null));
+    let handler: NxmHandlerView = window.call("get_nxm_handler", json!({}));
+    assert_eq!(handler.state, NxmHandlerState::None);
+    let on: NxmHandlerView = window.call("set_nxm_handler", json!({ "on": true }));
+    assert_eq!(on.state, NxmHandlerState::Ours);
+    let raw = window.invoke("get_nxm_handler", json!({})).unwrap();
+    assert_eq!(keys(&raw), sorted(&["state", "other", "givesBackTo"]));
+    let off: NxmHandlerView = window.call("set_nxm_handler", json!({ "on": false }));
+    assert_eq!(off.state, NxmHandlerState::None);
+    assert!(
+        window
+            .invoke("set_nxm_handler", json!({ "enabled": true }))
+            .is_err(),
+        "the window's key is the only one that maps"
     );
 }
 
@@ -358,6 +435,142 @@ fn sorted(expected: &[&str]) -> Vec<String> {
     let mut keys: Vec<String> = expected.iter().map(|k| (*k).to_string()).collect();
     keys.sort();
     keys
+}
+
+/// The key's extras (v0.3) through the window's invoke names and argument
+/// keys, against a stand-in for Nexus: a key set from the window keeps its
+/// account; the standings, a mod's files and a browse page decode into the
+/// wire types; a free account's download waits, and its row carries exactly
+/// the keys of `src/types/rift.ts`.
+#[test]
+fn the_keys_extras_answer_the_window_by_their_invoke_names_and_argument_keys() {
+    let stand_in = StandIn::start(|request| {
+        let path = request.path.split('?').next().unwrap_or_default();
+        if path.ends_with("/users/validate.json") {
+            return Answer::json(json!({
+                "user_id": 4242, "name": "Arisen of Vernworth", "is_premium": false, "is_supporter": true
+            }));
+        }
+        if path.ends_with("/user/tracked_mods.json") {
+            return Answer::json(json!([{ "mod_id": 2207, "domain_name": "dragonsdogma2" }]));
+        }
+        if path.ends_with("/user/endorsements.json") {
+            return Answer::json(json!([]));
+        }
+        if path.ends_with("/endorse.json") || path.ends_with("/abstain.json") {
+            return Answer::json(json!({ "status": "Endorsed" }));
+        }
+        if request.body.contains("legacyModsByDomain") {
+            return Answer::json(
+                json!({ "data": { "legacyModsByDomain": { "totalCount": 1, "nodes": [
+                { "modId": 2207, "name": "Lantern Glow Recolor", "version": "2.2",
+                  "updatedAt": "2026-10-15T09:00:00Z", "status": "published",
+                  "category": "Visuals", "tags": [], "adultContent": false }
+            ] } } }),
+            );
+        }
+        if request.body.contains("RiftstoneModFileDetails") {
+            return Answer::json(json!({ "data": { "modFiles": [
+                { "fileId": 9001, "groupId": 31, "sqid": "Rk4vLmN2Q", "name": "Lantern Glow Recolor",
+                  "version": "2.2", "category": "MAIN", "date": 1_791_987_780, "primary": 1,
+                  "sizeInBytes": "4096", "description": "Warmer amber.", "changelogText": ["Amber."] }
+            ] } }));
+        }
+        if request.body.contains("RiftstoneBrowseMods") {
+            return Answer::json(json!({ "data": { "mods": { "totalCount": 1, "nodes": [{
+                "modId": 2207, "name": "Lantern Glow Recolor", "version": "2.2",
+                "author": "Vern", "uploader": { "name": "Vern" }, "category": "Visuals",
+                "modCategory": { "name": "Visuals" }, "adultContent": false, "downloads": 1520,
+                "endorsements": 88, "summary": "Warmer lanterns.", "updatedAt": "2024-05-04T01:30:45Z",
+                "game": { "domainName": "dragonsdogma2" }
+            }] } } }));
+        }
+        Answer {
+            status: 404,
+            headers: Vec::new(),
+            body: json!({}),
+        }
+    });
+    let bench = Bench::new();
+    let (state, _) = bench.open(bench.config_at(&stand_in));
+    assert!(state.scan_blocking());
+    let (_app, window) = mock_window(&state);
+
+    let keyed: NexusSummary = window.call("set_nexus_key", json!({ "key": "invented-key-0042" }));
+    assert_eq!(keyed.key, NexusKeyStanding::Connected);
+    let account = keyed.account.expect("the account it validated");
+    assert!(!account.premium && account.supporter);
+    let refreshed: NexusSummary = window.call("refresh_nexus_account", json!({}));
+    assert_eq!(refreshed.key, NexusKeyStanding::Connected);
+
+    let standings: NexusStandings = window.call("get_nexus_standings", json!({ "refresh": true }));
+    assert_eq!(standings.tracked.len(), 1);
+    let raw = window
+        .invoke("get_nexus_standings", json!({ "refresh": false }))
+        .unwrap();
+    assert_eq!(
+        keys(&raw),
+        sorted(&["tracked", "endorsements", "checkedMs"])
+    );
+    let after: NexusStandings =
+        window.call("set_tracked", json!({ "modId": 2207, "tracked": false }));
+    assert!(after.tracked.is_empty());
+    let after: NexusStandings = window.call(
+        "set_endorsement",
+        json!({ "modId": 2207, "status": "endorsed" }),
+    );
+    assert_eq!(after.endorsements.len(), 1);
+
+    let files: NexusModFiles = window.call("get_mod_files", json!({ "modId": 2207 }));
+    assert_eq!(files.files.len(), 1);
+    assert!(files.files[0].newest);
+    let page: NexusBrowsePage = window.call(
+        "browse_nexus",
+        json!({ "query": { "text": "lantern", "sort": "relevance", "offset": 0 } }),
+    );
+    assert_eq!(page.mods[0].mod_id, 2207);
+
+    let waiting = window
+        .invoke(
+            "start_download",
+            json!({ "modId": 2207, "fileId": 9001, "forPackageId": null }),
+        )
+        .unwrap();
+    assert_eq!(
+        waiting["phase"], "waiting",
+        "a free account waits: {waiting}"
+    );
+    assert_eq!(
+        keys(&waiting),
+        sorted(&[
+            "id",
+            "modId",
+            "fileId",
+            "modName",
+            "fileName",
+            "version",
+            "forPackageId",
+            "phase",
+            "bytesDone",
+            "bytesTotal",
+            "landedAs",
+            "packageId",
+            "alreadyHad",
+            "failure",
+            "nexusPageUrl",
+            "startedMs",
+            "finishedMs",
+        ])
+    );
+    let rows: Vec<Value> = window.call("get_downloads", json!({}));
+    assert_eq!(rows, vec![waiting.clone()]);
+    assert_eq!(
+        window.invoke("cancel_download", json!({ "id": waiting["id"] })),
+        Ok(Value::Null)
+    );
+    assert_eq!(window.invoke("clear_downloads", json!({})), Ok(Value::Null));
+    let rows: Vec<Value> = window.call("get_downloads", json!({}));
+    assert!(rows.is_empty(), "the cancelled row is cleared");
 }
 
 #[test]
@@ -450,4 +663,45 @@ fn find_on_nexus_answers_the_window_by_its_invoke_name_and_argument_key() {
         json!({ "kind": "entryNotFound", "detail": { "entry": "0000000000000000" } })
     );
     assert_eq!(stand_in.seen().len(), asked);
+}
+
+/// The window's service, as it is built.
+const SERVICE: &str = include_str!("../../src/services/rift.ts");
+
+/// Every invoke name `src/services/rift.ts` sends, in order of appearance.
+fn service_invoke_names() -> Vec<&'static str> {
+    SERVICE
+        .split("invoke(\"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .filter(|name| {
+            !name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+        })
+        .collect()
+}
+
+#[test]
+fn every_invoke_name_the_window_sends_is_registered() {
+    let names = service_invoke_names();
+    assert!(
+        names.len() >= 44,
+        "the service's invoke names were read: {names:?}"
+    );
+    let bench = Bench::new();
+    let (state, _) = bench.open(bench.config(DataDirs::under(&bench.data_home())));
+    let (_app, window) = mock_window(&state);
+    let unknown = window.invoke("no_such_command", json!({})).unwrap_err();
+    assert!(unknown.to_string().contains("not found"), "{unknown}");
+    // Asked with no arguments, a registered command either answers or says
+    // what it misses; only an unregistered one is "not found". (The bench's
+    // launcher records, its Nexus is unreachable: nothing leaves the bench.)
+    for name in names {
+        if let Err(err) = window.invoke(name, json!({})) {
+            assert!(
+                !err.to_string()
+                    .contains(&format!("Command {name} not found")),
+                "{name} is invoked by the window and not registered: {err}"
+            );
+        }
+    }
 }

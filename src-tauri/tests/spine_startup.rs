@@ -1,8 +1,10 @@
 //! The startup sequence: a crash's leftover intent rolled back at launch and
 //! reported in `Overview.recovered`; a damaged journal refusing every change
-//! (and never reset); the background wake-up — Fluffy found, default roots,
-//! the scan, the library watcher catching a new download, the Nexus
-//! auto-check that fails quietly offline.
+//! (and never reset); the one mods folder — made at launch when missing, its
+//! leftover partial downloads removed, a folder that cannot be made or read
+//! said plainly, v0.2's `roots.json` never touched; the background wake-up —
+//! the scan, the mods-folder watcher catching a new mod, the game watcher,
+//! the Nexus auto-check that fails quietly offline.
 
 mod support;
 
@@ -11,10 +13,11 @@ use std::time::{Duration, Instant};
 use rift_core::RiftError;
 use rift_deploy::{Intent, IntentAction, IntentStep, Journal};
 use riftstone_lib::commands::{deploy, library, overview};
-use riftstone_lib::dto::{CheckLevel, RecoveryAction, SearchFilters, SearchQuery};
+use riftstone_lib::dto::{CheckAction, CheckLevel, RecoveryAction, SearchFilters, SearchQuery};
 use riftstone_lib::events::{RecordedEvents, LIBRARY_CHANGED, SCAN_PROGRESS, UPDATES_CHANGED};
 use riftstone_lib::keys::MemoryKeyStore;
 use riftstone_lib::persist::DataDirs;
+use riftstone_lib::play::Launched;
 use riftstone_lib::state::AppState;
 use std::sync::Arc;
 use support::{write_zip, Bench, GatedEvents, ERMINE_MESH};
@@ -135,10 +138,7 @@ fn a_damaged_journal_refuses_every_change_and_is_never_reset() {
 fn without_a_game_plans_are_refused_and_the_overview_asks_for_the_folder() {
     let bench = Bench::new();
     let mut config = bench.config(DataDirs::under(&bench.data_home()));
-    config.discovery = riftstone_lib::state::Discovery::Fixed {
-        game_root: None,
-        fluffy_root: Some(bench.fluffy.clone()),
-    };
+    config.discovery = riftstone_lib::state::Discovery::Fixed { game_root: None };
     let (state, _) = bench.open(config);
     assert!(state.scan_blocking());
     let home = overview::get_overview_impl(&state).unwrap();
@@ -160,7 +160,7 @@ fn without_a_game_plans_are_refused_and_the_overview_asks_for_the_folder() {
     ));
 
     // Pointing at a folder without DD2.exe is refused; the bench's game is taken.
-    assert!(deploy::set_game_root_impl(&state, &bench.fluffy.to_string_lossy()).is_err());
+    assert!(deploy::set_game_root_impl(&state, &bench.mods.to_string_lossy()).is_err());
     let game = deploy::set_game_root_impl(&state, &bench.game.to_string_lossy()).unwrap();
     assert_eq!(game.source, riftstone_lib::dto::GameSource::Manual);
     assert!(deploy::plan_install_impl(&state, &id)
@@ -170,8 +170,8 @@ fn without_a_game_plans_are_refused_and_the_overview_asks_for_the_folder() {
     assert!(overview::get_overview_impl(&state).unwrap().game.is_some());
 }
 
-/// The bench opened once, scanned, closed: the next open is no first launch,
-/// and its library (from the cache) holds the Nexus download, linked by name.
+/// The bench opened once, scanned, closed: the next open's library (from the
+/// cache) holds the Nexus download, linked by name.
 fn launched_before(bench: &Bench) -> DataDirs {
     let dirs = DataDirs::under(&bench.data_home());
     let (state, _) = bench.open(bench.config(dirs.clone()));
@@ -218,127 +218,32 @@ fn the_launch_update_check_waits_for_a_scan_already_running() {
 }
 
 #[test]
-fn a_folder_added_before_fluffy_is_found_survives_the_first_launch() {
-    let bench = Bench::new();
-    let dirs = DataDirs::under(&bench.data_home());
-    let state = AppState::open(
-        bench.config(dirs.clone()),
-        Arc::new(RecordedEvents::default()),
-        Box::new(MemoryKeyStore::default()),
-    );
-    // The window is up before the wake-up thread has found Fluffy.
-    let kept = bench.dir.path().join("Mods I Keep");
-    std::fs::create_dir_all(&kept).unwrap();
-    let added = library::add_root_impl(&state, &kept.to_string_lossy()).unwrap();
-    state.find_fluffy();
-
-    let ids: Vec<String> = state.roots_snapshot().into_iter().map(|r| r.id).collect();
-    assert_eq!(
-        ids,
-        vec![
-            "fluffy".to_string(),
-            "downloads".to_string(),
-            added.id.clone()
-        ],
-        "the default roots join the player's folder, never replace it"
-    );
-    let stored: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(dirs.roots_file()).unwrap()).unwrap();
-    let stored_ids: Vec<&str> = stored["roots"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|r| r["id"].as_str().unwrap())
-        .collect();
-    assert_eq!(stored_ids, vec!["fluffy", "downloads", added.id.as_str()]);
-}
-
-#[cfg(unix)]
-#[test]
-fn an_unreadable_roots_file_is_never_written_over() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let bench = Bench::new();
-    let dirs = DataDirs::under(&bench.data_home());
-    {
-        // The player's own folders, from an earlier launch.
-        let (state, _) = bench.open(bench.config(dirs.clone()));
-        let kept = bench.dir.path().join("Mods I Keep");
-        std::fs::create_dir_all(&kept).unwrap();
-        library::add_root_impl(&state, &kept.to_string_lossy()).unwrap();
-    }
-    let roots_file = dirs.roots_file();
-    let before = std::fs::read(&roots_file).unwrap();
-    std::fs::set_permissions(&roots_file, std::fs::Permissions::from_mode(0o000)).unwrap();
-    if std::fs::read(&roots_file).is_ok() {
-        // Running as root: permissions do not stop a read, so there is no
-        // unreadable file to stage on this bench.
-        std::fs::set_permissions(&roots_file, std::fs::Permissions::from_mode(0o644)).unwrap();
-        return;
-    }
-
-    let (state, _) = bench.open(bench.config(dirs.clone()));
-    let home = overview::get_overview_impl(&state).unwrap();
-    std::fs::set_permissions(&roots_file, std::fs::Permissions::from_mode(0o644)).unwrap();
-
-    assert_eq!(
-        std::fs::read(&roots_file).unwrap(),
-        before,
-        "the file holding the player's folders is left exactly as it was"
-    );
-    assert!(
-        state.roots_snapshot().is_empty(),
-        "an unreadable roots.json is no first launch: no default roots"
-    );
-    let check = home
-        .checks
-        .iter()
-        .find(|c| c.id == "rootsUnreadable")
-        .expect("the overview says the folders could not be read");
-    assert_eq!(check.level, CheckLevel::Warn);
-    assert!(check.detail.contains("roots.json"), "{}", check.detail);
-    assert!(
-        !home.checks.iter().any(|c| c.id == "roots"),
-        "no 'add your first folder' while the player's folders are only unreadable"
-    );
-}
-
-#[test]
-fn a_damaged_roots_file_is_set_aside_and_the_defaults_come_back() {
-    let bench = Bench::new();
-    let dirs = DataDirs::under(&bench.data_home());
-    std::fs::create_dir_all(&dirs.data).unwrap();
-    std::fs::write(dirs.roots_file(), b"{ the roots, torn").unwrap();
-    let (state, _) = bench.open(bench.config(dirs.clone()));
-    let ids: Vec<String> = state.roots_snapshot().into_iter().map(|r| r.id).collect();
-    assert_eq!(ids, vec!["fluffy".to_string(), "downloads".to_string()]);
-    assert_eq!(
-        std::fs::read(dirs.data.join("roots.json.damaged")).unwrap(),
-        b"{ the roots, torn",
-        "the damaged file is kept aside, never deleted"
-    );
-    assert!(state.held_files().is_empty(), "a damaged file is not held");
-}
-
-#[test]
-fn the_wake_up_finds_fluffy_scans_and_the_watcher_sees_a_new_download() {
+fn the_wake_up_scans_watches_the_game_and_the_watcher_sees_a_new_mod() {
     let bench = Bench::new();
     let mut config = bench.config(DataDirs::under(&bench.data_home()));
-    config.watch_roots = true;
+    config.watch_library = true;
     let events = Arc::new(RecordedEvents::default());
     let state = AppState::open(config, events.clone(), Box::new(MemoryKeyStore::default()));
     // Startup steps 1–3 are done; the window could ask already.
-    assert!(overview::get_overview_impl(&state)
-        .unwrap()
-        .fluffy
-        .is_none());
+    assert_eq!(
+        overview::get_overview_impl(&state)
+            .unwrap()
+            .library
+            .packages,
+        0,
+        "no scan and no cache yet"
+    );
+    let asked_at_open = bench.game_watch.asked();
 
     state.wake();
     wait_for(&events, LIBRARY_CHANGED, 1);
     let home = overview::get_overview_impl(&state).unwrap();
-    assert!(home.fluffy.is_some());
-    assert_eq!(home.roots.len(), 2);
     assert_eq!(home.library.packages, 3);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while bench.game_watch.asked() < asked_at_open + 3 {
+        assert!(Instant::now() < deadline, "the game watcher samples");
+        std::thread::sleep(Duration::from_millis(10));
+    }
     // The download carries a Nexus file name, the last check is "never":
     // the auto-check runs — against nothing — and fails quietly.
     wait_for(&events, UPDATES_CHANGED, 1);
@@ -433,33 +338,6 @@ fn a_change_that_stops_mid_way_keeps_its_intent_and_refuses_the_next_change() {
 }
 
 #[test]
-fn a_root_holding_the_stones_own_data_or_the_game_is_refused() {
-    let bench = Bench::new();
-    let home = bench.dir.path().join("Mods and data");
-    let dirs = DataDirs::under(&home.join("riftstone-data"));
-    let (state, _) = bench.open(bench.config(dirs));
-    std::fs::create_dir_all(home.join("riftstone-data")).unwrap();
-    for refused in [
-        home.clone(),
-        home.join("riftstone-data"),
-        bench.game.clone(),
-        bench.game.join("pak_mods"),
-        bench.game.parent().unwrap().to_path_buf(),
-    ] {
-        std::fs::create_dir_all(&refused).unwrap();
-        let answer = library::add_root_impl(&state, &refused.to_string_lossy());
-        assert!(
-            matches!(answer, Err(RiftError::Refused { .. })),
-            "{} must not become a library root: {answer:?}",
-            refused.display()
-        );
-    }
-    let fine = bench.dir.path().join("Lantern Mods");
-    std::fs::create_dir_all(&fine).unwrap();
-    assert!(library::add_root_impl(&state, &fine.to_string_lossy()).is_ok());
-}
-
-#[test]
 fn a_scan_that_changes_nothing_leaves_the_cache_file_alone() {
     let bench = Bench::new();
     let dirs = DataDirs::under(&bench.data_home());
@@ -475,7 +353,7 @@ fn a_scan_that_changes_nothing_leaves_the_cache_file_alone() {
         "the same library is not written again"
     );
     write_zip(
-        &bench.downloads.join("Lantern Glow Recolor.zip"),
+        &bench.mods.join("Lantern Glow Recolor Extra.zip"),
         &[(
             "Lantern Glow/natives/stm/lantern/glow.tex.251211553",
             b"tex",
@@ -487,4 +365,180 @@ fn a_scan_that_changes_nothing_leaves_the_cache_file_alone() {
         written,
         "a changed library is"
     );
+}
+
+#[test]
+fn a_missing_mods_folder_is_made_at_launch_and_said_empty() {
+    let bench = Bench::new();
+    let mut config = bench.config(DataDirs::under(&bench.data_home()));
+    config.library_dir = bench.dir.path().join("Fresh Install").join("mods");
+    let (state, _) = bench.open(config.clone());
+    assert!(config.library_dir.is_dir(), "made at launch");
+    assert!(state.scan_blocking());
+    let home = overview::get_overview_impl(&state).unwrap();
+    assert!(home.mods.exists);
+    assert_eq!(home.mods.path, config.library_dir.to_string_lossy());
+    assert_eq!(home.library.packages, 0);
+    let check = home
+        .checks
+        .iter()
+        .find(|c| c.id == "mods")
+        .expect("an empty mods folder is said");
+    assert_eq!(check.level, CheckLevel::Info);
+    assert_eq!(check.title, "The mods folder is empty");
+    assert_eq!(check.action, Some(CheckAction::OpenModsFolder));
+    assert!(check
+        .detail
+        .contains(&*config.library_dir.to_string_lossy()));
+    let view = library::get_library_impl(&state);
+    assert!(view.mods.exists && view.packages.is_empty());
+}
+
+#[test]
+fn leftover_partial_downloads_go_at_launch_and_nothing_else_is_touched() {
+    let bench = Bench::new();
+    std::fs::write(bench.mods.join(".riftstone-7c1e.part"), b"half a download").unwrap();
+    std::fs::write(
+        bench.mods.join("Pawn Banter Quieter.zip.part"),
+        b"a browser's",
+    )
+    .unwrap();
+    std::fs::write(bench.mods.join("desktop.ini"), b"[.ShellClassInfo]").unwrap();
+    let before: Vec<_> = Bench::snapshot(&bench.mods)
+        .into_iter()
+        .filter(|(path, _)| path != ".riftstone-7c1e.part")
+        .collect();
+    let (state, _) = bench.open(bench.config(DataDirs::under(&bench.data_home())));
+    assert!(state.scan_blocking());
+    assert!(!bench.mods.join(".riftstone-7c1e.part").exists());
+    assert_eq!(
+        Bench::snapshot(&bench.mods).into_iter().collect::<Vec<_>>(),
+        before,
+        "only the stone's own partial download went"
+    );
+    assert_eq!(
+        overview::get_overview_impl(&state)
+            .unwrap()
+            .library
+            .packages,
+        3,
+        "a download in flight and desktop.ini are no packages"
+    );
+}
+
+#[test]
+fn a_mods_folder_that_cannot_be_made_is_an_error_never_a_crash() {
+    let bench = Bench::new();
+    let blocked = bench.dir.path().join("not a folder");
+    std::fs::write(&blocked, b"a file where the install folder should be").unwrap();
+    let mut config = bench.config(DataDirs::under(&bench.data_home()));
+    config.library_dir = blocked.join("mods");
+    let (state, _) = bench.open(config.clone());
+    assert!(state.scan_blocking());
+    let home = overview::get_overview_impl(&state).unwrap();
+    assert!(!home.mods.exists);
+    assert_eq!(home.library.packages, 0, "an empty shelf");
+    let check = home.checks.iter().find(|c| c.id == "mods").unwrap();
+    assert_eq!(check.level, CheckLevel::Error);
+    assert_eq!(
+        check.action, None,
+        "nothing the window can press would help"
+    );
+    assert!(
+        check
+            .detail
+            .contains(&*config.library_dir.to_string_lossy()),
+        "{}",
+        check.detail
+    );
+    let view = library::get_library_impl(&state);
+    assert!(!view.mods.exists && view.packages.is_empty());
+    assert!(
+        library::open_mods_folder_impl(&state).is_err(),
+        "still cannot be made"
+    );
+    assert!(bench.launcher.seen().is_empty(), "nothing was shown");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_mods_folder_that_cannot_be_listed_warns() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bench = Bench::new();
+    let (state, _) = bench.open(bench.config(DataDirs::under(&bench.data_home())));
+    std::fs::set_permissions(&bench.mods, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let listable = std::fs::read_dir(&bench.mods).is_ok();
+    let home = overview::get_overview_impl(&state).unwrap();
+    std::fs::set_permissions(&bench.mods, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if listable {
+        // Running as root: permissions do not stop a listing on this bench.
+        return;
+    }
+    let check = home.checks.iter().find(|c| c.id == "mods").unwrap();
+    assert_eq!(check.level, CheckLevel::Warn);
+    assert!(home.mods.exists);
+}
+
+#[test]
+fn open_mods_folder_makes_a_missing_folder_and_shows_it() {
+    let bench = Bench::new();
+    let mut config = bench.config(DataDirs::under(&bench.data_home()));
+    config.library_dir = bench.dir.path().join("Second Install").join("mods");
+    let (state, _) = bench.open(config.clone());
+    std::fs::remove_dir(&config.library_dir).unwrap();
+    library::open_mods_folder_impl(&state).unwrap();
+    assert!(config.library_dir.is_dir(), "made again first");
+    assert_eq!(
+        bench.launcher.seen(),
+        vec![Launched::Folder(config.library_dir.clone())]
+    );
+    library::open_mods_folder_impl(&state).unwrap();
+    assert_eq!(bench.launcher.seen().len(), 2);
+}
+
+#[test]
+fn v02s_roots_file_is_never_read_written_or_deleted() {
+    let bench = Bench::new();
+    let dirs = DataDirs::under(&bench.data_home());
+    // v0.2 kept the player's library folders here; one of them holds a mod.
+    let elsewhere = bench.dir.path().join("Mods I Keep");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    write_zip(
+        &elsewhere.join("Bakbattahl Banners.zip"),
+        &[("Banners/natives/stm/banner/banner.tex.251211553", b"banner")],
+    );
+    let roots = serde_json::to_vec_pretty(&serde_json::json!({
+        "schema": 1,
+        "roots": [{ "id": "custom-1", "path": elsewhere.to_string_lossy(),
+                    "label": "Mods I Keep", "kind": "custom", "dd2ShapedOnly": false }]
+    }))
+    .unwrap();
+    std::fs::create_dir_all(&dirs.data).unwrap();
+    let roots_file = dirs.data.join("roots.json");
+    std::fs::write(&roots_file, &roots).unwrap();
+
+    let (state, _) = bench.open(bench.config(dirs.clone()));
+    assert!(state.scan_blocking());
+    let home = overview::get_overview_impl(&state).unwrap();
+    assert_eq!(home.library.packages, 3, "the mods folder only");
+    assert!(library::search_impl(
+        &state,
+        &SearchQuery {
+            text: "banner".into(),
+            filters: SearchFilters::default(),
+            limit: 0,
+        }
+    )
+    .is_empty());
+    drop(state);
+    let (again, _) = bench.open(bench.config(dirs.clone()));
+    assert!(again.scan_blocking());
+    drop(again);
+    assert_eq!(
+        std::fs::read(&roots_file).unwrap(),
+        roots,
+        "left exactly as v0.2 wrote it"
+    );
+    assert!(!dirs.data.join("roots.json.damaged").exists());
 }

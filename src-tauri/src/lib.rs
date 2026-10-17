@@ -1,30 +1,44 @@
 //! The Riftstone — the window spine.
 //!
 //! The Vue window (`src/`) asks; this crate answers by wiring the six crates
-//! under `crates/` together: it holds the library, the journal and the Nexus
-//! links ([`state`]; no lock is held across a disk, archive or network read),
-//! reads the game folder once per change and shares that read ([`fresh`]),
-//! remembers its state between launches ([`persist`]), answers every command
-//! of `docs/WINDOW-CONTRACT.md` ([`commands`], all off the async runtime) in
-//! the shapes of `src/types/rift.ts` ([`dto`]), and tells the window when
-//! something changed ([`events`]): a scan, an install, an update check, a
-//! folder that changed under the library watcher ([`watch`]).
+//! under `crates/` together: it holds the library (the one mods folder), the
+//! journal and the Nexus links ([`state`]; no lock is held across a disk,
+//! archive or network read), gives v0.2's ids their v0.3 spelling after each
+//! scan ([`migrate`]), reads the game folder once per change and shares that
+//! read ([`fresh`]), remembers its state between launches ([`persist`]),
+//! answers every command of `docs/WINDOW-CONTRACT.md` ([`commands`], all off
+//! the async runtime) in the shapes of `src/types/rift.ts` ([`dto`]), starts
+//! the game and watches it run ([`play`]), and tells the window when
+//! something changed ([`events`]): a scan, an install, an update check, the
+//! mods folder changing under its watcher ([`watch`]), the game starting or
+//! stopping. v0.3's key extras: the account ([`account`]), downloads into the
+//! mods folder ([`downloads`]), and the nxm handler ([`nxm`], through the
+//! registry seam [`protocol`]) that takes the site's Mod Manager Download
+//! links — `tauri-plugin-single-instance` is the first plugin, so a second
+//! launch hands its link to the running stone.
 //!
 //! Environment overrides, read once at startup (the WSL bench and the tests):
 //! `RIFTSTONE_DATA_HOME` (replaces the app data + cache dirs, and takes the log
 //! and the WebView2 profile with it, so a bench run leaves nothing in the real
-//! app folders), and through rift-deploy's discovery `RIFTSTONE_GAME_ROOT`,
-//! `RIFTSTONE_STEAM_ROOT`, `RIFTSTONE_FLUFFY_ROOT`.
+//! app folders), `RIFTSTONE_MODS_DIR` (the mods folder, else `mods` beside
+//! `riftstone.exe`), and through rift-deploy's discovery
+//! `RIFTSTONE_GAME_ROOT`, `RIFTSTONE_STEAM_ROOT`.
 
+pub mod account;
 pub mod commands;
 pub mod conflicts;
+pub mod downloads;
 pub mod dto;
 pub mod events;
 pub mod fresh;
 pub mod keys;
 pub mod library;
+pub mod migrate;
 pub mod nexus;
+pub mod nxm;
 pub mod persist;
+pub mod play;
+pub mod protocol;
 pub mod state;
 pub mod thumbs;
 pub mod watch;
@@ -34,7 +48,31 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use crate::persist::DataDirs;
-use crate::state::{AppState, SpineConfig};
+use crate::state::{mods_dir_from, AppState, SpineConfig, MODS_DIR_ENV};
+
+/// A second launch (`riftstone.exe "nxm://…"`, Windows answering the site's
+/// Mod Manager Download button) handed its arguments over: each nxm link
+/// goes to the spine, and the window comes forward. This runs on the
+/// window's own thread, so nothing here waits on the network.
+fn second_launch<R: tauri::Runtime>(app: &tauri::AppHandle<R>, args: Vec<String>, _cwd: String) {
+    let links = nxm::nxm_arguments(&args);
+    match app.try_state::<Arc<AppState>>() {
+        Some(spine) => {
+            for link in &links {
+                nxm::handle_nxm(spine.inner(), link);
+            }
+        }
+        None if !links.is_empty() => log::warn!(
+            "a Mod Manager Download link arrived before the Riftstone was awake; press the button again"
+        ),
+        None => {}
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
 
 pub fn run() {
     let data_home = DataDirs::from_env();
@@ -47,6 +85,9 @@ pub fn run() {
         None => tauri_plugin_log::TargetKind::LogDir { file_name: None },
     };
     let builder = tauri::Builder::default()
+        // First, before anything else sets up: a second launch hands its
+        // arguments to the running stone and exits.
+        .plugin(tauri_plugin_single_instance::init(second_launch))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
@@ -68,14 +109,26 @@ pub fn run() {
                 },
             };
             log::info!("the Riftstone keeps its state in {}", dirs.data.display());
+            // The one library: `RIFTSTONE_MODS_DIR`, else `mods` beside the
+            // installed riftstone.exe (resolved once, never canonicalized).
+            let exe = std::env::current_exe().unwrap_or_else(|err| {
+                log::warn!("could not find where riftstone.exe runs from ({err}); the mods folder is read beside the working folder");
+                std::path::PathBuf::from("riftstone.exe")
+            });
+            let library_dir = mods_dir_from(&exe, std::env::var_os(MODS_DIR_ENV));
+            log::info!("the mods folder is {}", library_dir.display());
             // Startup steps 1–3 here (fast); the window shows at once with the
-            // cached library, and steps 3–6 run in the background (`wake`).
+            // cached library, and steps 4–8 run in the background (`wake`).
             let spine = AppState::open(
-                SpineConfig::system(dirs),
+                SpineConfig::system(dirs, library_dir),
                 Arc::new(events::TauriEvents(app.handle().clone())),
                 Box::new(keys::SystemKeyStore),
             );
             app.manage(Arc::clone(&spine));
+            // A cold start for a Mod Manager Download link: handled once the
+            // spine is awake (startup step 9).
+            let args: Vec<String> = std::env::args().collect();
+            spine.queue_launch_links(nxm::nxm_arguments(&args));
             spine.wake();
             // The window of tauri.conf.json (`create: false`), built here so a
             // bench data home takes the WebView2 profile along: left to itself,
@@ -116,11 +169,12 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         commands::deploy::uninstall,
         commands::deploy::get_installed,
         commands::deploy::reorder_paks,
-        commands::deploy::adopt_fluffy,
         commands::deploy::set_reframework_switch,
-        commands::library::add_root,
-        commands::library::remove_root,
         commands::deploy::set_game_root,
+        commands::library::get_library,
+        commands::library::open_mods_folder,
+        commands::play::plan_launch,
+        commands::play::launch_game,
         commands::nexus::get_updates,
         commands::nexus::check_updates,
         commands::nexus::identify_packages,
@@ -128,6 +182,18 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         commands::nexus::link_package,
         commands::nexus::unlink_package,
         commands::nexus::set_nexus_key,
+        commands::nexus::refresh_nexus_account,
+        commands::browse::get_mod_files,
+        commands::browse::browse_nexus,
+        commands::standings::get_nexus_standings,
+        commands::standings::set_tracked,
+        commands::standings::set_endorsement,
+        commands::downloads::get_downloads,
+        commands::downloads::start_download,
+        commands::downloads::cancel_download,
+        commands::downloads::clear_downloads,
+        commands::nxm::get_nxm_handler,
+        commands::nxm::set_nxm_handler,
         commands::overview::get_troubled_packages,
         commands::nexus::get_nexus_quota,
         commands::nexus::get_labels,

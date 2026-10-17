@@ -12,8 +12,8 @@
 //!   nothing at all.
 //! - [`Fresh::get_recent`] also wants a build that began at most [`RECENT`]
 //!   before the ask: the window's re-reads (`get_overview`, `get_installed`)
-//!   see what changed on disk without the spine knowing (Fluffy installing,
-//!   the game starting, REFramework copied in by hand).
+//!   see what changed on disk without the spine knowing (another tool
+//!   installing, REFramework copied in by hand).
 //!
 //! The build runs with no lock held. A build that panics wakes its waiters
 //! (the next ask builds again) and then passes the panic on to its caller.

@@ -1,9 +1,9 @@
-//! The spine end to end, with no Tauri runtime: first launch over a fake game,
-//! a fake Fluffy and a fake Downloads folder → scan → search → option and
-//! package details → thumbnail → plan → install → the installed view (with a
-//! pak-vs-loose conflict read from the paks' own tables of contents) →
-//! uninstall → Fluffy adoption → a relaunch that shows the cached library at
-//! once. Vanilla files and the library are checked untouched at the end.
+//! The spine end to end, with no Tauri runtime: a launch over a fake game and
+//! the stone's one mods folder → scan → the library tree → search → option
+//! and package details → thumbnail → plan → install → the installed view
+//! (with a pak-vs-loose conflict read from the paks' own tables of contents)
+//! → uninstall → a relaunch that shows the cached library at once. Vanilla
+//! files and the mods folder are checked untouched at the end (RS-2, RS-3).
 //!
 //! The only test in this binary, because it points `RIFTSTONE_DATA_HOME` at
 //! its tempdir — process-wide state no other test may race.
@@ -14,14 +14,13 @@ use std::fs;
 
 use riftstone_lib::commands::{deploy, library, nexus, overview};
 use riftstone_lib::dto::{
-    CheckLevel, ConflictKey, GameSource, InstallOrigin, JournalOrigin, PlanWarning, RemovalAction,
+    CheckLevel, ConflictKey, GameSource, InstallOrigin, LaunchRoute, PlanWarning, RemovalAction,
     ScanState, SearchFilters, SearchQuery, Settings, ThumbnailSize, TreeNodeKind, VeilMode,
     WriteAction,
 };
 use riftstone_lib::events::{GAME_CHANGED, INSTALL_PROGRESS, LIBRARY_CHANGED, SCAN_PROGRESS};
 use riftstone_lib::persist::{DataDirs, DATA_HOME_ENV};
-use riftstone_lib::state::AppState;
-use support::{Bench, BANTER_LUA, ERMINE_MESH, WOOL_MESH};
+use support::{option_named, Bench, BANTER_LUA, BANTER_ZIP, ERMINE_MESH};
 
 fn query(text: &str) -> SearchQuery {
     SearchQuery {
@@ -29,24 +28,6 @@ fn query(text: &str) -> SearchQuery {
         filters: SearchFilters::default(),
         limit: 0,
     }
-}
-
-fn option_named(state: &AppState, name: &str) -> String {
-    library::search_impl(
-        state,
-        &SearchQuery {
-            text: String::new(),
-            filters: SearchFilters {
-                include_menu_only: true,
-                ..SearchFilters::default()
-            },
-            limit: 1_000,
-        },
-    )
-    .into_iter()
-    .find(|hit| hit.name == name)
-    .unwrap_or_else(|| panic!("{name} is in the library"))
-    .option_id
 }
 
 #[test]
@@ -61,23 +42,12 @@ fn the_spine_scans_searches_installs_and_uninstalls_over_a_fake_world() {
         .collect::<Vec<_>>();
     let library_before = Bench::snapshot(&bench.mods);
 
-    // -- first launch: Fluffy found, default roots made, the scan ----------
+    // -- launch, then the scan ------------------------------------------------
     let (state, events) = bench.open(bench.config(dirs.clone()));
-    let roots = state.roots_snapshot();
-    let ids: Vec<&str> = roots.iter().map(|r| r.id.as_str()).collect();
-    assert_eq!(
-        ids,
-        vec!["fluffy", "downloads"],
-        "the first launch makes both default roots"
-    );
-    assert!(
-        roots[1].dd2_shaped_only,
-        "Downloads lists DD2-shaped archives only"
-    );
-    assert!(dirs.roots_file().is_file(), "roots.json is written at once");
-
     let before = overview::get_overview_impl(&state).unwrap();
     assert_eq!(before.library.last_scan_ms, None, "nothing scanned yet");
+    assert_eq!(before.mods.path, bench.mods.to_string_lossy());
+    assert!(before.mods.exists);
     assert!(state.scan_blocking());
     assert!(
         !events.named(SCAN_PROGRESS).is_empty(),
@@ -93,28 +63,63 @@ fn the_spine_scans_searches_installs_and_uninstalls_over_a_fake_world() {
     let game = home.game.as_ref().expect("the fake game is found");
     assert_eq!(game.source, GameSource::Env);
     assert!(!game.running);
+    assert_eq!(game.started_ms, None);
+    assert_eq!(game.launch, LaunchRoute::Exe, "not found through Steam");
     assert_eq!(home.scan, ScanState::Idle);
     assert!(home.library.last_scan_ms.is_some());
     assert_eq!(
         home.library.packages, 3,
-        "two Fluffy mods + one Nexus download; the photos are no mod"
+        "the two zips and the Nexus download"
     );
     assert_eq!(home.library.options, 5);
     assert_eq!(home.library.installed_options, 0);
-    let fluffy = home.fluffy.as_ref().expect("Fluffy is found");
-    assert_eq!((fluffy.installed_count, fluffy.unadopted_count), (1, 1));
     assert!(home
         .checks
         .iter()
         .any(|c| c.id == "game" && c.level == CheckLevel::Ok));
     assert!(
-        home.checks.iter().any(|c| c.id == "fluffy"),
-        "rift-deploy's preflight speaks through the overview, under the window's ids: {:?}",
-        home.checks.iter().map(|c| &c.id).collect::<Vec<_>>()
+        !home.checks.iter().any(|c| c.id == "mods"),
+        "a mods folder holding packages raises no check"
     );
     assert!(home.recovered.is_none());
     assert!(!home.nexus.has_api_key);
     assert!(overview::get_troubled_packages_impl(&state).is_empty());
+
+    // -- the library tree: the Rift's idle view ---------------------------------
+    let tree = library::get_library_impl(&state);
+    assert_eq!(tree.mods, home.mods);
+    let names: Vec<&str> = tree
+        .packages
+        .iter()
+        .map(|p| p.package.display_name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "Lantern Glow Recolor",
+            "Pawn Banter",
+            "Vernworth Cloaks Collection"
+        ],
+        "by display name"
+    );
+    let cloaks = &tree.packages[2];
+    assert_eq!((cloaks.installable, cloaks.installed), (2, 0));
+    assert_eq!(cloaks.update, None, "not linked to Nexus");
+    assert_eq!(cloaks.tree.len(), 1, "the menu holds the two cloaks");
+    assert_eq!(cloaks.tree[0].label, "Cloaks");
+    assert!(cloaks.tree[0].menu_only);
+    let kids: Vec<&str> = cloaks.tree[0]
+        .children
+        .iter()
+        .map(|kid| kid.label.as_str())
+        .collect();
+    assert_eq!(kids, vec!["Ermine Cape", "Wool Hood"]);
+    let banter = &tree.packages[1];
+    assert_eq!(banter.package.file_name, BANTER_ZIP);
+    assert!(
+        banter.update.is_some(),
+        "the download's Nexus name links it"
+    );
 
     // -- search -------------------------------------------------------------
     let hits = library::search_impl(&state, &query("ermine"));
@@ -139,8 +144,19 @@ fn the_spine_scans_searches_installs_and_uninstalls_over_a_fake_world() {
         !by_file[0].file_matches.is_empty(),
         "a file path inside the archive matched"
     );
-
-    let fluffy_hits = library::search_impl(
+    let everything = library::search_impl(
+        &state,
+        &SearchQuery {
+            text: String::new(),
+            filters: SearchFilters {
+                include_menu_only: true,
+                ..SearchFilters::default()
+            },
+            limit: 0,
+        },
+    );
+    assert_eq!(everything.len(), 5, "limit 0: every match");
+    let installed_only = library::search_impl(
         &state,
         &SearchQuery {
             text: String::new(),
@@ -151,16 +167,7 @@ fn the_spine_scans_searches_installs_and_uninstalls_over_a_fake_world() {
             limit: 0,
         },
     );
-    assert_eq!(
-        fluffy_hits.len(),
-        1,
-        "only Fluffy's install counts as installed so far"
-    );
-    assert_eq!(fluffy_hits[0].name, "Wool Hood");
-    assert_eq!(
-        fluffy_hits[0].installed.as_ref().map(|b| b.origin),
-        Some(InstallOrigin::FluffyUnadopted)
-    );
+    assert!(installed_only.is_empty(), "nothing is installed yet");
 
     let ermine = option_named(&state, "Ermine Cape");
     let lantern = option_named(&state, "Lantern Glow Recolor");
@@ -170,7 +177,6 @@ fn the_spine_scans_searches_installs_and_uninstalls_over_a_fake_world() {
     let detail = library::get_option_impl(&state, &ermine).unwrap();
     assert_eq!(detail.parent_name.as_deref(), Some("Cloaks"));
     assert!(detail.installed.is_none());
-    assert!(!detail.fluffy_installed);
     assert!(detail.conflicts.is_empty());
     assert!(detail.update.is_none());
     assert_eq!(detail.option.kinds.loose, 1);
@@ -188,6 +194,11 @@ fn the_spine_scans_searches_installs_and_uninstalls_over_a_fake_world() {
     assert_eq!(package.tree.len(), 1);
     assert_eq!(package.tree[0].kind, TreeNodeKind::Option);
     assert_eq!(package.tree[0].children.len(), 2);
+    assert_eq!(
+        package.tree,
+        library::get_library_impl(&state).packages[2].tree,
+        "one tree, whichever view asks"
+    );
     assert!(package
         .entries
         .iter()
@@ -272,7 +283,7 @@ fn the_spine_scans_searches_installs_and_uninstalls_over_a_fake_world() {
     assert!(world
         .installs
         .iter()
-        .all(|i| i.origin == JournalOrigin::Riftstone && !i.package_missing));
+        .all(|i| i.origin == InstallOrigin::Riftstone && !i.package_missing));
     assert_eq!(world.pak_order, vec![lantern.clone()]);
     let pak_row = world
         .installs
@@ -287,13 +298,6 @@ fn the_spine_scans_searches_installs_and_uninstalls_over_a_fake_world() {
         "the pak's table of contents was read from pak_mods/"
     );
     assert_eq!(world.conflicts[0].winner.name, "Ermine Cape");
-    assert_eq!(world.fluffy_unadopted.len(), 1);
-    assert_eq!(world.fluffy_unadopted[0].name, "Wool Hood");
-    assert_eq!(
-        world.fluffy_unadopted[0].matched_option_id.as_deref(),
-        Some(option_named(&state, "Wool Hood").as_str()),
-        "Fluffy's ModName finds its library option"
-    );
     assert!(world.strays.is_empty());
     assert!(world.missing.is_empty());
     assert_eq!(world.pak_count_warning, 100);
@@ -306,6 +310,23 @@ fn the_spine_scans_searches_installs_and_uninstalls_over_a_fake_world() {
             .conflicts,
         1
     );
+    // The tree tells the same story: counts, and who takes part in a conflict.
+    let tree = library::get_library_impl(&state);
+    let lantern_package = &tree.packages[0];
+    assert_eq!(
+        (lantern_package.installable, lantern_package.installed),
+        (1, 1)
+    );
+    assert!(lantern_package.conflicted);
+    assert!(lantern_package.tree[0].installed && lantern_package.tree[0].conflicted);
+    let cloaks_package = &tree.packages[2];
+    assert_eq!(cloaks_package.installed, 1);
+    assert!(cloaks_package.conflicted);
+    let cape = &cloaks_package.tree[0].children[0];
+    assert_eq!(cape.label, "Ermine Cape");
+    assert!(cape.installed && cape.conflicted);
+    let hood = &cloaks_package.tree[0].children[1];
+    assert!(!hood.installed && !hood.conflicted);
 
     // -- uninstall the cape --------------------------------------------------
     let back = deploy::plan_uninstall_impl(&state, &ermine).unwrap();
@@ -322,29 +343,7 @@ fn the_spine_scans_searches_installs_and_uninstalls_over_a_fake_world() {
         .installed
         .is_none());
 
-    // -- adopt Fluffy's install ----------------------------------------------
-    let adopted = deploy::adopt_fluffy_impl(&state).unwrap();
-    assert_eq!(adopted.adopted, 1);
-    assert!(adopted.unmatched.is_empty());
-    let world = deploy::get_installed_impl(&state).unwrap();
-    assert!(world.fluffy_unadopted.is_empty());
-    let wool = world
-        .installs
-        .iter()
-        .find(|i| i.name == "Wool Hood")
-        .expect("adopted");
-    assert_eq!(wool.origin, JournalOrigin::Fluffy);
-    let wool_hit = &library::search_impl(&state, &query("wool"))[0];
-    assert_eq!(
-        wool_hit.installed.as_ref().map(|b| b.origin),
-        Some(InstallOrigin::Fluffy)
-    );
-    assert_eq!(
-        fs::read(bench.game.join(WOOL_MESH)).unwrap(),
-        b"wool hood as Fluffy left it"
-    );
-
-    // -- settings, roots -----------------------------------------------------
+    // -- settings ------------------------------------------------------------
     let settings = Settings {
         veil: VeilMode::Adult,
         auto_check_updates: false,
@@ -356,14 +355,14 @@ fn the_spine_scans_searches_installs_and_uninstalls_over_a_fake_world() {
     assert_eq!(on_disk["veil"], "adult");
     assert!(
         on_disk.get("veilThumbnails").is_none(),
-        "v0.2 writes the veil mode only: {on_disk}"
+        "the veil mode only: {on_disk}"
     );
     assert!(
         nexus::get_nexus_quota_impl(&state).is_none(),
         "no key, no quota"
     );
 
-    // -- vanilla and the library are untouched --------------------------------
+    // -- vanilla and the mods folder are untouched -----------------------------
     let vanilla_after = Bench::snapshot(&bench.game)
         .into_iter()
         .filter(|(path, _)| !path.starts_with("natives/") && !path.starts_with("pak_mods/"))
@@ -375,13 +374,13 @@ fn the_spine_scans_searches_installs_and_uninstalls_over_a_fake_world() {
     assert_eq!(
         Bench::snapshot(&bench.mods),
         library_before,
-        "the library is read-only (RS-2)"
+        "the mods folder is the player's (RS-2)"
     );
     assert!(!bench.game.join(BANTER_LUA).exists());
 
     // -- relaunch: the cached library shows before any scan ------------------
     drop(state);
-    let (again, again_events) = bench.open(bench.config(dirs.clone()));
+    let (again, _) = bench.open(bench.config(dirs.clone()));
     let home = overview::get_overview_impl(&again).unwrap();
     assert_eq!(
         home.library.packages, 3,
@@ -389,8 +388,8 @@ fn the_spine_scans_searches_installs_and_uninstalls_over_a_fake_world() {
     );
     assert!(home.library.last_scan_ms.is_some());
     assert_eq!(
-        home.library.installed_options, 2,
-        "the journal kept the pak and the adoption"
+        home.library.installed_options, 1,
+        "the journal kept the pak"
     );
     assert_eq!(
         overview::get_settings_impl(&again),
@@ -398,34 +397,7 @@ fn the_spine_scans_searches_installs_and_uninstalls_over_a_fake_world() {
         "settings.json kept the choice"
     );
     assert_eq!(library::search_impl(&again, &query("ermine")).len(), 1);
-    assert_eq!(
-        again.roots_snapshot().len(),
-        2,
-        "no second set of default roots"
-    );
-
-    library::remove_root_impl(&again, "downloads").unwrap();
-    assert_eq!(again.roots_snapshot().len(), 1);
-    assert_eq!(again_events.named(LIBRARY_CHANGED).len(), 1);
-    assert_eq!(
-        overview::get_overview_impl(&again)
-            .unwrap()
-            .library
-            .packages,
-        2
-    );
-    let added = library::add_root_impl(&again, &bench.downloads.to_string_lossy()).unwrap();
-    assert_eq!(
-        added.id, "downloads",
-        "Downloads comes back as its built-in root"
-    );
-    assert!(added.dd2_shaped_only);
-    let doubled = library::add_root_impl(&again, &bench.downloads.to_string_lossy()).unwrap();
-    assert_eq!(
-        doubled.id, "downloads",
-        "adding a root twice returns the one root"
-    );
-    assert!(library::add_root_impl(&again, "/no/such/folder/anywhere").is_err());
+    assert_eq!(library::get_library_impl(&again).packages.len(), 3);
 
     std::env::remove_var(DATA_HOME_ENV);
 }

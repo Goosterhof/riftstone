@@ -1,9 +1,11 @@
 //! What the spine remembers between launches, and where.
 //!
-//! The app data dir holds four JSON files the spine owns — `settings.json`,
-//! `roots.json`, `catalog-cache.json`, `nexus.json` — beside the files
-//! rift-deploy owns there (`journal-<hex>.json`, one per game folder, and the
-//! `backups/` store). Thumbnails live in `thumbs/` under the app cache dir.
+//! The app data dir holds the JSON files the spine owns — `settings.json`,
+//! `catalog-cache.json`, `nexus.json`, and (v0.3, only while the player has
+//! the nxm handler on) `nxm-handler.json` — beside the files rift-deploy owns
+//! there (`journal-<hex>.json`, one per game folder, and the `backups/`
+//! store). Thumbnails live in `thumbs/` under the app cache dir. v0.2's
+//! `roots.json` may still sit there: v0.3 never reads, writes or deletes it.
 //!
 //! `RIFTSTONE_DATA_HOME` replaces both dirs (data = the folder itself, cache =
 //! `<folder>/cache`): the tests and the WSL bench never touch the real app
@@ -18,7 +20,7 @@
 //! defaults in memory and the file is HELD — never written over for the rest
 //! of the session ([`SavedFile`]); the overview says so.
 //!
-//! The player's files (`settings.json`, `roots.json`, `nexus.json`) are saved
+//! The player's files (`settings.json`, `nexus.json`) are saved
 //! through [`SavedFile::save`], one save at a time, each writing the newest
 //! state — so no lock on that state is ever held across a disk write.
 
@@ -31,7 +33,7 @@ use std::sync::{Mutex, PoisonError};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use rift_core::{LibraryRoot, RiftError};
+use rift_core::RiftError;
 
 use crate::dto::{Settings, VeilMode};
 
@@ -72,16 +74,18 @@ impl DataDirs {
         self.data.join("settings.json")
     }
 
-    pub fn roots_file(&self) -> PathBuf {
-        self.data.join("roots.json")
-    }
-
     pub fn catalog_cache_file(&self) -> PathBuf {
         self.data.join("catalog-cache.json")
     }
 
     pub fn nexus_file(&self) -> PathBuf {
         self.data.join("nexus.json")
+    }
+
+    /// v0.3: the nxm handler's memory — the command the stone replaced in
+    /// the registry when the player turned its handler on.
+    pub fn nxm_handler_file(&self) -> PathBuf {
+        self.data.join("nxm-handler.json")
     }
 
     pub fn thumbs_dir(&self) -> PathBuf {
@@ -174,31 +178,10 @@ impl StoredSettings {
     }
 }
 
-/// `roots.json`. Its absence is what makes a launch the first one (the
-/// default roots are created then, and only then).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StoredRoots {
-    pub schema: u32,
-    pub roots: Vec<LibraryRoot>,
-}
-
-impl StoredRoots {
-    pub const SCHEMA: u32 = 1;
-
-    pub fn new(roots: Vec<LibraryRoot>) -> StoredRoots {
-        StoredRoots {
-            schema: StoredRoots::SCHEMA,
-            roots,
-        }
-    }
-}
-
 /// What reading one of the spine's files found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Loaded<T> {
-    /// There is no such file. (A missing `roots.json` is what makes a launch
-    /// the first one.)
+    /// There is no such file.
     Absent,
     Found(T),
     /// It could not be parsed. It was set aside as `<name>.damaged` (never
@@ -402,16 +385,16 @@ mod tests {
             PathBuf::from("/bench/riftstone/settings.json")
         );
         assert_eq!(
-            dirs.roots_file(),
-            PathBuf::from("/bench/riftstone/roots.json")
-        );
-        assert_eq!(
             dirs.catalog_cache_file(),
             PathBuf::from("/bench/riftstone/catalog-cache.json")
         );
         assert_eq!(
             dirs.nexus_file(),
             PathBuf::from("/bench/riftstone/nexus.json")
+        );
+        assert_eq!(
+            dirs.nxm_handler_file(),
+            PathBuf::from("/bench/riftstone/nxm-handler.json")
         );
         assert_eq!(dirs.state_dir(), Path::new("/bench/riftstone"));
     }
@@ -457,19 +440,19 @@ mod tests {
             Loaded::Absent
         );
         // A folder where the file should be: there, but not readable as a file.
-        let blocked = dir.path().join("roots.json");
+        let blocked = dir.path().join("settings.json");
         fs::create_dir_all(&blocked).unwrap();
-        let loaded = load_json::<StoredRoots>(&blocked);
+        let loaded = load_json::<StoredSettings>(&blocked);
         assert!(
             matches!(&loaded, Loaded::Unreadable(why) if !why.is_empty()),
             "{loaded:?}"
         );
         assert!(blocked.is_dir(), "an unreadable file is never moved aside");
-        assert!(!dir.path().join("roots.json.damaged").exists());
+        assert!(!dir.path().join("settings.json.damaged").exists());
         let torn = dir.path().join("nexus.json");
         fs::write(&torn, b"{ torn").unwrap();
         assert_eq!(load_json::<StoredSettings>(&torn), Loaded::Damaged);
-        let good = dir.path().join("settings.json");
+        let good = dir.path().join("good-settings.json");
         write_json(&good, &StoredSettings::default(), true).unwrap();
         assert_eq!(
             load_json::<StoredSettings>(&good),
@@ -480,17 +463,17 @@ mod tests {
     #[test]
     fn a_held_file_is_never_written_and_saves_write_the_newest_state() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("roots.json");
-        fs::write(&path, b"the player's own roots").unwrap();
+        let path = dir.path().join("nexus.json");
+        fs::write(&path, b"the player's own links").unwrap();
         let held = SavedFile::new(path.clone(), Some("permission denied".into()));
         assert_eq!(held.held(), Some("permission denied"));
         let mut asked = false;
         held.save(true, || {
             asked = true;
-            StoredRoots::new(Vec::new())
+            StoredSettings::default()
         });
         assert!(!asked, "a held file does not even ask for the value");
-        assert_eq!(fs::read(&path).unwrap(), b"the player's own roots");
+        assert_eq!(fs::read(&path).unwrap(), b"the player's own links");
 
         // Two threads change the state and save; whatever order the saves run
         // in, the file ends with the newest state.

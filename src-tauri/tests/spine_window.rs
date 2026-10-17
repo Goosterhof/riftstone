@@ -1,8 +1,9 @@
 //! What the window draws from the spine's answers, checked against the window
 //! itself: the Preflight page shows every fact once (its own rows and the
 //! spine's checks never repeat each other), the troubled list follows the
-//! contract's rule, and a picture that cannot be shown is not read again on
-//! every card.
+//! contract's rule, the library tree lists every package of the mods folder
+//! (troubled ones too) in the contract's order, and a picture that cannot be
+//! shown is not read again on every card.
 
 mod support;
 
@@ -39,7 +40,6 @@ fn the_preflight_page_shows_every_fact_once() {
     assert_eq!(reframework.pak_directory, Some(false));
     assert_eq!(reframework.loose_file_loader, Some(false));
     assert_eq!(reframework.faulty_files.len(), 1);
-    assert_eq!(home.fluffy.as_ref().unwrap().unadopted_count, 1);
 
     // …and none of them comes back as a check the page would draw again.
     let own = Bench::preflight_own_rows();
@@ -53,7 +53,6 @@ fn the_preflight_page_shows_every_fact_once() {
         "buildChanged",
         "pakDirectory",
         "looseFileLoader",
-        "fluffyUnadopted",
         "faultyFiles",
         "reframework",
         "game",
@@ -190,5 +189,80 @@ fn a_picture_that_cannot_be_shown_is_not_read_again() {
         library::get_thumbnail_impl(&state, &cloak, ThumbnailSize::Full).unwrap(),
         None,
         "a picture that cannot be shown fails at every size"
+    );
+}
+
+#[test]
+fn the_library_tree_lists_every_package_by_display_name_then_file_name() {
+    let bench = Bench::new();
+    let new_mesh = "natives/stm/appsystem/cloak/grey_cloak_hood.mesh.260421070";
+    // Two packages that read the same: a zip and the folder it was unpacked to.
+    write_zip(
+        &bench.mods.join("Cloak Extras.zip"),
+        &[(&format!("Cloak Extras/{new_mesh}"), b"hood")],
+    );
+    let unpacked = bench.mods.join("Cloak Extras").join(new_mesh);
+    fs::create_dir_all(unpacked.parent().unwrap()).unwrap();
+    fs::write(&unpacked, b"hood").unwrap();
+    // Troubled ones: one that opens and installs nothing, one that does not open.
+    write_zip(
+        &bench.mods.join("Readme Only.zip"),
+        &[("Readme Only/README.txt", b"Thanks for downloading!")],
+    );
+    fs::write(
+        bench.mods.join("Torn Download.zip"),
+        b"PK\x03\x04 the rest never came",
+    )
+    .unwrap();
+    let (state, _) = bench.open(bench.config(DataDirs::under(&bench.data_home())));
+    assert!(state.scan_blocking());
+
+    let view = library::get_library_impl(&state);
+    let order: Vec<(&str, &str)> = view
+        .packages
+        .iter()
+        .map(|p| {
+            (
+                p.package.display_name.as_str(),
+                p.package.file_name.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        order,
+        vec![
+            ("Cloak Extras", "Cloak Extras"),
+            ("Cloak Extras", "Cloak Extras.zip"),
+            ("Lantern Glow Recolor", "Lantern Glow Recolor.zip"),
+            ("Pawn Banter", support::BANTER_ZIP),
+            ("Readme Only", "Readme Only.zip"),
+            ("Torn Download", "Torn Download.zip"),
+            (
+                "Vernworth Cloaks Collection",
+                "Vernworth Cloaks Collection.zip"
+            ),
+        ],
+        "every package of the mods folder, troubled ones too"
+    );
+    for troubled in &view.packages[4..6] {
+        assert!(troubled.tree.is_empty(), "{}", troubled.package.file_name);
+        assert_eq!(troubled.installable, 0);
+        assert!(!troubled.package.problems.is_empty());
+    }
+    let readme = &view.packages[4];
+    assert_eq!(
+        readme.package.problems[0].kind,
+        ProblemKind::NothingToInstall
+    );
+    assert_eq!(
+        view.packages[5].package.problems[0].kind,
+        ProblemKind::Unreadable
+    );
+    assert_eq!(
+        view.packages.len(),
+        overview::get_overview_impl(&state)
+            .unwrap()
+            .library
+            .packages
     );
 }

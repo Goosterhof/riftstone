@@ -1,5 +1,5 @@
-//! Your world: plan, install, uninstall, the load order, Fluffy's installs,
-//! REFramework's switches, the game folder, and the files kept aside (v0.2).
+//! Your world: plan, install, uninstall, the load order, REFramework's
+//! switches, the game folder, and the files kept aside (v0.2).
 //!
 //! Every write goes through rift-deploy's engine under the write-ahead
 //! journal; the spine only picks the option, opens the package, and tells
@@ -8,17 +8,16 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use rift_core::{lower_key, ExtractProgress, OptionId, RiftError};
+use rift_core::{ExtractProgress, OptionId, RiftError};
 
+use crate::commands::overview::game_summary;
 use crate::commands::{blocking, not_found, Spine};
 use crate::dto::{
-    path_text, AdoptResultView, BuildChanged, FluffyModView, GameSummary, InstallPlanView,
-    InstallProgressEvent, InstallResultView, InstalledRow, InstalledView, MissingFile,
-    PakLoadReport, PakView, ParkedFileView, ParkedRestoreReport, StrayFile, SwitchKey,
-    UninstallPlanView, UninstallResultView,
+    GameSummary, InstallPlanView, InstallProgressEvent, InstallResultView, InstalledRow,
+    InstalledView, MissingFile, PakLoadReport, PakView, ParkedFileView, ParkedRestoreReport,
+    StrayFile, SwitchKey, UninstallPlanView, UninstallResultView,
 };
 use crate::events;
-use crate::library::match_fluffy;
 use crate::state::{read, AppState, JournalSlot};
 
 /// Install progress reaches the window at most this often (and always at the end).
@@ -61,6 +60,8 @@ pub fn plan_install_impl(state: &AppState, option_id: &str) -> Result<InstallPla
 }
 
 pub fn install_impl(state: &AppState, option_id: &str) -> Result<InstallResultView, RiftError> {
+    // Play waits while an install is under way, from here to its last byte.
+    let _installing = state.begin_install();
     let shelf = state.shelf();
     let (package, option) = shelf
         .option(&OptionId(option_id.to_string()))
@@ -128,9 +129,11 @@ pub fn uninstall_impl(state: &AppState, option_id: &str) -> Result<UninstallResu
     Ok((&report).into())
 }
 
-/// What is in the game now: the installs, the pak load order, who overrides
-/// whom, strays, missing files, Fluffy's un-adopted installs, and what
-/// REFramework's log says it loaded.
+/// What is in the game now: the installs (adopted ones too), the pak load
+/// order, who overrides whom, strays, missing files, the files kept aside,
+/// and what REFramework's log says it loaded. An install whose package is not
+/// in the mods folder is still listed (`packageMissing`): the journal knows
+/// every file, so it uninstalls as before.
 pub fn get_installed_impl(state: &AppState) -> Result<InstalledView, RiftError> {
     let snapshot = state.refresh_snapshot();
     match &read(&state.world).journal {
@@ -172,19 +175,6 @@ pub fn get_installed_impl(state: &AppState) -> Result<InstalledView, RiftError> 
         conflicts: snapshot.conflicts.clone(),
         strays: game_state.strays.iter().map(StrayFile::from).collect(),
         missing: game_state.missing.iter().map(MissingFile::from).collect(),
-        fluffy_unadopted: game_state
-            .fluffy_unadopted
-            .iter()
-            .map(|fluffy_mod| FluffyModView {
-                section: fluffy_mod.section.clone(),
-                name: fluffy_mod.name.clone(),
-                file_count: fluffy_mod.file_count,
-                matched_option_id: snapshot
-                    .fluffy_matches
-                    .get(&lower_key(&fluffy_mod.section))
-                    .map(|id| id.0.clone()),
-            })
-            .collect(),
         pak_load: game_state.pak_load.as_ref().map(PakLoadReport::from),
         pak_count_warning: game_state.pak_count_warning,
         parked: game_state.parked.iter().map(ParkedFileView::from).collect(),
@@ -194,8 +184,8 @@ pub fn get_installed_impl(state: &AppState) -> Result<InstalledView, RiftError> 
 /// Put a file kept aside back in the game folder (`store` is its handle,
 /// as `InstalledView.parked` lists it). Whatever sits at its path now is
 /// kept aside in its turn (`swappedOut`), so the swap can be undone the same
-/// way. Refused while an install or an un-adopted Fluffy mod owns the file
-/// there, and for a handle the list no longer holds. A running game does not
+/// way. Refused while an install owns the file there, and for a handle the
+/// list no longer holds. A running game does not
 /// stop it: the file loads at the next launch (`restartNeeded`), and one the
 /// game holds open fails to move and is rolled back. One journaled change
 /// under the deploy lock, rolled back on failure; `rift://game-changed` after.
@@ -236,24 +226,6 @@ pub fn reorder_paks_impl(state: &AppState, order: &[String]) -> Result<(), RiftE
     Ok(())
 }
 
-/// Take Fluffy's installs into the journal, each matched to its library
-/// option (by `ModName=`, else by its folder; ties → the newest package).
-pub fn adopt_fluffy_impl(state: &AppState) -> Result<AdoptResultView, RiftError> {
-    let shelf = state.shelf();
-    let report = state.deploy(|ctx, journal| {
-        let ledger = ctx.fluffy.ok_or_else(|| {
-            RiftError::refused(
-                "Fluffy Mod Manager was not found (or has installed nothing yet), so there is nothing to adopt.",
-            )
-        })?;
-        rift_deploy::adopt_fluffy(ctx, journal, ledger, &|fluffy_mod| {
-            match_fluffy(&shelf, fluffy_mod).map(|option| (option.id.clone(), option.name.clone()))
-        })
-    })?;
-    state.events.changed(events::GAME_CHANGED);
-    Ok((&report).into())
-}
-
 pub fn set_reframework_switch_impl(
     state: &AppState,
     switch: SwitchKey,
@@ -265,13 +237,8 @@ pub fn set_reframework_switch_impl(
         .ok_or(RiftError::GameNotFound)?;
     {
         // One writer in the game folder at a time.
-        let _turn = crate::state::lock(&state.deploy_lock);
-        rift_deploy::set_switch(
-            &game.root,
-            switch.into(),
-            on,
-            rift_deploy::is_game_running(),
-        )?;
+        let _turn = state.turn();
+        rift_deploy::set_switch(&game.root, switch.into(), on, state.observe_game())?;
     }
     state.invalidate_snapshot();
     state.events.changed(events::GAME_CHANGED);
@@ -285,20 +252,7 @@ pub fn set_game_root_impl(state: &AppState, path: &str) -> Result<GameSummary, R
     state.switch_game(game.clone());
     state.events.changed(events::GAME_CHANGED);
     let snapshot = state.refresh_snapshot();
-    Ok(GameSummary {
-        root: path_text(&game.root),
-        build_id: game.build_id.clone(),
-        source: game.source.into(),
-        running: snapshot.running,
-        build_changed: snapshot
-            .game_state
-            .as_ref()
-            .and_then(|s| s.build_changed.as_ref())
-            .map(|change| BuildChanged {
-                recorded: change.recorded.clone(),
-                now: change.now.clone(),
-            }),
-    })
+    Ok(game_summary(state, &game, &snapshot))
 }
 
 // -- wrappers ----------------------------------------------------------------
@@ -340,11 +294,6 @@ pub async fn get_installed(state: Spine<'_>) -> Result<InstalledView, RiftError>
 #[tauri::command]
 pub async fn reorder_paks(state: Spine<'_>, order: Vec<String>) -> Result<(), RiftError> {
     blocking(&state, move |state| reorder_paks_impl(state, &order)).await
-}
-
-#[tauri::command]
-pub async fn adopt_fluffy(state: Spine<'_>) -> Result<AdoptResultView, RiftError> {
-    blocking(&state, |state| adopt_fluffy_impl(state)).await
 }
 
 #[tauri::command]

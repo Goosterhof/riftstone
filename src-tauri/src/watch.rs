@@ -1,15 +1,16 @@
-//! The library watcher (startup step 5): every root watched recursively; a
-//! burst of changes settles for [`DEBOUNCE`] (1.5 s), then the library is
-//! rescanned in the background and the window hears `rift://library-changed`.
+//! The mods-folder watcher (startup step 5): the one library folder watched
+//! recursively (a folder package's insides count too); a burst of changes
+//! settles for [`DEBOUNCE`] (1.5 s), then the library is rescanned in the
+//! background and the window hears `rift://library-changed`.
 //!
 //! What does not count as a change: reads (the scan's own, a thumbnail's),
-//! metadata-only touches, the half-written files browsers leave while a
-//! download runs (`.crdownload`, `.part`, `.partial`, `.tmp`) — the scan skips
-//! those anyway, and rescanning on every chunk of a download would be noise —
-//! and anything under the Riftstone's own data and cache folders: every scan
-//! writes its cache there, so a root holding them would rescan itself forever
-//! (`add_root` refuses such a root; the WSL bench's `RIFTSTONE_DATA_HOME` can
-//! still sit inside one).
+//! metadata-only touches, files still being written (`.crdownload`, `.part`,
+//! `.partial`, `.tmp`, `.download` — a browser's, or the stone's own
+//! `.riftstone-<id>.part` while a download runs: the scan skips those anyway,
+//! and rescanning on every chunk would be noise; the finished file's rename
+//! counts), and anything under the Riftstone's own data and cache folders,
+//! which a bench's `RIFTSTONE_DATA_HOME` may put inside the mods folder:
+//! every scan writes its cache there, so it would rescan itself forever.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -18,7 +19,7 @@ use std::time::{Duration, Instant};
 use notify::event::ModifyKind;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
-use rift_core::{lower_key, LibraryRoot};
+use rift_core::lower_key;
 
 /// Quiet time after the last change before a rescan starts.
 pub const DEBOUNCE: Duration = Duration::from_millis(1500);
@@ -31,15 +32,23 @@ pub struct LibraryWatcher {
     _watcher: RecommendedWatcher,
 }
 
-/// Watch every root; call `on_change` once per settled burst of changes.
-/// Changes under `ignore` never count. `None` when the platform watcher could
-/// not start (the library then changes only on a manual rescan).
+/// Watch `folder`; call `on_change` once per settled burst of changes.
+/// Changes under `ignore` never count. `None` when the folder is not there or
+/// the platform watcher could not start (the library then changes only on a
+/// manual rescan).
 pub fn arm(
-    roots: &[LibraryRoot],
+    folder: &Path,
     ignore: &[PathBuf],
     quiet: Duration,
     on_change: impl Fn() + Send + 'static,
 ) -> Option<LibraryWatcher> {
+    if !folder.is_dir() {
+        log::warn!(
+            "the mods folder {} is not there, so it is not watched; rescan by hand once it is",
+            folder.display()
+        );
+        return None;
+    }
     let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
     let mut watcher = match notify::recommended_watcher(tx) {
         Ok(watcher) => watcher,
@@ -50,16 +59,12 @@ pub fn arm(
             return None;
         }
     };
-    for root in roots {
-        if !root.path.is_dir() {
-            continue;
-        }
-        if let Err(err) = watcher.watch(&root.path, RecursiveMode::Recursive) {
-            log::warn!(
-                "could not watch {} ({err}); rescan by hand to see its changes",
-                root.path.display()
-            );
-        }
+    if let Err(err) = watcher.watch(folder, RecursiveMode::Recursive) {
+        log::warn!(
+            "could not watch {} ({err}); rescan by hand to see its changes",
+            folder.display()
+        );
+        return None;
     }
     let ignore = ignore.to_vec();
     let spawned = std::thread::Builder::new()
@@ -146,7 +151,6 @@ fn in_flight(path: &Path) -> bool {
 mod tests {
     use super::*;
     use notify::event::{AccessKind, CreateKind, MetadataKind};
-    use rift_core::RootKind;
     use std::path::PathBuf;
 
     fn event(kind: EventKind, path: &str) -> notify::Result<Event> {
@@ -188,6 +192,16 @@ mod tests {
             &event(EventKind::Create(CreateKind::File), "/dl/a.zip.PART"),
             &[]
         ));
+        assert!(
+            !counts(
+                &event(
+                    EventKind::Modify(ModifyKind::Any),
+                    "/mods/.riftstone-a1.part"
+                ),
+                &[]
+            ),
+            "the stone's own download in flight is no change yet"
+        );
         assert!(counts(&Err(notify::Error::generic("overflow")), &[]));
     }
 
@@ -204,7 +218,7 @@ mod tests {
         assert!(counts(
             &event(
                 EventKind::Create(CreateKind::File),
-                "C:/Users/Arisen/Downloads/Lantern Glow.zip"
+                "D:/Vernworth/The Riftstone/mods/Lantern Glow.zip"
             ),
             &own
         ));
@@ -212,7 +226,7 @@ mod tests {
             counts(
                 &Ok(Event::new(EventKind::Create(CreateKind::File))
                     .add_path(PathBuf::from(cache))
-                    .add_path(PathBuf::from("C:/Users/Arisen/Downloads/b.zip"))),
+                    .add_path(PathBuf::from("D:/Vernworth/The Riftstone/mods/b.zip"))),
                 &own
             ),
             "one real change among the stone's own writes still counts"
@@ -225,20 +239,13 @@ mod tests {
     }
 
     #[test]
-    fn a_root_holding_the_data_folder_does_not_rescan_itself() {
+    fn a_mods_folder_holding_the_data_folder_does_not_rescan_itself() {
         let dir = tempfile::tempdir().unwrap();
         let data = dir.path().join("riftstone-data");
         std::fs::create_dir_all(&data).unwrap();
-        let root = LibraryRoot {
-            id: "downloads".into(),
-            path: dir.path().to_path_buf(),
-            label: "Downloads".into(),
-            kind: RootKind::Downloads,
-            dd2_shaped_only: true,
-        };
         let (tx, rx) = mpsc::channel();
         let watcher = arm(
-            &[root],
+            dir.path(),
             std::slice::from_ref(&data),
             Duration::from_millis(200),
             move || {
@@ -263,15 +270,8 @@ mod tests {
     #[test]
     fn a_burst_of_changes_settles_into_one_rescan() {
         let dir = tempfile::tempdir().unwrap();
-        let root = LibraryRoot {
-            id: "custom-test".into(),
-            path: dir.path().to_path_buf(),
-            label: "test".into(),
-            kind: RootKind::Custom,
-            dd2_shaped_only: false,
-        };
         let (tx, rx) = mpsc::channel();
-        let watcher = arm(&[root], &[], Duration::from_millis(300), move || {
+        let watcher = arm(dir.path(), &[], Duration::from_millis(300), move || {
             let _ = tx.send(());
         })
         .expect("the platform watcher starts");
@@ -285,5 +285,11 @@ mod tests {
             "five writes in a burst are one rescan, not five"
         );
         drop(watcher);
+    }
+
+    #[test]
+    fn a_missing_folder_is_not_watched() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(arm(&dir.path().join("mods"), &[], DEBOUNCE, || {}).is_none());
     }
 }

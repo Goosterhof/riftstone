@@ -38,7 +38,7 @@
     "publisher": "Zmuuzn Laboratory",
     "category": "Utility",
     "shortDescription": "A Dragon's Dogma 2 mod manager that can see inside every archive.",
-    "longDescription": "The Riftstone reads every mod you downloaded — zip, 7z, rar or a plain folder, nested as deep as the modder packed it — and lets you search all of it at once: names, descriptions, the menu trail a variant hides behind, and every file path inside. It installs and uninstalls Dragon's Dogma 2 mods the way the 2026 engine expects (pak_mods, loose natives, REFramework scripts) under a journal that remembers every file it touched, and it can ask Nexus Mods whether a newer version is waiting.",
+    "longDescription": "The Riftstone reads every mod in its mods folder — zip, 7z, rar or a plain folder, nested as deep as the modder packed it — and lets you search all of it at once: names, descriptions, the menu trail a variant hides behind, and every file path inside. It installs and uninstalls Dragon's Dogma 2 mods the way the 2026 engine expects (pak_mods, loose natives, REFramework scripts) under a journal that remembers every file it touched, starts the game, and can ask Nexus Mods whether a newer version is waiting.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
