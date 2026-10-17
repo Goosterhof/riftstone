@@ -314,16 +314,24 @@ fn unreadable_problem(error: &RiftError) -> Problem {
 /// counted once (case-blind). They are never opened: only what sits directly
 /// in the mods folder is.
 fn held_archives(entries: &[ArchiveEntry], options: &[ModOption]) -> usize {
-    let installed: HashSet<String> = options
+    // An archive an option lists (as payload, or skipped: the classifier
+    // already explains those) is not held loose in the folder.
+    let listed: HashSet<String> = options
         .iter()
-        .flat_map(|option| &option.payload)
-        .map(|file| lower_key(&file.entry))
+        .flat_map(|option| {
+            option
+                .payload
+                .iter()
+                .map(|file| &file.entry)
+                .chain(option.skipped.iter().map(|file| &file.entry))
+        })
+        .map(|entry| lower_key(entry))
         .collect();
     entries
         .iter()
         .filter(|entry| has_archive_extension(file_name(&entry.path)))
         .map(|entry| lower_key(&entry.path))
-        .filter(|key| !installed.contains(key))
+        .filter(|key| !listed.contains(key))
         .collect::<HashSet<_>>()
         .len()
 }
@@ -1061,8 +1069,9 @@ mod tests {
         }
 
         // An unpacked mod keeping its own download in a subfolder, and a game
-        // file that happens to be an archive: only the one no option installs
-        // counts, after the classifier's own word on the subfolder.
+        // file that happens to be an archive: the game file installs, and the
+        // download is the classifier's to explain, once (an archive an option
+        // lists is never counted again as held loose in the folder).
         let unpacked = dir.path().join("Lantern Glow Recolor");
         folder_at(
             &unpacked,
@@ -1076,16 +1085,11 @@ mod tests {
         let package = scan_package(&unpacked).unwrap().package;
         assert_eq!(package.options.len(), 1);
         assert_eq!(package.options[0].kinds.loose, 2);
+        assert_eq!(kinds(&package), [ProblemKind::FilesSkipped]);
         assert_eq!(
-            kinds(&package),
-            [ProblemKind::FilesSkipped, ProblemKind::FilesSkipped]
-        );
-        assert!(package.problems[0]
-            .message
-            .starts_with("1 file sits in a folder the game never reads"));
-        assert_eq!(
-            package.problems[1].message,
-            "it holds 1 archive of its own; put that archive directly in the mods folder."
+            package.problems[0].message,
+            "1 archive sits inside the mod, and the game never opens archives. The options list it \
+             under skipped files; to install what it holds, put that archive directly in the mods folder."
         );
 
         // An archive inside an archive is no folder's business: the usual why.

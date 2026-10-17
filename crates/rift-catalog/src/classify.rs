@@ -40,7 +40,9 @@
 //! `README` / `LICENSE` / `CHANGELOG` files at the root are skipped `Document`s;
 //! programs at the root (`.exe`, `.msi`, `.bat`, …) are skipped `UnknownPlace`
 //! — the deploy guard refuses every `*.exe` in the game root, so listing one as
-//! payload would make the whole option uninstallable.
+//! payload would make the whole option uninstallable; and so are archives at the
+//! root (`.zip`, `.7z`, `.rar`): the game never opens one, so copying it into the
+//! game folder would only leave litter there.
 //!
 //! **Problems.** One `FilesSkipped` naming how many files sit where the game
 //! never looks; one `OutdatedFormats` counting the loose payload files whose
@@ -78,6 +80,8 @@ const DOCUMENT_NAMES: &[&str] = &[
 ];
 /// Programs: the deploy guard refuses executables in the game root.
 const PROGRAM_EXTENSIONS: &[&str] = &["exe", "msi", "bat", "cmd", "ps1", "vbs", "com", "scr"];
+/// Archives inside a mod: packaging, never payload. The game never opens one.
+const ARCHIVE_EXTENSIONS: &[&str] = &["zip", "7z", "rar"];
 /// Preview names looked for when modinfo names none, in order.
 const SCREENSHOT_NAMES: &[&str] = &["screenshot.png", "screenshot.jpg", "screenshot.jpeg"];
 /// Folders the game root must keep as folders.
@@ -463,7 +467,7 @@ fn place(rel: &str) -> Placement {
         || lower.starts_with("._")
     {
         Placement::Skip(SkipReason::Document)
-    } else if PROGRAM_EXTENSIONS.contains(&extension) {
+    } else if PROGRAM_EXTENSIONS.contains(&extension) || ARCHIVE_EXTENSIONS.contains(&extension) {
         Placement::Skip(SkipReason::UnknownPlace)
     } else {
         Placement::Deploy(DeployTarget::Root {
@@ -539,18 +543,23 @@ fn package_problems(options: &[ModOption]) -> Vec<Problem> {
         });
     }
 
-    // UnknownPlace files: deeper than the option root (a folder the game never
-    // reads), or at the root itself (a program, or a file named like a folder).
-    let (mut in_folders, mut at_root) = (0, 0);
+    // UnknownPlace files: archives inside the mod (counted on their own: the
+    // advice differs), files deeper than the option root (a folder the game
+    // never reads), or at the root itself (a program, or a file named like a
+    // folder).
+    let (mut in_folders, mut at_root, mut archives) = (0, 0, 0);
     for option in options {
         let depth = segment_count(&option.root);
         for file in &option.skipped {
-            if file.reason == SkipReason::UnknownPlace {
-                if strip_segments(&file.entry, depth).contains('/') {
-                    in_folders += 1;
-                } else {
-                    at_root += 1;
-                }
+            if file.reason != SkipReason::UnknownPlace {
+                continue;
+            }
+            if is_archive(&file.entry) {
+                archives += 1;
+            } else if strip_segments(&file.entry, depth).contains('/') {
+                in_folders += 1;
+            } else {
+                at_root += 1;
             }
         }
     }
@@ -558,6 +567,12 @@ fn package_problems(options: &[ModOption]) -> Vec<Problem> {
         problems.push(Problem {
             kind: ProblemKind::FilesSkipped,
             message: files_skipped_message(in_folders, at_root),
+        });
+    }
+    if archives > 0 {
+        problems.push(Problem {
+            kind: ProblemKind::FilesSkipped,
+            message: archives_inside_message(archives),
         });
     }
 
@@ -628,6 +643,30 @@ fn files_skipped_message(in_folders: usize, at_root: usize) -> String {
         "{why}. The options list {object} under skipped files; if {subject} meant for the game, \
          the mod needs repacking."
     )
+}
+
+/// An entry whose name ends in a zip, 7z or rar extension (any case).
+fn is_archive(entry: &str) -> bool {
+    let lower = file_name(entry).to_lowercase();
+    lower
+        .rsplit_once('.')
+        .is_some_and(|(stem, ext)| !stem.is_empty() && ARCHIVE_EXTENSIONS.contains(&ext))
+}
+
+/// The `FilesSkipped` why for archives an option carries: the game never opens
+/// one, so it is listed as skipped and the player is told where it belongs.
+fn archives_inside_message(archives: usize) -> String {
+    if archives == 1 {
+        "1 archive sits inside the mod, and the game never opens archives. The options list it \
+         under skipped files; to install what it holds, put that archive directly in the mods folder."
+            .to_string()
+    } else {
+        format!(
+            "{archives} archives sit inside the mod, and the game never opens archives. The options \
+             list them under skipped files; to install what they hold, put each archive directly in \
+             the mods folder."
+        )
+    }
 }
 
 fn count(n: usize, one: &str, many: &str) -> String {
@@ -1172,6 +1211,45 @@ mod tests {
             "1 file is a program (or named like a game folder), and those never go into the game \
              folder. The options list it under skipped files; if it was meant for the game, the mod \
              needs repacking."
+        );
+    }
+
+    #[test]
+    fn an_archive_inside_a_mod_is_never_copied_into_the_game_root() {
+        let entries = listing(&[
+            "Mod/natives/stm/a.mesh.260421070",
+            "Mod/modinfo.ini",
+            "Mod/lantern.asi",
+            "Mod/Older Lantern.zip",
+            "Mod/extras/spare.7z",
+        ]);
+        let infos = modinfos(&[("Mod", info(&[("name", "Lantern")]))]);
+        let (options, problems) = build_options(&package(), "Lantern", &entries, &infos);
+        let option = &options[0];
+        assert!(
+            option
+                .payload
+                .iter()
+                .all(|f| !f.entry.to_lowercase().ends_with(".zip")),
+            "an archive at the option root is not payload"
+        );
+        let skipped: Vec<(&str, SkipReason)> = option
+            .skipped
+            .iter()
+            .map(|s| (file_name(&s.entry), s.reason))
+            .collect();
+        assert!(skipped.contains(&("Older Lantern.zip", SkipReason::UnknownPlace)));
+        assert!(skipped.contains(&("spare.7z", SkipReason::UnknownPlace)));
+        assert_eq!(
+            problems
+                .iter()
+                .filter(|p| p.kind == ProblemKind::FilesSkipped)
+                .map(|p| p.message.as_str())
+                .collect::<Vec<_>>(),
+            ["2 archives sit inside the mod, and the game never opens archives. The options list \
+              them under skipped files; to install what they hold, put each archive directly in the \
+              mods folder."],
+            "archives are counted on their own, never as programs or as folder litter"
         );
     }
 
