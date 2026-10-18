@@ -94,8 +94,8 @@ python3 -I scripts/privacy-sweep.py --self-test
 never compiles on the Linux bench: build, test and lint it natively on Windows before a release.
 The NSIS uninstall hook (`src-tauri/windows/hooks.nsh`) is built only by `npm run tauri build`.
 v0.3's native runs (the tests on 2026-10-17 and again on 2026-10-18, with the installer's first
-build) and what is still owed on Windows are recorded in BUILD-SPEC § v0.3 § The first native
-Windows run and § The second native Windows run.
+build, and once more for 0.3.1) and what is still owed on Windows are recorded in BUILD-SPEC
+§ v0.3 § The first, § The second and § The third native Windows run.
 
 Bench suites (`#[ignore]`, env-gated, READ-ONLY against the investor's real data) — see each
 crate's `tests/bench_real.rs` (rift-pak's is `tests/bench_reference_hashes.rs`). They never
@@ -253,7 +253,9 @@ links back too: turn the switch on again after it (WINDOW-CONTRACT § v0.3 The o
   `move_new` and `copy_new`'s `cfg_attr`. `npm run tauri build` at 85ba93c built
   `riftstone.exe` and the NSIS installer with the uninstall hook (5.88 MiB), and a read-only
   bench probe of that build, on a copy of real app data, passed (BUILD-SPEC § v0.3 § The second
-  native Windows run). `cargo clippy` is not installed on the Windows bench and has never run
+  native Windows run). For 0.3.1 the tests ran there again at d68df79 (864 passed, 0 failed),
+  the installer was built and the probe passed again (§ The third native Windows run).
+  `cargo clippy` is not installed on the Windows bench and has never run
   there. Still owed: `cargo clippy` natively, and every press on a Windows desktop: Play by each
   route; Open mods folder, also after deleting it while the stone runs; the nxm switch on and
   off, also over another program's key; a download with each account type, one cancelled, one
