@@ -561,6 +561,111 @@ fn a_mods_folder_deleted_after_launch_is_made_again_watched_and_read() {
     );
 }
 
+/// Wait until the overview counts `count` packages; panics with `what`.
+fn wait_for_packages(state: &AppState, count: usize, what: &str) {
+    support::wait_for(Duration::from_secs(20), what, || {
+        overview::get_overview_impl(state).unwrap().library.packages == count
+    });
+}
+
+#[test]
+fn a_mods_folder_made_by_hand_after_launch_is_watched_from_the_next_scan() {
+    let bench = Bench::new();
+    let blocked = bench.dir.path().join("not a folder");
+    std::fs::write(&blocked, b"a file where the install folder should be").unwrap();
+    let mut config = bench.config(DataDirs::under(&bench.data_home()));
+    config.library_dir = blocked.join("mods");
+    config.watch_library = true;
+    let events = Arc::new(RecordedEvents::default());
+    let state = AppState::open(
+        config.clone(),
+        events.clone(),
+        Box::new(MemoryKeyStore::default()),
+    );
+    state.wake();
+    wait_for(&events, LIBRARY_CHANGED, 1);
+    assert!(!overview::get_overview_impl(&state).unwrap().mods.exists);
+    assert!(state.library_unwatched(), "nothing to watch at launch");
+
+    // The player clears the way, makes the folder by hand and presses Scan.
+    std::fs::remove_file(&blocked).unwrap();
+    std::fs::create_dir_all(&config.library_dir).unwrap();
+    overview::rescan_impl(&state);
+    wait_for(&events, LIBRARY_CHANGED, 2);
+    state.wait_until_scanned();
+    let home = overview::get_overview_impl(&state).unwrap();
+    assert!(home.mods.exists);
+    assert_eq!(home.library.packages, 0);
+    assert!(state.watching_library(), "Scan armed the watcher first");
+
+    // A mod dropped in afterwards is read without another press.
+    write_zip(
+        &config.library_dir.join("Lantern Glow Recolor.zip"),
+        &[(
+            "Lantern Glow/natives/stm/effect/lantern/lantern_glow.tex.251211553",
+            b"glow",
+        )],
+    );
+    wait_for_packages(&state, 1, "the watcher Scan armed sees a new mod");
+}
+
+#[test]
+fn a_mods_folder_put_back_by_hand_is_watched_and_read_again_by_open_mods_folder() {
+    let bench = Bench::new();
+    let mut config = bench.config(DataDirs::under(&bench.data_home()));
+    config.watch_library = true;
+    let events = Arc::new(RecordedEvents::default());
+    let state = AppState::open(config, events.clone(), Box::new(MemoryKeyStore::default()));
+    state.wake();
+    wait_for(&events, LIBRARY_CHANGED, 1);
+    assert!(state.watching_library());
+
+    // Deleted while the stone runs: the scan that finds it gone lets the
+    // watcher of the folder that went go.
+    std::fs::remove_dir_all(&bench.mods).unwrap();
+    wait_for(&events, LIBRARY_CHANGED, 2);
+    state.wait_until_scanned();
+    assert_eq!(
+        overview::get_overview_impl(&state)
+            .unwrap()
+            .library
+            .packages,
+        0
+    );
+    support::wait_for(
+        Duration::from_secs(20),
+        "the scan that found the folder gone lets its watcher go",
+        || state.library_unwatched(),
+    );
+
+    // The player makes it again by hand, a mod in it, and presses Open mods
+    // folder: the new folder is watched and read.
+    std::fs::create_dir_all(&bench.mods).unwrap();
+    write_zip(
+        &bench.mods.join("Lantern Glow Recolor.zip"),
+        &[(
+            "Lantern Glow/natives/stm/effect/lantern/lantern_glow.tex.251211553",
+            b"glow",
+        )],
+    );
+    let heard = events.named(LIBRARY_CHANGED).len();
+    library::open_mods_folder_impl(&state).unwrap();
+    wait_for(&events, LIBRARY_CHANGED, heard + 1);
+    wait_for_packages(&state, 1, "Open mods folder reads the folder put back");
+    assert!(state.watching_library());
+
+    // A later mod is seen without another press.
+    write_zip(
+        &bench.mods.join("Bakbattahl Banners.zip"),
+        &[("Banners/natives/stm/banner/banner.tex.251211553", b"banner")],
+    );
+    wait_for_packages(
+        &state,
+        2,
+        "the watcher on the folder put back sees a new mod",
+    );
+}
+
 #[test]
 fn v02s_roots_file_is_never_read_written_or_deleted() {
     let bench = Bench::new();

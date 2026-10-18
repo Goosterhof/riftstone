@@ -4,9 +4,10 @@
 //! id in the journal and in `nexus.json` (exactly), and an install whose
 //! package moved — the whole mods folder moved, or an adopted stand-in — is
 //! found again by its files (the relink pass), in one journal save. Where
-//! the stone fingerprinted what it installed, the candidate's bytes are
-//! read and must match: a newer version that kept every size never takes an
-//! install over.
+//! the stone fingerprinted what it installed, the candidate's entries are
+//! read and their fingerprints (size, first and last MiB) must match: a
+//! newer version that kept every size takes an install over only when every
+//! recorded file also kept its first and last MiB.
 //!
 //! The schema-1 journals here are written by hand with INVENTED legacy kinds:
 //! the lift recognises only the kinds that stay.
@@ -20,7 +21,9 @@ use std::time::{Duration, Instant};
 use rift_core::{OptionId, PackageId, RiftError};
 use riftstone_lib::commands::{deploy, library, nexus, overview};
 use riftstone_lib::dto::{CheckLevel, InstallOrigin, RemovalAction, SearchFilters, SearchQuery};
-use riftstone_lib::events::{RecordedEvents, GAME_CHANGED, LIBRARY_CHANGED, UPDATES_CHANGED};
+use riftstone_lib::events::{
+    RecordedEvents, GAME_CHANGED, LIBRARY_CHANGED, SCAN_PROGRESS, UPDATES_CHANGED,
+};
 use riftstone_lib::persist::DataDirs;
 use riftstone_lib::state::AppState;
 use serde_json::{json, Value};
@@ -687,6 +690,44 @@ fn the_same_archive_under_another_name_is_found_again_by_its_bytes() {
 }
 
 #[test]
+fn a_relink_that_reads_bytes_names_its_check_in_the_scans_progress() {
+    let bench = Bench::new();
+    let (state, events, _) = installed_lantern(&bench);
+    fs::rename(
+        bench.mods.join("Lantern Glow Recolor.zip"),
+        bench.mods.join("Lantern Glow Recolor (kept).zip"),
+    )
+    .unwrap();
+    assert!(state.scan_blocking());
+    assert_eq!(state.relink_checks_read(), 1);
+
+    let heard = events.all();
+    let checking = "checking Lantern Glow Recolor (kept).zip against the installed files (1 of 1)";
+    let at = heard
+        .iter()
+        .position(|(name, payload)| name == SCAN_PROGRESS && payload["current"] == checking)
+        .unwrap_or_else(|| panic!("no scan-progress names the check: {heard:?}"));
+    let ended = heard
+        .iter()
+        .position(|(name, _)| name == LIBRARY_CHANGED)
+        .expect("the scan ended");
+    assert!(at < ended, "told while the scan runs: {heard:?}");
+    let packages = heard[..at]
+        .iter()
+        .rev()
+        .find(|(name, _)| name == SCAN_PROGRESS)
+        .map(|(_, payload)| payload.clone())
+        .expect("the scan's own progress first");
+    let told = &heard[at].1;
+    assert_eq!(
+        (&told["done"], &told["total"]),
+        (&packages["done"], &packages["total"]),
+        "the scan's counts stand"
+    );
+    assert_ne!(packages["current"], checking);
+}
+
+#[test]
 fn a_relink_read_while_a_change_holds_the_game_folder_lands_when_it_lets_go() {
     // The bytes are read before the migration asks for the deploy lock: a
     // change holding it never delays the read, and the change's end applies
@@ -740,5 +781,10 @@ fn assert_relinked(state: &AppState, count: usize) {
         check.title.starts_with(&format!("{count} install")),
         "{}",
         check.title
+    );
+    assert_eq!(
+        check.detail,
+        "Each was known by an id the mods folder no longer answers to (an id from before v0.3, a folder or archive renamed), and was matched to the one option there that installs the same files: each at its game path, the same size, and the same fingerprint (its size and its first and last MiB) wherever the Riftstone recorded one. So it shows, updates and uninstalls as before. Nothing in the game folder changed.",
+        "the check names the fingerprint it matched, never every byte"
     );
 }

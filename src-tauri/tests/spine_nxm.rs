@@ -22,7 +22,7 @@ use riftstone_lib::protocol::{
 use support::Bench;
 
 /// Another program's handler, as Windows would hold it.
-const OTHER: &str = r#""C:\Tools\Other Manager\OtherManager.exe" -d "%1""#;
+const OTHER: &str = r#""C:\Tools\Wagonmaster\Wagonmaster.exe" -d "%1""#;
 
 fn memory_file(bench: &Bench) -> std::path::PathBuf {
     DataDirs::under(&bench.data_home()).nxm_handler_file()
@@ -38,7 +38,7 @@ fn the_stone_claims_the_links_remembers_the_handler_and_gives_them_back() {
     assert_eq!(before.state, NxmHandlerState::Other);
     assert_eq!(
         before.other.as_deref(),
-        Some("OtherManager.exe"),
+        Some("Wagonmaster.exe"),
         "the file name, never its folder"
     );
     assert_eq!(before.gives_back_to, None);
@@ -46,7 +46,7 @@ fn the_stone_claims_the_links_remembers_the_handler_and_gives_them_back() {
 
     let on = set_handler(&state, true).unwrap();
     assert_eq!(on.state, NxmHandlerState::Ours);
-    assert_eq!(on.gives_back_to.as_deref(), Some("OtherManager.exe"));
+    assert_eq!(on.gives_back_to.as_deref(), Some("Wagonmaster.exe"));
     assert_eq!(
         bench.registry.user().as_deref(),
         Some(command_for(&bench.exe).as_str())
@@ -110,7 +110,7 @@ fn a_key_another_program_took_back_is_left_alone() {
     let bench = Bench::new();
     let (state, _) = bench.open(bench.config(DataDirs::under(&bench.data_home())));
     set_handler(&state, true).unwrap();
-    // Another manager takes the links back at its start.
+    // Another program takes the links back at its start.
     bench.registry.set_user(Some(OTHER));
     let view = handler_view(&state).unwrap();
     assert_eq!(view.state, NxmHandlerState::Other);
@@ -136,7 +136,7 @@ fn the_machines_handler_answers_again_after_off() {
     assert_eq!(on.state, NxmHandlerState::Ours);
     assert_eq!(
         on.gives_back_to.as_deref(),
-        Some("OtherManager.exe"),
+        Some("Wagonmaster.exe"),
         "the machine's handler answers once the user's key goes"
     );
     let off = set_handler(&state, false).unwrap();
@@ -190,7 +190,7 @@ fn off_puts_back_a_key_another_program_kept_its_icon_in() {
     bench.registry.set_user_key(key_without_a_command());
     bench
         .registry
-        .add_extra("DefaultIcon", r"C:\Tools\Other Manager\nxm.ico");
+        .add_extra("DefaultIcon", r"C:\Tools\Wagonmaster\nxm.ico");
     let (state, _) = bench.open(bench.config(DataDirs::under(&bench.data_home())));
     assert_eq!(
         handler_view(&state).unwrap().state,
@@ -200,7 +200,7 @@ fn off_puts_back_a_key_another_program_kept_its_icon_in() {
 
     let on = set_handler(&state, true).unwrap();
     assert_eq!(on.state, NxmHandlerState::Ours);
-    assert_eq!(on.gives_back_to.as_deref(), Some("OtherManager.exe"));
+    assert_eq!(on.gives_back_to.as_deref(), Some("Wagonmaster.exe"));
     let off = set_handler(&state, false).unwrap();
     assert_eq!(
         off.state,
@@ -218,7 +218,7 @@ fn off_puts_back_a_key_another_program_kept_its_icon_in() {
             .extras()
             .get("DefaultIcon")
             .map(String::as_str),
-        Some(r"C:\Tools\Other Manager\nxm.ico"),
+        Some(r"C:\Tools\Wagonmaster\nxm.ico"),
         "what the claim never wrote stays"
     );
 }
@@ -344,7 +344,7 @@ fn a_schema_1_memory_still_gives_the_links_back() {
     .unwrap();
     assert_eq!(
         handler_view(&state).unwrap().gives_back_to.as_deref(),
-        Some("OtherManager.exe")
+        Some("Wagonmaster.exe")
     );
     let off = set_handler(&state, false).unwrap();
     assert_eq!(off.state, NxmHandlerState::Other);

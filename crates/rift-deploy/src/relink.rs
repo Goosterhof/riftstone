@@ -42,7 +42,10 @@
 //! [`read_fingerprints`] reads them through the package source with the
 //! engine's own fingerprint, and [`ContentCheck::confirms`] compares. Any
 //! mismatch drops the proposal. A file that carries no fingerprint (an
-//! install the journal took over may carry none) has its size only.
+//! install the journal took over may carry none) has its size only. The
+//! fingerprint is a file's size and its first and last MiB, not every byte:
+//! a change that lies wholly between them, in a file over 2 MiB, is not seen
+//! (CLAUDE.md, Known Limitations).
 //!
 //! A proposal is made only for exactly one fitting option, never onto an id
 //! the journal already holds, and never onto an id two installs both fit.
@@ -266,7 +269,8 @@ impl ContentCheck {
     }
 
     /// Do these fingerprints (entry → fingerprint, as [`read_fingerprints`]
-    /// gives them) show the very bytes the install wrote? Every
+    /// gives them) match the ones the install recorded (each a file's size
+    /// and its first and last MiB, not every byte)? Every
     /// fingerprinted loose, script or root file must be its entry's; the
     /// fingerprinted paks of each size must be found among the option's pak
     /// entries of that size, each entry used once. An entry missing from

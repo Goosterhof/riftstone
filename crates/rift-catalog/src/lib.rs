@@ -26,7 +26,9 @@ pub mod tree;
 #[cfg(test)]
 mod test_support;
 
-pub use catalog::{CachedPackage, Catalog, CatalogCache, ScanProgress, ScanStats};
+pub use catalog::{
+    display_file_name, CachedPackage, Catalog, CatalogCache, ScanProgress, ScanStats,
+};
 pub use conflicts::{Conflict, ConflictKey, Layer};
 pub use scan::ScannedPackage;
 pub use search::{

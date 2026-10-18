@@ -53,6 +53,12 @@ pub struct Confirmation {
 }
 
 impl Confirmation {
+    /// Does confirming it read the package? A check with no entries is
+    /// decided by its sizes alone.
+    pub fn reads(&self) -> bool {
+        self.check.entries().next().is_some()
+    }
+
     fn new(check: ContentCheck, package: &Package) -> Confirmation {
         Confirmation {
             check,

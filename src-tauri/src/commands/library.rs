@@ -380,7 +380,9 @@ pub fn get_library_impl(state: &AppState) -> LibraryView {
 /// folders from the webview). A folder that is missing is made first, then
 /// watched and read: a folder made again is a new folder, which the watcher
 /// of the one that went never sees, so the watcher is armed afresh and a
-/// scan follows (also whenever nothing watches the folder).
+/// scan follows. The same happens whenever nothing watches the folder: it
+/// was not there at launch, or a scan found it gone and let its watcher go
+/// (the player may have put it back by hand since).
 pub fn open_mods_folder_impl(state: &Arc<AppState>) -> Result<(), RiftError> {
     let folder = state.library_dir().to_path_buf();
     let made = !folder.is_dir();

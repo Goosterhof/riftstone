@@ -53,7 +53,9 @@ pub struct PayloadKinds {
 #[serde(rename_all = "camelCase")]
 pub struct ModsFolderView {
     pub path: String,
-    /// False only when the folder is missing and could not be made.
+    /// False whenever the folder is not there at the moment of the read (it
+    /// could not be made at launch, or it was moved or deleted since); the
+    /// `mods` check says which.
     pub exists: bool,
 }
 
@@ -1309,7 +1311,7 @@ pub enum NxmHandlerState {
 #[serde(rename_all = "camelCase")]
 pub struct NxmHandlerView {
     pub state: NxmHandlerState,
-    /// The other program's file name only (`OtherManager.exe`); never a path.
+    /// The other program's file name only (`Wagonmaster.exe`); never a path.
     pub other: Option<String>,
     /// Turning the stone off gives the link back to this program's file
     /// name (the handler the stone replaced), or to nobody.
@@ -1361,6 +1363,9 @@ impl Default for Settings {
 pub struct ScanProgressEvent {
     pub done: usize,
     pub total: usize,
+    /// The file name of the package just read; v0.3: while the scan confirms
+    /// a relink by reading a package, `checking <file name> against the
+    /// installed files (<i> of <n>)` (the counts above stand).
     pub current: String,
 }
 
@@ -4083,7 +4088,7 @@ mod tests {
             &NxmHandlerView {
                 state: NxmHandlerState::Ours,
                 other: None,
-                gives_back_to: Some("OtherManager.exe".into()),
+                gives_back_to: Some("Wagonmaster.exe".into()),
             },
             &["state", "other", "givesBackTo"],
         );

@@ -211,8 +211,9 @@ impl MemoryRegistry {
         hold(&self.user).clone()
     }
 
-    /// Another program writes the user's key the way a claim does (another
-    /// manager taking the links back at its start, say), or removes it whole.
+    /// Another program writes the user's key the way a claim does (one of the
+    /// other mod managers taking the links back at its start, say), or removes
+    /// it whole.
     pub fn set_user(&self, command: Option<&str>) {
         match command {
             Some(command) => *hold(&self.user) = UserKey::claimed(command),
@@ -341,7 +342,7 @@ pub fn command_program(command: &str) -> Option<&str> {
     (!program.is_empty()).then_some(program)
 }
 
-/// The program's file name alone (`OtherManager.exe`): what the window may show
+/// The program's file name alone (`Wagonmaster.exe`): what the window may show
 /// of another program, never its folder.
 pub fn program_name(command: &str) -> Option<String> {
     let program = command_program(command)?;
@@ -561,7 +562,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    const OTHER: &str = r#""C:\Tools\Other Manager\OtherManager.exe" -d "%1""#;
+    const OTHER: &str = r#""C:\Tools\Wagonmaster\Wagonmaster.exe" -d "%1""#;
 
     #[test]
     fn the_stone_registers_itself_quoted_with_the_link_as_its_argument() {
@@ -582,15 +583,15 @@ mod tests {
 
     #[test]
     fn another_programs_command_is_named_by_its_file_alone() {
-        assert_eq!(program_name(OTHER).as_deref(), Some("OtherManager.exe"));
+        assert_eq!(program_name(OTHER).as_deref(), Some("Wagonmaster.exe"));
         assert_eq!(
             command_program(OTHER),
-            Some(r"C:\Tools\Other Manager\OtherManager.exe")
+            Some(r"C:\Tools\Wagonmaster\Wagonmaster.exe")
         );
         // Unquoted, with spaces in its folder: up to the .exe.
         assert_eq!(
-            program_name(r"C:\Program Files\Other Manager\OtherManager.EXE %1").as_deref(),
-            Some("OtherManager.EXE")
+            program_name(r"C:\Program Files\Wagonmaster\Wagonmaster.EXE %1").as_deref(),
+            Some("Wagonmaster.EXE")
         );
         assert_eq!(
             program_name("handler %1").as_deref(),

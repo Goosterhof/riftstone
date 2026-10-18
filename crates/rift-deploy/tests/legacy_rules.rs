@@ -2,8 +2,9 @@
 //! Legacy data): a schema-1 journal is lifted in memory as it loads and never
 //! saved at load; installs take new ids in one save (`rekey`); the relink
 //! matcher finds the library option an install whose package left the mods
-//! folder came from; and the content check holds that option to the very
-//! bytes the install wrote, wherever the journal fingerprinted them.
+//! folder came from; and the content check holds that option to the
+//! fingerprints the install recorded (each file's size and its first and
+//! last MiB), wherever the journal fingerprinted them.
 //!
 //! The schema-1 journals below are written by hand. Their legacy kinds are
 //! INVENTED (`adoptedFromElsewhere`, `takenOverByHand`, owner `elsewhere`) —

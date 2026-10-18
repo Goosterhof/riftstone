@@ -485,7 +485,9 @@ fn cached(
     }
 }
 
-fn display_file_name(path: &Path) -> String {
+/// A package's file name as the scan names it (its progress's `current`):
+/// the last component of its path, else the whole path.
+pub fn display_file_name(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.to_string_lossy().into_owned(),
         |name| name.to_string_lossy().into_owned(),

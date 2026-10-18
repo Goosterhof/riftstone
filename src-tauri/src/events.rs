@@ -10,7 +10,8 @@ use std::sync::Mutex;
 use serde::Serialize;
 use serde_json::Value;
 
-/// After each package of a scan — `ScanProgressEvent`.
+/// After each package of a scan, and (v0.3) before each relink confirmation
+/// the scan reads — `ScanProgressEvent`.
 pub const SCAN_PROGRESS: &str = "rift://scan-progress";
 /// A scan finished (manual, startup, or the library watcher) — `{}`.
 pub const LIBRARY_CHANGED: &str = "rift://library-changed";

@@ -647,8 +647,8 @@ impl AppState {
     }
 
     /// (Re-)arm the mods-folder watcher, replacing the one there was. A
-    /// folder that is not there is not watched (`open_mods_folder` arms it
-    /// again once it makes the folder).
+    /// folder that is not there is not watched: Scan arms it once the folder
+    /// is there again, and `open_mods_folder` once it makes it.
     pub fn arm_watcher(self: &Arc<Self>) {
         if !self.config.watch_library {
             return;
@@ -672,9 +672,33 @@ impl AppState {
     }
 
     /// Should the mods folder be watched, and nothing watches it (it was
-    /// missing at the wake, or the platform watcher would not start)?
+    /// missing at the wake, a scan found it gone, or the platform watcher
+    /// would not start)?
     pub fn library_unwatched(&self) -> bool {
         self.config.watch_library && !self.watching_library()
+    }
+
+    /// A scan found the mods folder gone: let its watcher go. A folder made
+    /// again is a new folder, which that watcher never sees, so the next
+    /// Scan or Open mods folder arms one afresh ([`AppState::library_unwatched`]).
+    /// Decided under the watcher's lock, so a watcher armed on a folder made
+    /// again meanwhile (it is made before it is armed) is never the one let go.
+    fn unwatch_if_gone(&self) {
+        let gone = {
+            let mut watcher = lock(&self.watcher);
+            if watcher.is_some() && !self.config.library_dir.is_dir() {
+                watcher.take()
+            } else {
+                None
+            }
+        };
+        if gone.is_some() {
+            log::info!(
+                "the mods folder {} is gone, so it is no longer watched; Scan or Open mods folder watches it again once it is back",
+                self.config.library_dir.display()
+            );
+        }
+        drop(gone);
     }
 
     // -- the library -----------------------------------------------------------
@@ -821,6 +845,7 @@ impl AppState {
                 *lock(&self.scan) = Some(progress);
             })
         }));
+        self.unwatch_if_gone();
         match outcome {
             Ok((catalog, fresh)) => {
                 self.shelve(Shelf::scanned(catalog));
@@ -958,7 +983,9 @@ impl AppState {
     /// scan; a check that needs more than the whole budget on its own is
     /// never read, and its install keeps its id. A package that cannot be
     /// read confirms nothing. One reader at a time: a second one finds the
-    /// first one's verdicts at its next scan.
+    /// first one's verdicts at its next scan. While a scan runs, its progress
+    /// names each package read (`checking <file> against the installed files
+    /// (i of n)`): the scan has not ended until the reading has.
     pub fn confirm_relinks(&self) {
         if panic::catch_unwind(AssertUnwindSafe(|| self.confirm_relinks_now())).is_err() {
             log::error!("reading what the relink pass asked stopped unexpectedly; those installs keep their ids until the next scan");
@@ -999,7 +1026,16 @@ impl AppState {
                 );
                 verdicts.insert(confirmation.clone(), false);
             }
+            let reads = read
+                .iter()
+                .filter(|confirmation| confirmation.reads())
+                .count();
+            let mut reading = 0;
             for confirmation in read {
+                if confirmation.reads() {
+                    reading += 1;
+                    self.tell_relink_read(confirmation, reading, reads);
+                }
                 verdicts.insert(
                     confirmation.clone(),
                     self.read_confirmation(confirmation, &scratch),
@@ -1014,12 +1050,36 @@ impl AppState {
         memo.extend(verdicts);
     }
 
-    /// Read one confirmation's entries: are they the bytes the install
-    /// wrote? `false` when the package cannot be opened or read, or the parts
-    /// cannot be written (logged).
+    /// While a scan runs, its progress names the confirmation about to be
+    /// read (`reading` of the `reads` this pass reads; the scan's counts
+    /// stand), and the window hears it as it hears any package: the
+    /// unpacking can take a while, and the scan has not ended. When no scan
+    /// runs (a game switch's reading), no progress is touched.
+    fn tell_relink_read(&self, confirmation: &migrate::Confirmation, reading: usize, reads: usize) {
+        let told = {
+            let mut scan = lock(&self.scan);
+            let Some(progress) = scan.as_mut() else {
+                return;
+            };
+            progress.current = format!(
+                "checking {} against the installed files ({reading} of {reads})",
+                rift_catalog::display_file_name(&confirmation.package)
+            );
+            ScanProgressEvent {
+                done: progress.done,
+                total: progress.total,
+                current: progress.current.clone(),
+            }
+        };
+        self.events.emit(events::SCAN_PROGRESS, &told);
+    }
+
+    /// Read one confirmation's entries: do they carry the fingerprints the
+    /// install recorded? `false` when the package cannot be opened or read,
+    /// or the parts cannot be written (logged).
     fn read_confirmation(&self, confirmation: &migrate::Confirmation, scratch: &Path) -> bool {
         let check = &confirmation.check;
-        if check.entries().next().is_none() {
+        if !confirmation.reads() {
             return check.confirms(&HashMap::new());
         }
         self.relink_reads.fetch_add(1, Ordering::SeqCst);

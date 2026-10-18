@@ -1,6 +1,7 @@
 //! The home frame: `get_overview`, `rescan`, the settings, the troubled list.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use rift_core::{Package, ProblemKind, RiftError};
 use rift_deploy::GameInstall;
@@ -231,7 +232,7 @@ fn checks(
             "relinked",
             CheckLevel::Info,
             format!("{relinked} install(s) found again in the mods folder"),
-            "Each was known by an id the mods folder no longer answers to (an id from before v0.3, a folder or archive renamed), and was matched to the one option there that installs the same files: each at its game path, the same size, and the same bytes wherever the Riftstone recorded them. So it shows, updates and uninstalls as before. Nothing in the game folder changed.".into(),
+            "Each was known by an id the mods folder no longer answers to (an id from before v0.3, a folder or archive renamed), and was matched to the one option there that installs the same files: each at its game path, the same size, and the same fingerprint (its size and its first and last MiB) wherever the Riftstone recorded one. So it shows, updates and uninstalls as before. Nothing in the game folder changed.".into(),
             None,
         );
     }
@@ -362,10 +363,20 @@ pub async fn get_overview(state: Spine<'_>) -> Result<Overview, RiftError> {
 #[tauri::command]
 pub async fn rescan(state: Spine<'_>) -> Result<(), RiftError> {
     blocking(&state, |state| {
-        state.start_scan();
+        rescan_impl(state);
         Ok(())
     })
     .await
+}
+
+/// Scan, the window's press. A mods folder that nothing watches (it was
+/// not there at launch, or a scan found it gone) is watched first when it is
+/// there now: a folder made by hand is seen from this scan on.
+pub fn rescan_impl(state: &Arc<AppState>) {
+    if state.library_unwatched() && state.library_dir().is_dir() {
+        state.arm_watcher();
+    }
+    state.start_scan();
 }
 
 #[tauri::command]
