@@ -57,6 +57,18 @@ committed does not clean the tip), and HEAD's own message. The older history
 keeps what it kept and is not read for it (BUILD-SPEC § v0.3, ruling 1). It
 prints the place, never the word.
 
+`--saves` names a Dragon's Dogma 2 save folder (`<Steam>/userdata/<account>/
+2054970/remote/win64_save`). Its saves open read-only under the account number
+the path holds (or `--save-account`), and what a person typed or another player
+chose is swept: the Arisen's and the pawns' names and nicknames, the hired
+pawns' creators' names, the pawns' Rift search ids. The account number and its
+Steam id count as ids, the folder's chain as a location. A name counts even
+when it is short, but a short one only in its own case: the same letters in
+another case are a code word more often than anyone's name. A name the repo
+already held as a word before it ever read a save (the tree at BEFORE_SAVES)
+is set aside and counted, because a hit on it could not be told from the
+repo's own text.
+
 Pictures carry their words in pixels, and no text gate reads them: the sweep
 counts the pictures in the tree by folder, so whoever pushes looks at them.
 
@@ -70,7 +82,7 @@ would trip on every dependency's version.
 `--allow` takes identifiers that are public on their own (a tool's name such
 as REFramework or ReShade, which search_terms keeps whole); they are skipped. So are single words of six letters or
 fewer (`Extras`, `Tops`): too common to identify anyone, and too common not to
-appear in code.
+appear in code. A save's names are the exception (`--saves`).
 
 `python3 -I scripts/privacy-sweep.py --self-test` runs the sweep's own checks
 on invented data; it reads no library and no repo.
@@ -89,6 +101,19 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+
+
+def _load_saves():
+    """scripts/dd2_saves.py, loaded by path: the sweep runs isolated (`-I`)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("dd2_saves", Path(__file__).resolve().parent / "dd2_saves.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+DD2_SAVES = _load_saves()
 ARGS_FILE = REPO / "scripts" / "privacy-sweep.args"
 # Build output and caches are never pushed; a TRACKED file in one of these
 # folders is (a committed .pyc once carried a path), so history reads those.
@@ -106,12 +131,18 @@ MIN_LEN = 4
 # zrift-NNNN- or another tool's xNNNN-) carries nothing private.
 PAK_PREFIX = re.compile(r"^(?:zrift-\d{4}|x\d{4})-", re.I)
 STAND_IN_PACKAGE = re.compile(r"^[0-9a-f]{16}$")
+# The last commit before the stone read a save (v0.3.1 and its Sentinel, public main on
+# 2026-10-18): no word in its tree can have come from one.
+BEFORE_SAVES = "830fdf09237a0ab87ede3b19a1a5c145666fa714"
 # Folders every Windows or Steam install has, and the mods folder's own name: a
 # chain made only of these is nobody's layout (a default Steam library is no secret).
 STOCK_FOLDERS = {
     "users", "program files", "program files (x86)", "programdata", "steam", "steamlibrary",
     "steamapps", "common", "games", "mods", "downloads", "documents", "desktop",
     "dragonsdogma2", "dragons dogma 2", "dragon's dogma 2",
+    # Steam's own folder of accounts (v0.4): the private part of a save folder is the account
+    # number after it, so the chain ends there.
+    "userdata",
 }
 
 
@@ -120,12 +151,19 @@ class Identifiers:
         self.words: dict[str, str] = {}
         self.ids: dict[str, str] = {}
         self.places: dict[tuple[str, ...], str] = {}
+        # words matched in their own case only: a save's short names
+        self.exact: set[str] = set()
         self.allow = {a.lower() for a in allow}
 
-    def word(self, text: str, kind: str) -> None:
+    def word(self, text: str, kind: str, *, short_counts: bool = False) -> None:
         text = text.strip().strip('"')
-        common = text.isalpha() and len(text) <= 6
-        if len(text) >= MIN_LEN and not common and text.lower() not in self.allow and not GENERIC_OPTION.fullmatch(text):
+        short = text.isalpha() and len(text) <= 6
+        common = short and not short_counts
+        shortest = 3 if short_counts else MIN_LEN
+        if len(text) >= shortest and not common and text.lower() not in self.allow and not GENERIC_OPTION.fullmatch(text):
+            if short and text not in self.words:
+                # in another case, the same short letters are a code word more often than a name
+                self.exact.add(text)
             self.words.setdefault(text, kind)
 
     def number(self, digits: str, kind: str) -> None:
@@ -245,6 +283,33 @@ class Identifiers:
             self.nexus_number(mod_id, "Nexus mod id")
         return True
 
+    def saves(self, folder: Path, account_id: int | None) -> tuple[int, int]:
+        """A Dragon's Dogma 2 save folder (v0.4): its own folder chain, the Steam account
+        number its path holds, and every name and Rift id its saves carry. Returns how many
+        saves opened and how many did not. Reads only."""
+        self.location(str(folder), "save folder")
+        if account_id is None:
+            for ancestor in folder.parents:
+                if ancestor.name.isdigit() and ancestor.parent.name.lower() == "userdata":
+                    account_id = int(ancestor.name)
+                    break
+        if account_id is None:
+            return 0, 0
+        self.number(str(account_id), "Steam account id")
+        self.number(str(DD2_SAVES.STEAM_ID64_BASE + account_id), "Steam id")
+        opened = failed = 0
+        for save in sorted(folder.glob("*.bin")) if folder.is_dir() else []:
+            try:
+                strings = DD2_SAVES.private_strings(DD2_SAVES.open_save(save.read_bytes(), account_id))
+            except (OSError, DD2_SAVES.SaveError, ValueError):
+                failed += 1
+                continue
+            opened += 1
+            for text in strings:
+                # A character's name is the person's own even when it is a short word.
+                self.word(text, "save name", short_counts=True)
+        return opened, failed
+
     def option_id(self, option_id: str) -> None:
         package, _, root = option_id.partition("#")
         if not STAND_IN_PACKAGE.fullmatch(package):
@@ -252,12 +317,27 @@ class Identifiers:
         for segment in re.split(r"[\\/#]+", root):
             self.word(segment, "option folder")
 
-    def patterns(self) -> list[tuple[re.Pattern[str], str]]:
-        # Whole words only: a name is not a hit inside a longer word.
-        words = [
-            (re.compile(rf"(?<![A-Za-z0-9]){re.escape(word)}(?![A-Za-z0-9])", re.I), kind)
+    def set_aside(self, known: Iterable[str]) -> int:
+        """Drop every save name that one of these texts (the repo before it read a save)
+        already holds as a word: a hit on one could not be told from the repo's own text.
+        Returns how many went."""
+        texts = [EMBEDDED_DATA.sub(r"\1", text) for text in known]
+        gone = [
+            word
             for word, kind in self.words.items()
+            if kind == "save name" and any(self.word_pattern(word).search(text) for text in texts)
         ]
+        for word in gone:
+            del self.words[word]
+        return len(gone)
+
+    def word_pattern(self, word: str) -> re.Pattern[str]:
+        # Whole words only: a name is not a hit inside a longer word.
+        body = rf"(?<![A-Za-z0-9]){re.escape(word)}(?![A-Za-z0-9])"
+        return re.compile(rf"(?-i:{body})" if word in self.exact else body, re.I)
+
+    def patterns(self) -> list[tuple[re.Pattern[str], str]]:
+        words = [(self.word_pattern(word), kind) for word, kind in self.words.items()]
         numbers = [(re.compile(rf"(?<![\d.]){digits}(?![\d.])"), kind) for digits, kind in self.ids.items()]
         return words + numbers + [(chain_pattern(chain), kind) for chain, kind in self.places.items()]
 
@@ -368,6 +448,12 @@ def collect(args: argparse.Namespace) -> Identifiers:
             continue
         if not found.journal(raw):
             print("privacy sweep: a given journal is not one the sweep can parse, so it added no names")
+    for given in args.saves:
+        opened, failed = found.saves(Path(given), args.save_account)
+        if failed:
+            print(f"privacy sweep: {failed} save(s) in a given save folder did not open, so they added no names")
+        if not opened and not failed:
+            print("privacy sweep: a given save folder holds no save the sweep could read")
     for nexus in nexus_files(args.nexus, args.journal):
         try:
             raw = nexus.read_text(errors="replace")
@@ -463,6 +549,17 @@ def history_files() -> list[tuple[str, str, str]]:
     return [(sha, paths[sha], text) for sha, text in zip(blobs, read_blobs(blobs))]
 
 
+def tree_entries(commit: str) -> list[tuple[str, str]]:
+    """Every file the sweep reads in a commit's tree, as (blob, path)."""
+    entries = []
+    for row in git("ls-tree", "-r", "-z", commit).decode(errors="replace").split("\0"):
+        meta, _, path = row.partition("\t")
+        fields = meta.split()
+        if len(fields) == 3 and fields[1] == "blob" and swept(Path(path)):
+            entries.append((fields[2], path))
+    return entries
+
+
 def tip_files() -> tuple[str, list[tuple[str, str]], str]:
     """What a push publishes as its branch's tip: every tracked file at HEAD
     that the sweep reads, as (path, text), and HEAD's own message.
@@ -471,12 +568,7 @@ def tip_files() -> tuple[str, list[tuple[str, str]], str]:
         head = git("rev-parse", "--short", "--verify", "HEAD^{commit}").decode().strip()
     except subprocess.CalledProcessError:
         return "", [], ""
-    entries = []
-    for row in git("ls-tree", "-r", "-z", "HEAD").decode(errors="replace").split("\0"):
-        meta, _, path = row.partition("\t")
-        fields = meta.split()
-        if len(fields) == 3 and fields[1] == "blob" and swept(Path(path)):
-            entries.append((fields[2], path))
+    entries = tree_entries("HEAD")
     texts = read_blobs([sha for sha, _ in entries])
     message = git("log", "-1", "--format=%B", "HEAD").decode(errors="replace")
     return head, [(path, text) for (_, path), text in zip(entries, texts)], message
@@ -585,6 +677,55 @@ def self_test() -> int:
     check("a long retired word hides inside identifiers", any(p.search("readQuillborneLedger") for p, _ in retired))
     check("a short retired word counts only on its own", not any(p.search("offqbmap") for p, _ in retired))
 
+    # saves (v0.4): AES against FIPS-197, a sealed invented save, its private strings only
+    aes = DD2_SAVES._encrypt_block(DD2_SAVES._expand(bytes(range(16))), bytes.fromhex("00112233445566778899aabbccddeeff"))
+    check("AES-128 meets FIPS-197's vector", aes.hex() == "69c4e0d86a7b0430d8cdb78070b4c55a")
+    check("pure OFB matches itself both ways", DD2_SAVES._ofb_pure(bytes(16), bytes(16), DD2_SAVES._ofb_pure(bytes(16), bytes(16), b"x" * 40)) == b"x" * 40)
+    invented = DD2_SAVES.murmur3(b"app.Invented")
+    payload = DD2_SAVES.write_stream(
+        [[("Name", "Odalric Vernworthy"), ("Title", "Dragon's Dogma 2")], [("_Name", "Wrenna"), ("_SearchId", "INVENTED7Q")],
+         [("Name", "sm000001_Invented_0000000001")]],
+        [invented, invented, next(iter(DD2_SAVES.GAME_ID_RECORDS))],
+    )
+    sealed = DD2_SAVES.seal(payload, 4242001)
+    check("a sealed invented save opens", DD2_SAVES.open_save(sealed, 4242001) == payload)
+    strings = DD2_SAVES.private_strings(DD2_SAVES.open_save(sealed, 4242001))
+    check("a save gives its names and Rift ids", strings == ["Odalric Vernworthy", "Wrenna", "INVENTED7Q"])
+    check("a game string is never a save name", "Dragon's Dogma 2" not in strings)
+    check("a game id record's Name is never a save name", "sm000001_Invented_0000000001" not in strings)
+    try:
+        DD2_SAVES.open_save(sealed, 4242002)
+        check("another account's save does not open", False)
+    except DD2_SAVES.SaveError:
+        pass
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as home:
+        folder = Path(home, "Steam", "userdata", "4242001", "2054970", "remote", "win64_save")
+        folder.mkdir(parents=True)
+        (folder / "data009Slot.bin").write_bytes(sealed)
+        saved = Identifiers(set())
+        check("a save folder opens its saves", saved.saves(folder, None) == (1, 0))
+        check("the save's name is collected", saved.words.get("Odalric Vernworthy") == "save name")
+        check("the folder's account number is collected", saved.ids.get("4242001") == "Steam account id")
+        check("the account's Steam id is collected", saved.ids.get(str(76561197960265728 + 4242001)) == "Steam id")
+        stock = "a save folder sits under C:\\Program Files (x86)\\Steam\\userdata\\<account>"
+        check("Steam's own userdata folder is no private chain", not list(hits_in(stock, saved.patterns(), any_of(saved.patterns()))))
+        tree_line = "the pawn Wrenna stands beside Odalric Vernworthy in userdata/4242001"
+        kinds = [kind for _, kind in hits_in(tree_line, saved.patterns(), any_of(saved.patterns()))]
+        check("a leaked character name and account are hits", {"save name", "Steam account id"} <= set(kinds))
+        check("a short character name counts too", saved.words.get("Wrenna") == "save name")
+        named = saved.patterns()
+        check("a short name counts in its own case only", not list(hits_in("the wrenna crate", named, any_of(named)))
+              and list(hits_in("the Wrenna crate", named, any_of(named))) == [(1, "save name")])
+        check("a long name counts in any case", list(hits_in("ODALRIC VERNWORTHY", named, any_of(named))) == [(1, "save name")])
+        payload_line = "src:url(data:font/woff2;base64,AA+Wrenna/0x=)"
+        check("the payload line would match unstripped", bool(saved.word_pattern("Wrenna").search(payload_line)))
+        check("an embedded payload sets nothing aside", saved.set_aside([payload_line]) == 0)
+        check("another case of a short name sets nothing aside", saved.set_aside(["the old wrenna bridge\n"]) == 0)
+        check("a name the repo held before any save is set aside, the rest kept",
+              saved.set_aside(["the old Wrenna bridge\n"]) == 1 and "Wrenna" not in saved.words and "Odalric Vernworthy" in saved.words)
+
     # pictures: counted by folder, never read
     count = picture_count([Path("docs/images/a.png"), Path("docs/images/b.png"), Path("src-tauri/icons/icon.ico"), Path("README.md")])
     check("pictures are counted by folder", count == "3 picture(s) that no text gate reads (docs/images 2, src-tauri/icons 1)")
@@ -623,6 +764,10 @@ def main() -> int:
     )
     parser.add_argument("--private-word", action="append", default=[], help="a private word no folder holds (repeatable)")
     parser.add_argument(
+        "--saves", action="append", default=[], help="a Dragon's Dogma 2 save folder, win64_save (repeatable; v0.4)"
+    )
+    parser.add_argument("--save-account", type=int, default=None, help="the saves' Steam account id, when the path does not hold it")
+    parser.add_argument(
         "--forbid", action="append", default=[], help="a word the working tree and the tip must never carry (repeatable)"
     )
     parser.add_argument("--allow", action="append", default=["RE Framework", "REFramework", "ReShade"], help="a public identifier to skip")
@@ -631,12 +776,23 @@ def main() -> int:
     args = parser.parse_args(argv)
     if args.self_test:
         return self_test()
-    if not (args.library or args.downloads or args.journal or args.nexus):
+    if not (args.library or args.downloads or args.journal or args.nexus or args.saves):
         parser.error(
             f"name at least one --library, --downloads, --journal or --nexus (or write them to {ARGS_FILE.relative_to(REPO)})"
         )
 
     found = collect(args)
+    if args.saves:
+        try:
+            known = read_blobs([blob for blob, _ in tree_entries(BEFORE_SAVES)])
+        except (OSError, subprocess.CalledProcessError):
+            known = []
+            print(f"privacy sweep: the tree before the saves ({BEFORE_SAVES[:7]}) could not be read, so no save name was set aside")
+        if aside := found.set_aside(known):
+            print(
+                f"privacy sweep: {aside} save name(s) were already words of this repo at {BEFORE_SAVES[:7]}, before it read a save; "
+                "a hit on one could not be told from the repo's own text, so they are set aside"
+            )
     patterns = found.patterns()
     anything = any_of(patterns)
     retired = forbidden_patterns(args.forbid)
