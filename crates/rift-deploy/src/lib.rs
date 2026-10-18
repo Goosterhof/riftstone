@@ -67,8 +67,9 @@ mod fsops;
 mod stack;
 
 pub use engine::{
-    discard_parked, install, is_game_running, plan_install, plan_uninstall, recover, rekey,
-    rekey_with_files, reorder_paks, restore_parked, uninstall, DeployContext,
+    discard_parked, install, install_replacing, is_game_running, plan_install,
+    plan_install_replacing, plan_uninstall, recover, rekey, rekey_with_files, reorder_paks,
+    restore_parked, uninstall, DeployContext,
 };
 pub use game::{
     discover_game, discover_game_from, read_build_id, steam_roots, validate_game_root, GameInstall,

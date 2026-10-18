@@ -147,6 +147,23 @@ struct PreparedInstall {
     dirs: Vec<String>,
 }
 
+/// The installs an install takes the place of (v0.5: other versions of the same file), and the
+/// pak number the first of them held, which the install's own paks take.
+#[derive(Default)]
+struct Replace<'a> {
+    options: &'a [OptionId],
+    pak_number: Option<u32>,
+}
+
+/// The pak number of the first install in `replacing` that has paks.
+fn replaced_pak_number(journal: &Journal, replacing: &[OptionId]) -> Option<u32> {
+    replacing
+        .iter()
+        .filter_map(|id| journal.find(id))
+        .flat_map(InstalledOption::pak_files)
+        .find_map(|f| paks::managed_number(file_name(&f.game_path)))
+}
+
 /// What installing `option` would do. Pure: nothing is written.
 pub fn plan_install(
     ctx: &DeployContext,
@@ -154,7 +171,25 @@ pub fn plan_install(
     package: &Package,
     option: &ModOption,
 ) -> InstallPlan {
-    prepare_install(ctx, journal, package, option, journal.next_seq).plan
+    plan_install_replacing(ctx, journal, package, option, &[])
+}
+
+/// [`plan_install`] for an install that takes the place of `replacing`: installs of other
+/// options, uninstalled in the same step (v0.5, a newer version of the same file). Their files
+/// read as going and coming back, and the install's paks take the first one's pak number, so it
+/// keeps that install's place in the load order. Pure: nothing is written.
+pub fn plan_install_replacing(
+    ctx: &DeployContext,
+    journal: &Journal,
+    package: &Package,
+    option: &ModOption,
+    replacing: &[OptionId],
+) -> InstallPlan {
+    let replace = Replace {
+        options: replacing,
+        pak_number: replaced_pak_number(journal, replacing),
+    };
+    prepare_install(ctx, journal, package, option, journal.next_seq, &replace).plan
 }
 
 /// Install `option` from `source` (the opened `package`). Installing an
@@ -169,38 +204,78 @@ pub fn install(
     source: &mut dyn PackageSource,
     progress: &mut dyn FnMut(ExtractProgress),
 ) -> Result<InstallReport, RiftError> {
+    install_replacing(ctx, journal, package, option, &[], source, progress)
+}
+
+/// [`install`], first uninstalling `replacing` (v0.5: the installs of other versions of the same
+/// file), all as one intent: the replaced installs' removals, then the option's writes. If
+/// anything fails, every replaced install is put back as it was. The install's paks take the
+/// first replaced install's pak number and its place in the load order.
+pub fn install_replacing(
+    ctx: &DeployContext,
+    journal: &mut Journal,
+    package: &Package,
+    option: &ModOption,
+    replacing: &[OptionId],
+    source: &mut dyn PackageSource,
+    progress: &mut dyn FnMut(ExtractProgress),
+) -> Result<InstallReport, RiftError> {
     let started = Instant::now();
-    let preview = plan_install(ctx, journal, package, option);
+    let mut replaced: Vec<OptionId> = Vec::new();
+    for id in replacing {
+        if id != &option.id && journal.is_installed(id) && !replaced.contains(id) {
+            replaced.push(id.clone());
+        }
+    }
+    let preview = plan_install_replacing(ctx, journal, package, option, &replaced);
     if let Some(reason) = preview.refused {
         return Err(RiftError::refused(reason));
     }
     let root = &ctx.game.root;
     let seq = allocate_seq(journal, ctx.state_dir);
     let before = journal.clone();
-    // The journal as the commit will write it: for a reinstall, without the
-    // old copy, whose uninstall is the first half of this intent.
+    let pak_number = replaced_pak_number(journal, &replaced);
+    // The journal as the commit will write it: without the replaced installs and, for a
+    // reinstall, without the old copy, whose uninstalls are the first half of this intent.
     let mut post = journal.clone();
     post.next_seq = seq + 1;
+    let mut old = replaced.clone();
+    if journal.is_installed(&option.id) {
+        old.push(option.id.clone());
+    }
+    // Bottom layer first. Installs stack in journal order, so a lower layer's uninstall only
+    // hands its files to the layer above, and the top layer's plan reads the disk as it is. Top
+    // first, the lower layer would be planned against bytes that are still the top's.
+    old.sort_by_key(|id| journal.position(id));
     let mut removals: Vec<IntentStep> = Vec::new();
-    let reinstall = journal.position(&option.id);
-    if let Some(position) = reinstall {
-        let (plan, work) = prepare_uninstall(ctx, journal, &option.id);
+    let mut touched: Vec<String> = Vec::new();
+    for (n, id) in old.iter().enumerate() {
+        let (plan, work) = prepare_uninstall(ctx, &post, id);
         if let Some(reason) = plan.refused {
             return Err(RiftError::refused(reason));
         }
-        removals = removal_steps(&work, seq);
+        let position = post
+            .position(id)
+            .ok_or_else(|| RiftError::refused("the install vanished from the journal"))?;
+        // Each uninstall moves through its own temporaries: two versions stacked on one path
+        // move it twice.
+        let steps = removal_steps(&work, seq, (n > 0).then_some(n));
+        touched.extend(
+            post.installs[position]
+                .files
+                .iter()
+                .map(|f| f.game_path.clone()),
+        );
+        apply_uninstall(&mut post, position, &work, &steps);
+        removals.extend(steps);
+    }
+    if !old.is_empty() {
         temporaries_free(root, &removals)?;
-        apply_uninstall(&mut post, position, &work, &removals);
-        let installed = &journal.installs[position];
         journal.pending = Some(Intent {
             action: IntentAction::Install,
             seq,
             option_id: option.id.clone(),
-            touched: installed
-                .files
-                .iter()
-                .map(|f| f.game_path.clone())
-                .collect(),
+            touched,
             started_at: now(),
             option_name: option.name.clone(),
             steps: removals.clone(),
@@ -216,12 +291,18 @@ pub fn install(
             return Err(fail_and_roll_back(ctx, journal, &before, err));
         }
     }
+    let reinstall = (!old.is_empty()).then_some(());
 
-    let PreparedInstall { plan, files, dirs } = prepare_install(ctx, &post, package, option, seq);
+    let replace = Replace {
+        options: &[],
+        pak_number,
+    };
+    let PreparedInstall { plan, files, dirs } =
+        prepare_install(ctx, &post, package, option, seq, &replace);
     if let Some(reason) = plan.refused {
         let err = RiftError::refused(reason);
         return Err(match reinstall {
-            Some(_) => fail_and_roll_back(ctx, journal, &before, err),
+            Some(()) => fail_and_roll_back(ctx, journal, &before, err),
             None => err,
         });
     }
@@ -293,7 +374,23 @@ pub fn install(
     committed.installs.push(record);
     if has_paks {
         committed.pak_order.retain(|id| id != &option.id);
-        committed.pak_order.push(option.id.clone());
+        // A replace takes the first replaced install's place; anything else loads last.
+        let place = replaced
+            .iter()
+            .find(|id| before.find(id).is_some_and(InstalledOption::has_paks))
+            .and_then(|first| {
+                let at = before.pak_order.iter().position(|id| id == first)?;
+                Some(
+                    before.pak_order[..at]
+                        .iter()
+                        .filter(|id| committed.pak_order.contains(id))
+                        .count(),
+                )
+            });
+        match place {
+            Some(at) => committed.pak_order.insert(at, option.id.clone()),
+            None => committed.pak_order.push(option.id.clone()),
+        }
     }
     note_created_dirs(&mut committed.created_dirs, root, &dirs);
     committed.pending = None;
@@ -323,6 +420,7 @@ fn prepare_install(
     package: &Package,
     option: &ModOption,
     seq: u64,
+    replace: &Replace,
 ) -> PreparedInstall {
     let plan = InstallPlan {
         option_id: option.id.clone(),
@@ -374,6 +472,17 @@ fn prepare_install(
             );
         }
     }
+    for installed in replace.options.iter().filter_map(|id| journal.find(id)) {
+        if ctx.game_running && installed.has_paks() {
+            return refuse(
+                plan,
+                format!(
+                    "Dragon's Dogma 2 is running and holds \"{}\"'s paks open, so the newer version cannot take its place now. Close the game, then try again.",
+                    installed.name
+                ),
+            );
+        }
+    }
 
     let mut plan = plan;
     let root = &ctx.game.root;
@@ -384,10 +493,10 @@ fn prepare_install(
     let has_paks = payload
         .iter()
         .any(|p| matches!(p.target, DeployTarget::Pak { .. }));
-    let pak_number = if has_paks {
-        next_pak_number(&mut resolver, root, journal, reinstall)
-    } else {
-        0
+    let pak_number = match (has_paks, replace.pak_number) {
+        (false, _) => 0,
+        (true, Some(number)) => number,
+        (true, None) => next_pak_number(&mut resolver, root, journal, reinstall),
     };
     if pak_number > paks::MAX_PAK_POSITION {
         return refuse(
@@ -429,7 +538,10 @@ fn prepare_install(
         let store = format!("backups/{seq}/{game_path}");
 
         let (mut action, below, backup, retire) = match index.top(journal, &key) {
-            Some(top) if top.install(journal).option_id == option.id => {
+            Some(top)
+                if top.install(journal).option_id == option.id
+                    || replace.options.contains(&top.install(journal).option_id) =>
+            {
                 (WriteAction::Reinstall, Below::Nothing, None, None)
             }
             Some(top) if present && still_ours(&target, top.file(journal)) => {
@@ -1171,7 +1283,7 @@ pub fn uninstall(
         .position(option_id)
         .ok_or_else(|| RiftError::refused("the install vanished from the journal"))?;
     let seq = allocate_seq(journal, ctx.state_dir);
-    let steps = removal_steps(&work, seq);
+    let steps = removal_steps(&work, seq, None);
     temporaries_free(&ctx.game.root, &steps)?;
 
     let before = journal.clone();
@@ -1224,8 +1336,11 @@ pub fn uninstall(
 }
 
 /// The moves an uninstall makes on disk, as intent steps.
-fn removal_steps(work: &[(usize, RemovalWork)], seq: u64) -> Vec<IntentStep> {
-    let trash = |path: &str| format!("{path}{TRASH_MARK}{seq}");
+fn removal_steps(work: &[(usize, RemovalWork)], seq: u64, tag: Option<usize>) -> Vec<IntentStep> {
+    let trash = |path: &str| match tag {
+        None => format!("{path}{TRASH_MARK}{seq}"),
+        Some(tag) => format!("{path}{TRASH_MARK}{seq}-{tag}"),
+    };
     work.iter()
         .filter_map(|(_, removal)| match removal {
             RemovalWork::Delete { game_path } => Some(IntentStep::Remove {
