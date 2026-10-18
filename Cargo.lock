@@ -3618,7 +3618,7 @@ dependencies = [
 
 [[package]]
 name = "rift-archive"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "crc32fast",
  "log",
@@ -3632,7 +3632,7 @@ dependencies = [
 
 [[package]]
 name = "rift-catalog"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "encoding_rs",
  "log",
@@ -3650,7 +3650,7 @@ dependencies = [
 
 [[package]]
 name = "rift-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3659,7 +3659,7 @@ dependencies = [
 
 [[package]]
 name = "rift-deploy"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "log",
@@ -3677,7 +3677,7 @@ dependencies = [
 
 [[package]]
 name = "rift-muster"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "rift-pak",
  "rift-save",
@@ -3689,7 +3689,7 @@ dependencies = [
 
 [[package]]
 name = "rift-nexus"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "log",
@@ -3704,7 +3704,7 @@ dependencies = [
 
 [[package]]
 name = "rift-pak"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "flate2",
  "num-bigint",
@@ -3717,7 +3717,7 @@ dependencies = [
 
 [[package]]
 name = "rift-save"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "aes",
  "flate2",
@@ -3728,7 +3728,7 @@ dependencies = [
 
 [[package]]
 name = "riftstone"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "base64 0.23.1",
  "chrono",
