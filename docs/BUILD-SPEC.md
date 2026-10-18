@@ -2092,3 +2092,278 @@ A Windows clone of the branch ran the Rust tests natively (`cargo test --workspa
   named is recorded here.
 - **Still owed:** as after the second run. `cargo clippy` is still not installed on the
   Windows bench.
+
+## § v0.4 — the Muster: the party from the player's own saves (investor ask, 2026-10-18)
+
+The ask, in the investor's words: *"Can we also check savegames? So I can see equipement of the
+team? Vocations, stats and stuff like that?"*, and after the feasibility read: *"go for both,
+let's do the muster and let's publish"*. The Muster is a new page: the party of the save slot the
+player picks (the Arisen, the main pawn and the hired pawns) with each one's level, vocation,
+vocation experience, the stats their levels gave, everything they wear by slot, the augments and
+skills set for the vocation they follow, a pawn's inclination and specialization, and the
+Arisen's gold and Rift Crystals. It reads; it never writes.
+
+The behaviour is WINDOW-CONTRACT § v0.4 (authoritative for the wire). This section is the
+crate-level contract and the ground truth it rests on.
+
+### The ground truth (measured 2026-10-18 on a copy of the investor's save, read-only)
+
+Every fact below was read off the investor's own save and game install by a read-only spike that
+printed structure, counts and game text, never a character's name or an id. The party it read
+was confirmed in-game by the investor (a specialization, and armour the first pass had missed).
+
+- **Where.** Steam keeps DD2's saves in `<Steam>\userdata\<account id>\2054970\remote\win64_save\`:
+  `data0NNSlot.bin` per save slot (the 2026 slots are 428,780 bytes each), `data000.bin`,
+  `data00-1.bin` (system settings, no party) and `SS1_*` files. The account id is the folder's
+  name, a 32-bit number; it is also the key.
+- **The container (DSSS).** `DSSS`, u32 version 2, u32 flags (`0x10` Mandarin, `0x08` deflate:
+  the 2026 slots carry `0x18`), u32 0; then the encrypted slices; then a 0x8C-byte footer: a
+  128-byte salt, the u64 decrypted length and a u32 MurmurHash3 x86_32 (seed `0xFFFFFFFF`) of
+  every byte before it.
+- **Mandarin** (the cipher's community name; the math follows MandarinJuice, MIT, © 2026 Michał
+  Gębicki, <https://github.com/mi5hmash/MandarinJuice>). DD2's seed is `0x5EC646997D69AE1B` and
+  `uid = !(account_id as u64)`.
+  - Slice sizes come from SplitMix64 over `(len >> 14) + 1` laps: each lap that still has bytes to
+    cover takes `((state & 7) + 1) << 14`. Then `state += uid`.
+  - Per slice: 16 SplitMix steps are skipped. The 528-byte slice header is XOR-ed with the low
+    byte of each next step. It holds four ElGamal pairs `(c1, c2)` of 64 bytes each over the
+    256-bit prime `p`, then a u64 checksum and a u64 length.
+  - Each pair gives one u64 of the slice key: `(c2 / c1^uid mod p) mod 2^64`. The four u64s are
+    an AES-128 key and an OFB IV for the slice's bytes.
+  - Every `c1` is the constant `g^20 mod p`, so a wrong account fails on the first header at
+    once, before any AES. The math is all public: decrypting needs no secret beyond the account.
+- **Deflate (`0x08`).** The decrypted block is u64 `zsize + 16`, u32 1, u32 `zsize`, u64 size,
+  then `zsize` bytes of raw deflate.
+- **The class stream needs no type dump.** It is `(u32 field hash, Class)*`. A Class is a u32
+  field count, a u32 type hash, then its fields. A Field is a u32 MurmurHash3 (seed `0xFFFFFFFF`)
+  of the field's UTF-8 name, an i32 kind and a value. The kinds:
+  - −1 array; 1 enum; 2 bool; 3–14 the integers, floats and chars; 15 string; 16 struct;
+    17 class.
+  - A scalar aligns to 4, carries a u32 size, aligns to that size, then the value.
+  - A string aligns to 4, carries a u32 length, then UTF-16.
+  - An array aligns to 4, carries the i32 member kind, u32 member size, u32 count and i32 array
+    kind (0 values, 1 classes; a class array may carry a `0xFFEEFFEE` marker and one type hash
+    per item), then its items, then aligns to 4.
+  - Alignment counts from the file's start, after the 16-byte header, because a struct aligns to
+    its own size.
+  - The investor's 3.77 MB payload parses end to end this way: 227 class types, about 260,000
+    values. The field names the Muster needs were matched against RE_RSZ's `rszdd2.json` (MIT,
+    alphazolam, <https://github.com/alphazolam/RE_RSZ>). The stone carries only those names and
+    hashes them itself.
+- **The party.** In `app.ContextDatabaseSaveDataRecord.Contexts`, every record that holds an
+  `app.JobContext` is one member (four in the investor's save). The member's other contexts:
+  - The role. `app.PlayerPersonalDataContext` marks the Arisen (`Name`, `NickName`),
+    `app.MainPawnDataContext` the main pawn, and `app.SubPawnDataContext` a hired pawn.
+  - Pawns. `app.PawnDataContext` holds `_Name`, `_Nickname`, `_Personality` (a PersonalityID
+    hash) and `_SubSkill`. `app.PawnOwnerContext` holds the creator's `_Name`, `_Level` and
+    `_Job`.
+  - Level and stats. `app.HumanStatusContext` holds `_Level`, `_Exp` and `_IncreaseParams`
+    (`_HitPoint`, `_Stamina`, `_Attack`, `_Defence`, `_MagicAttack`, `_MagicDefence`, `_Weight`,
+    `_Blow`: what the levels gave).
+  - Vocation, augments and skills. `app.JobContext` holds `CurrentJob` (1–10) and
+    `CulmativeExp[10]`. `app.AbilityContext.EquipedAbilities[11]` holds seven augment ids per
+    vocation, and `app.HumanSkillContext.EquipedSkills[11]` six skill ids per vocation, both
+    indexed by vocation number.
+  - Identity. `app.CharacterIDContext.CharacterID` holds the member's character id.
+- **The gear.** `app.ItemManager.GameSaveData.ItemStorageSaves` holds `_CharaId`
+  (= `CharacterID & 0xFFFFFFFF`), `_ItemId`, `_EquipSlot` (0 main weapon, 1 sub weapon, 2 head,
+  3 body, 4 legs, 5 cloak, 6 and 7 the rings) and `_IsEquipped`.
+  - **The list mixes two classes.** It holds `ItemStorageBackup` and its subclass
+    `ExpandItemStorageBackup` (15 of 4,350 in the investor's save, adding `_ExpandValues`), and
+    the subclass carried the investor's Arisen's body and leg armour. The Muster reads every
+    item in the list that carries the item fields, whatever its class.
+  - `MoneySave` (`app.ItemManager.MoneyBackup`) holds `_Gold` and `_Rim` (Rift Crystals).
+- **The names live in the game's own pak.**
+  - **The pak.** `re_chunk_000.pak` is 69 GB: KPKA v4.2, flags `0x68`, 318,966 entries. Its
+    table is encrypted. After the table come a chunk table of 16 bytes per chunk, the 128-byte
+    key and a chunk table of 8 bytes per chunk. The key is the RSA public operation
+    (`e = 65537` and the 1024-bit modulus every RE Engine pak reader publishes), then
+    `t[i] ^= i + k[i % 32] × k[i % 29]`. Reading and decrypting the table takes 2.3 s over the
+    WSL bench's mount.
+  - **The entries** come in three forms:
+    - chunked (attributes `0x1000000`, `0x1000400`, `0x1000800`, `0x1000C00`): 512 KiB chunks,
+      zstd unless a chunk is exactly 512 KiB;
+    - deflate (1) or zstd (2);
+    - encrypted resources (attribute bits 16–23 in 1–4): 128-byte blocks, each a 64-byte `k`
+      and a 64-byte `d`, giving 8 plaintext bytes of `d / k^E mod M`.
+  - **References for the format.** ree-pak-rs (MIT, eigeen, <https://github.com/eigeen/ree-pak-rs>)
+    and the facts REE.PAK.Tool documents (it has no license: read, never copied).
+  - **The text.** `.msg.24` is GMSG v`0x18`: entries of GUID, u32, u32 hash, a name pointer, an
+    attributes pointer and one text pointer per language (14; English = 1). The strings are
+    UTF-16 in a data block XOR-chained with a 16-byte key (`prev ^ cur ^ key[i & 15]`). The files
+    the Muster reads, under `natives/stm/message/ui/` unless noted:
+    - `itemname`, `itemname_end` and `appdata/extracontents/contents_0011/itemname_contents_0011`
+      (`item_name_<id>`);
+    - `job` (`job_name_01`–`10`);
+    - `personality` (`Personality_00`–`03`);
+    - `subskill` and `subskill_tu_end` (`Subskill_NN_00`);
+    - `job01act`–`job10act` (`jobNN_skill_MM`, `jobNN_ability_MM`).
+- **The id rules**, each checked on the investor's party:
+  - **Vocation:** `CurrentJob` N reads `job_name_NN`.
+  - **Inclination:** the PersonalityID hash Kind / Cool / Simple / Frank reads `Personality_00` /
+    `01` / `02` / `03`.
+  - **Specialization:** N reads `Subskill_{N−1:02}_00`, 0 is none. The investor confirmed one
+    in-game.
+  - **Augment:** id `4 + (job − 1) × 5 + i` for vocations 1–9 and `49 + i` for vocation 10 reads
+    `jobNN_ability_{i:02}`; vocation 10's text counts from 01, so `i + 1` there. Every augment the
+    four characters had equipped decoded to a vocation that character has experience in.
+  - **Skill:** the custom-skill ids run in one block per vocation (1–12, 13–23, 24–37, 38–49,
+    50–61, 62–69, 70–79, 80–91, 92–99, 100 for vocations 1–10), and `MM` is the id minus its
+    block's first. One id breaks the pattern: 101 is a Thief skill a title update appended, and
+    it is the 13th Thief skill in the text (`job04_skill_12`). A skill's text can be a
+    reference (`<REF job03_skill_00>`: a Sorcerer skill the Mage shares), resolved through the
+    referenced entry. The decoded loadouts read as real loadouts: the main pawn's five Thief
+    skills, the Arisen's three Mystic Spearhand skills and the hired Mage's six.
+  - Ids beyond these tables, added by title updates, stay unnamed: the window says so and shows
+    the id.
+
+### Rulings taken for the build (main session, 2026-10-18)
+
+1. **RS-8 — the saves are the player's.** The stone reads a save into memory and nothing else:
+   it never writes, renames, re-signs or copies a save file, never sends one, and keeps no
+   decrypted copy on disk. The stone carries no way to encrypt a save. The test fixtures are
+   encrypted by code compiled only for tests (`rift-save`'s `fixtures` feature, a dev-dependency
+   only).
+2. **Names come from the player's own game, never from the repo** (the Smuggler's Ledger's legal
+   floor). The pak is opened read-only (RS-3 still forbids writing it). The name tables are
+   cached in the app's cache folder, keyed by the pak's size and modified time, so the 2 s read
+   runs once per game update. Without the game the Muster still shows the party, with ids, and
+   says where the names live. The mock, which ships as a lazy chunk, carries invented names only:
+   invented gear, augments and skills, and only the six vocations whose names are plain English
+   words.
+3. **What is private in a save:** the Arisen's name and nickname, the pawns' names, nicknames
+   and Rift ids (`_SearchId`), the hired pawns' creators' names and user ids, the slot titles,
+   and the account id. The window shows names, because it is the player's own screen. Logs,
+   errors, events, bench output and the repo never carry them. The privacy sweep learns to read
+   saves (`--saves`), and fixtures use invented people only.
+4. **The Muster never waits on the game being closed.** DD2 writes a slot when it saves. The
+   stone reads whole files and retries a read that lands mid-write (a short file or a bad
+   signature) once, 500 ms later.
+5. **Version 0.4.0** (workspace `Cargo.toml`, `package.json`, `tauri.conf.json`).
+
+### § rift-save (new crate: the DSSS container, Mandarin, the class stream)
+
+- `rift_save::open(bytes: &[u8], account_id: u32) -> Result<Vec<u8>, SaveError>`: the decrypted
+  (and inflated) payload. `SaveError` kinds: `NotDsss`, `Version(u32)`, `Truncated`,
+  `SliceLayout`, `WrongAccount`, `Inflate`, `Signature` (the footer's MurmurHash3 disagrees: a
+  read mid-write). No error message carries a byte of the payload.
+- `rift_save::stream::parse(payload: &[u8]) -> Result<Vec<Root>, StreamError>`: the whole tree,
+  `Value::{Bool, Int(i64), UInt(u64), Float(f64), Str(String), Struct(Vec<u8>), Class(Class),
+  Array(Vec<Value>)}` with `Class { type_hash, fields: Vec<(u32, Value)> }`.
+  `field(name)` hashes the name and looks it up. A malformed stream names the byte offset, never
+  the bytes.
+- `rift_save::field_hash(name: &str) -> u32` (rift-pak's MurmurHash3, seed `0xFFFFFFFF`).
+- `fixtures` feature only: `seal(payload, account_id, deflate: bool) -> Vec<u8>` (Mandarin
+  encrypt, after MandarinJuice's `EncryptData`) and a tiny stream writer, so every test builds its
+  saves at run time from invented data.
+- Tests:
+  - round trips at several sizes, including an exact multiple of 16 KiB (the laps rule's edge);
+  - a wrong account is `WrongAccount` before any AES;
+  - a flipped footer byte is `Signature`, and a cut file is `Truncated`;
+  - the stream's alignment cases: a 24-byte struct at an offset that is 8 but not 16 mod 24, a
+    class array with and without the marker, an empty string;
+  - the Mandarin math checked against MandarinJuice's own published test vector shapes (header
+    key, slice sizes) with invented data.
+
+### § rift-pak (grows: the game's own pak, and its text)
+
+- `rift_pak::game::GamePak::open(path) -> Result<GamePak, GamePakError>`: reads the header and
+  the table (decrypting `0x08` tables, with the `0x68` and `0x28` chunk-table layouts), read-only.
+  `read(&self, game_path: &str) -> Result<Option<Vec<u8>>, GamePakError>` finds the entry by
+  `path_hash` and returns its bytes (chunked, deflate, zstd; encrypted resources decrypted).
+  Never maps or writes the file.
+- `rift_pak::msg::Msg::parse(bytes) -> Result<Msg, MsgError>`: entries by name, with each
+  language's text. `english(name) -> Option<&str>`.
+- Tests: an invented `0x68` pak built at run time (a key chosen at random, its table XOR-ed with
+  `key^e mod N`, one chunked entry, one zstd entry, one encrypted resource built as
+  `block × k^E mod M`) and an invented GMSG, all read back. The existing table-of-contents
+  reader's behaviour for mod paks does not change.
+
+### § rift-muster (new crate: the party and its names)
+
+- `Codex::from_pak(&GamePak) -> Codex`: the name tables above, plus `serde` so the spine can
+  cache it.
+- `Muster::read(payload_tree) -> Muster`: members (role, level, experience, vocation id,
+  vocation experience, gains, gear by slot with item ids, augment and skill ids for the current
+  vocation, pawn inclination and specialization, a hired pawn's creator's level and vocation),
+  the Arisen's gold and crystals. The names (the Arisen's and pawns' own, the creators') travel in
+  the model as `Private<String>`, whose `Debug` and `Display` print `‹private›`. Only the
+  window's view gets them.
+- `name(&Codex)` turns ids into names, leaving `None` where the codex has no entry.
+- `slots(dir) -> Vec<SlotFile>`: the `data*.bin` files that hold a party (a quick read of each),
+  newest first.
+- Tests: an invented party sealed into a save, read back into members. Also: an
+  `ExpandItemStorageBackup` item is equipped; a pawn with no specialization; a codex without the
+  game; ids beyond the tables; a save without a party (`data00-1.bin`-shaped).
+
+### § src-tauri (the spine)
+
+- **Discovery.** The Steam folder is the one the game was found through, else the registry's
+  `SteamPath`. Each `userdata\<account>\2054970\remote\win64_save` that holds a slot is one
+  save folder. The bench may set `RIFTSTONE_SAVE_DIR`, with the account id taken from the folder
+  three levels up, or from `RIFTSTONE_SAVE_ACCOUNT`.
+- **Commands** `get_muster_slots`, `get_muster` (WINDOW-CONTRACT § v0.4). A watcher on each save
+  folder emits `rift://muster-changed`, debounced 1 s, when a slot file changes.
+- **The codex** is read on first use from the found game's pak, cached as above, and rebuilt
+  when the pak's size or time changes.
+- **Logs** name slots by file name and say counts. Never a name.
+
+### § The window (the Illusionist, after the Artisan's §17 in #00015)
+
+THE MUSTER: a fifth page in the nav, beside THE RIFT, YOUR WORLD, NEXUS and PREFLIGHT, with
+hotkey `5`. Its states:
+- no Steam saves found;
+- saves found, none with a party;
+- the slot reads;
+- a slot that will not open, voiced by kind (another account's save, a save being written,
+  damaged);
+- the names missing (no game found), with the party still shown, with ids.
+
+The mock gets `?mock=muster…` scenes with an invented party.
+
+### As built (2026-10-18)
+
+- **rift-save** (16 tests): `open` checks the footer's signature before any arithmetic, then
+  decrypts with ONE modular power per file: every slice's `c1` is the same constant, so
+  `c1^uid mod p` is computed once. The stream's alignment is the engine's bitmask form
+  `(pos + n − 1) & !(n − 1)`, even for sizes that are not powers of two (a 12-byte vector).
+  Rounding to a true multiple instead parses the first 336 bytes of a real save and then loses its
+  place: the bench caught it. On the investor's slots (copies): 3.77 MB payloads, opened in
+  about 7 ms and parsed in 20 ms; 40,821 classes of 227 types, the spike's exact counts.
+- **rift-pak** (41 unit tests + its bench): the game pak's table is read and decrypted in 225 ms
+  in Rust (2.3 s in the Python spike); the seventeen texts in 53 ms. An encrypted resource is
+  refused (`EncryptedResource`): one entry in the whole pak is one, and none the Muster reads.
+- **rift-muster** (14 tests + its bench): on the investor's slot, the four members read whole
+  and every equipped thing named: 17/17, 21/21, 19/19 and 21/21. The codex built from the
+  install holds 1,404 items, 10 vocations, 4 inclinations, 9 specializations, 47 augments and 101
+  skills. The inclinations' four ids are no name hashes; they are carried as facts.
+- **The spine** (11 integration tests, 2 DTO tests). Save discovery is `rift_deploy::steam_roots()`,
+  now public, under `userdata`. The codex cache is `muster-codex.json` in the cache folder. A
+  slot whose signature or length disagrees is read once more after 500 ms: a file that changed
+  meanwhile is `beingWritten`, one that did not is `damaged`. A slot being written is never
+  cached. The save folders are watched with a labelled watcher (`watch::arm_labelled`), whose log
+  lines name "save folder N", never the path. The launcher's own error names the folder it
+  could not show, so the spine replaces it with a sentence that names the slot's file.
+- **The window** (the Illusionist, after the Artisan's §17): THE MUSTER as specified. R17.2 is
+  adopted: the room and `5` stay live while no game is found. Measured headless on the mock: at
+  1024 × 680 the Play slab ends at 622 px, inside the window (Q17.1); every tab fits at both
+  widths (Q17.3); two long gear names ellipsize at 1024 with the full name in `title` (Q17.2).
+  355 specs in 34 files.
+- **The privacy sweep** learned `--saves` (`scripts/dd2_saves.py`, AES in pure Python, checked
+  against FIPS-197 in the self-test). A save's names count even when they are short words.
+  Steam's `userdata` is a stock folder, so a save folder's private chain ends at the account
+  number. The first real run read 312 hits that were all noise, and three rules came out of it.
+  First, the game's own id records (two record types whose `Name` is an id with a digit in it,
+  2,767 strings) are not names. Second, a short name matches in its own case only. Third, a name
+  the repo already held at `BEFORE_SAVES` (830fdf0, the last commit before any save was read) is
+  set aside and counted, since its hits cannot be told from the code's own words. One test
+  account number in `rift-save` read as a mod id across a digit separator, so it was changed.
+  Then the sweep read 0 hits over the tree, history and messages, in 2 m 46 s.
+
+### Ownership in the build
+
+| Builder | Owns |
+|---|---|
+| main session | `crates/rift-save`, `crates/rift-muster`, `crates/rift-pak` (game, msg), `src-tauri/**`, `src/types/rift.ts` and `src/services/rift.ts` (the contract), `scripts/` (the sweep's `--saves`), the docs |
+| the Artisan | #00015 §17 (the Muster's design), in the lab repo |
+| the Illusionist | `src/**` beyond the contract files, `tests/**`, the mock's Muster scenes |
