@@ -1242,6 +1242,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "filetime"
+version = "0.2.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
+dependencies = [
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3608,7 +3618,7 @@ dependencies = [
 
 [[package]]
 name = "rift-archive"
-version = "0.3.1"
+version = "0.4.1"
 dependencies = [
  "crc32fast",
  "log",
@@ -3622,7 +3632,7 @@ dependencies = [
 
 [[package]]
 name = "rift-catalog"
-version = "0.3.1"
+version = "0.4.1"
 dependencies = [
  "encoding_rs",
  "log",
@@ -3640,7 +3650,7 @@ dependencies = [
 
 [[package]]
 name = "rift-core"
-version = "0.3.1"
+version = "0.4.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3649,7 +3659,7 @@ dependencies = [
 
 [[package]]
 name = "rift-deploy"
-version = "0.3.1"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "log",
@@ -3666,8 +3676,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rift-muster"
+version = "0.4.1"
+dependencies = [
+ "rift-pak",
+ "rift-save",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "rift-nexus"
-version = "0.3.1"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "log",
@@ -3682,19 +3704,35 @@ dependencies = [
 
 [[package]]
 name = "rift-pak"
-version = "0.3.1"
+version = "0.4.1"
 dependencies = [
+ "flate2",
+ "num-bigint",
  "serde",
  "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "zstd",
+]
+
+[[package]]
+name = "rift-save"
+version = "0.4.1"
+dependencies = [
+ "aes",
+ "flate2",
+ "num-bigint",
+ "rift-pak",
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "riftstone"
-version = "0.3.1"
+version = "0.4.1"
 dependencies = [
  "base64 0.23.1",
  "chrono",
+ "filetime",
  "image",
  "keyring",
  "libc",
@@ -3704,8 +3742,10 @@ dependencies = [
  "rift-catalog",
  "rift-core",
  "rift-deploy",
+ "rift-muster",
  "rift-nexus",
  "rift-pak",
+ "rift-save",
  "serde",
  "serde_json",
  "tauri",

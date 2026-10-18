@@ -49,21 +49,37 @@ pub fn arm(
         );
         return None;
     }
+    arm_labelled(
+        folder,
+        ignore,
+        quiet,
+        &folder.display().to_string(),
+        on_change,
+    )
+}
+
+/// [`arm`] for a folder whose path must stay out of the log (v0.4: a save folder, whose path
+/// holds the Steam account number): every log line names `label` instead.
+pub fn arm_labelled(
+    folder: &Path,
+    ignore: &[PathBuf],
+    quiet: Duration,
+    label: &str,
+    on_change: impl Fn() + Send + 'static,
+) -> Option<LibraryWatcher> {
+    if !folder.is_dir() {
+        return None;
+    }
     let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
     let mut watcher = match notify::recommended_watcher(tx) {
         Ok(watcher) => watcher,
         Err(err) => {
-            log::warn!(
-                "the library watcher could not start ({err}); rescan by hand to see new mods"
-            );
+            log::warn!("the watcher for {label} could not start ({err}); look again by hand to see its changes");
             return None;
         }
     };
     if let Err(err) = watcher.watch(folder, RecursiveMode::Recursive) {
-        log::warn!(
-            "could not watch {} ({err}); rescan by hand to see its changes",
-            folder.display()
-        );
+        log::warn!("could not watch {label} ({err}); look again by hand to see its changes");
         return None;
     }
     let ignore = ignore.to_vec();
@@ -71,7 +87,7 @@ pub fn arm(
         .name("riftstone-watch".into())
         .spawn(move || settle(&rx, &ignore, quiet, &on_change));
     if let Err(err) = spawned {
-        log::warn!("the library watcher could not start its thread: {err}");
+        log::warn!("the watcher for {label} could not start its thread: {err}");
         return None;
     }
     Some(LibraryWatcher { _watcher: watcher })

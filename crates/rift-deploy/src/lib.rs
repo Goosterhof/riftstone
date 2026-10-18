@@ -71,8 +71,8 @@ pub use engine::{
     rekey_with_files, reorder_paks, restore_parked, uninstall, DeployContext,
 };
 pub use game::{
-    discover_game, discover_game_from, read_build_id, validate_game_root, GameInstall, GameSource,
-    DD2_STEAM_APP_ID,
+    discover_game, discover_game_from, read_build_id, steam_roots, validate_game_root, GameInstall,
+    GameSource, DD2_STEAM_APP_ID,
 };
 pub use journal::{
     journal_path, Below, BelowOwner, DeployKind, DeployedFile, InstalledOption, Intent,

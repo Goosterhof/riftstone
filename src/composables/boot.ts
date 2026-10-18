@@ -19,6 +19,7 @@ import { resetInstalled, useInstalled } from "./useInstalled";
 import { resetLabels, useLabels } from "./useLabels";
 import { resetLaunch, useLaunch } from "./useLaunch";
 import { resetLibrary, useLibrary } from "./useLibrary";
+import { resetMuster, useMuster } from "./useMuster";
 import { resetNavigation, useNavigation } from "./useNavigation";
 import { resetNexusAccount } from "./useNexusAccount";
 import { resetNxmHandler } from "./useNxmHandler";
@@ -165,6 +166,8 @@ async function subscribe(): Promise<void> {
     backend.on(EVENTS.downloadsChanged, () => void useDownloads().onChanged()),
     backend.on<DownloadProgressEvent>(EVENTS.downloadProgress, (e) => useDownloads().onProgress(e)),
     backend.on<NxmReceivedEvent>(EVENTS.nxmReceived, (e) => void onNxmReceived(e)),
+    // v0.4: the game saved (or its names were rebuilt): the slot list and the open slot again
+    backend.on(EVENTS.musterChanged, () => void useMuster().onChanged()),
   ]);
 }
 
@@ -216,4 +219,5 @@ export function resetRiftstone(): void {
   resetNexusAccount();
   resetNxmHandler();
   resetPreflight();
+  resetMuster();
 }

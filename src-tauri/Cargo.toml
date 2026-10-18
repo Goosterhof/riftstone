@@ -20,6 +20,8 @@ rift-pak.workspace = true
 rift-catalog.workspace = true
 rift-deploy.workspace = true
 rift-nexus.workspace = true
+rift-save.workspace = true
+rift-muster.workspace = true
 
 tauri = { version = "2", features = [] }
 # The first plugin (v0.3): a second launch — Windows starting
@@ -67,6 +69,10 @@ tempfile.workspace = true
 tauri = { version = "2", features = ["test"] }
 # The command-layer test builds its library collection as a real zip at run time.
 zip.workspace = true
+# v0.4: the Muster's tests seal an invented party and build an invented game pak.
+rift-muster = { workspace = true, features = ["fixtures"] }
+rift-save = { workspace = true, features = ["fixtures"] }
+filetime.workspace = true
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

@@ -1,4 +1,6 @@
-//! rift-pak — the RE Engine `.pak` table of contents, and the engine's path hash.
+//! rift-pak — the RE Engine `.pak` table of contents, and the engine's path hash; since v0.4
+//! also the game's own pak ([`game`]) and its text files ([`msg`]), which the Muster names the
+//! party's things from, read-only and at run time (nothing of the game's is ever bundled).
 //!
 //! A Dragon's Dogma 2 mod reaches the game in one of two ways: as loose files
 //! under `natives/` (served by REFramework's LooseFileLoader) or as `.pak`
@@ -178,7 +180,9 @@
 
 use serde::Serialize;
 
+pub mod game;
 mod hash;
+pub mod msg;
 mod toc;
 
 pub use hash::{murmur3_32, path_hash};

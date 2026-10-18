@@ -59,7 +59,16 @@
 // The spine's own sentences are used wherever the window shows them. Dev hooks, on the backend
 // and, in `npm run dev`, on `window.riftMock` (from the browser console):
 //   closeGame()        the game watcher sees Dragon's Dogma 2 stop;
-//   deliverNxm(link)   Windows hands the stone an nxm:// link.
+//   deliverNxm(link)   Windows hands the stone an nxm:// link;
+//   gameSaved()        v0.4: the game saves Slot 9 one level later (THE RE-CARVING).
+//
+// v0.4, the Muster (./muster.ts, #00015 R17.30–R17.31): every scene lists the
+// invented party's four slots, so the room is never empty. ?mock= gains
+// muster (the same, by name) | musternosteam | musternosaves | musternames
+// (every Named nameless, names "missing", the spine's note) | musterslow
+// (get_muster answers after 2 s) | musterwriting (Slot 9 rejects as being
+// written once, then the save settles and rift://muster-changed fires).
+// Under nogame the names are missing too: they live in the game's own text.
 
 import type {
   Check,
@@ -118,6 +127,7 @@ import { EVENTS } from "@/types/rift";
 import { RiftFailure, type RiftBackend, type RiftEvent } from "../rift";
 import type { NexusQuota, PendingBackend } from "../pending";
 import { TROUBLE_KINDS } from "../voice";
+import { MOCK_SAVE_SENTENCES, mockMuster, mockMusterSlots, type MusterScene } from "./muster";
 import {
   MOCK_DAY,
   MOCK_FINDS,
@@ -149,6 +159,8 @@ export interface MockHooks {
   closeGame(): void;
   /** Windows hands the stone an nxm:// link, as the site's Mod Manager Download button does. */
   deliverNxm(link: string): void;
+  /** v0.4: the game saves Slot 9 one level later (#00015 R17.31), and the save watcher fires. */
+  gameSaved(): void;
 }
 
 export type MockBackend = RiftBackend & PendingBackend & MockHooks;
@@ -1406,6 +1418,20 @@ export function createMockBackend(): MockBackend {
 
   // --- the nxm:// handler and the links it brings --------------------------
   const otherAtStart = scene.has("nxmother") ? MOCK_OTHER_HANDLER : null;
+
+  // v0.4 — the Muster's state: one save of Slot 9 by the dev hook, one
+  // being-written refusal under musterwriting.
+  let savedLater = false;
+  let writingOnce = scene.has("musterwriting");
+  function musterScene(): MusterScene {
+    let folder: MusterScene["folder"] = null;
+    if (scene.has("musternosteam")) folder = "noSteam";
+    else if (scene.has("musternosaves")) folder = "noSaves";
+    return { folder, namesMissing: scene.has("musternames") || gameRoot === null };
+  }
+  function saveFailure(slotId: string, reason: keyof typeof MOCK_SAVE_SENTENCES): RiftFailure {
+    return new RiftFailure({ kind: "save", detail: { detail: MOCK_SAVE_SENTENCES[reason](slotId), reason } });
+  }
   let handler: NxmHandlerView = otherAtStart
     ? { state: "other", other: otherAtStart, givesBackTo: null }
     : { state: "none", other: null, givesBackTo: null };
@@ -2173,7 +2199,32 @@ export function createMockBackend(): MockBackend {
     pickFolder() {
       return Promise.resolve("D:\\Games\\Dragons Dogma 2");
     },
+    // --- v0.4: the Muster --------------------------------------------------
+    async getMusterSlots() {
+      await wait(60);
+      return mockMusterSlots(musterScene(), savedLater);
+    },
+    async getMuster(slotId) {
+      await wait(scene.has("musterslow") ? 2000 : 120);
+      if (writingOnce && slotId === "data009Slot") {
+        writingOnce = false;
+        // the save settles a moment later, and the watcher says so
+        setTimeout(() => emit(EVENTS.musterChanged, {}), 900);
+        throw saveFailure(slotId, "beingWritten");
+      }
+      const read = mockMuster(slotId, musterScene(), savedLater);
+      if (typeof read === "string") throw saveFailure(slotId, read);
+      return read;
+    },
+    async openSavesFolder(slotId) {
+      await wait(40);
+      if (!mockMusterSlots(musterScene()).slots.some((s) => s.slotId === slotId)) throw saveFailure(slotId, "gone");
+    },
     // --- the dev hooks: the world outside the window ------------------------
+    gameSaved() {
+      savedLater = true;
+      emit(EVENTS.musterChanged, {});
+    },
     closeGame() {
       setRunning(false);
     },
@@ -2186,6 +2237,7 @@ export function createMockBackend(): MockBackend {
     (window as unknown as { riftMock?: MockHooks }).riftMock = {
       closeGame: () => backend.closeGame(),
       deliverNxm: (link) => backend.deliverNxm(link),
+      gameSaved: () => backend.gameSaved(),
     };
   }
   return backend;

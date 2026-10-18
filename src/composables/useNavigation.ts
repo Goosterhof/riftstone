@@ -3,7 +3,7 @@
 
 import { ref } from "vue";
 
-export type Page = "rift" | "world" | "nexus" | "preflight";
+export type Page = "rift" | "world" | "nexus" | "preflight" | "muster";
 export type RiftMode = "results" | "package" | "lookbook";
 
 export interface LightboxImage {

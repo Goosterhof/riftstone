@@ -567,3 +567,66 @@ the stone itself; a Play button starts the game; the name stays.
   the site's button makes a fresh link; the mod's files when no file is named) and, when the key
   is the way out, the voice's own recovery label (`Add key…` or `Replace key…`), which opens THE
   FAR WORLD's key form (§ The key's extras, The key's doors).
+
+## v0.4 — the Muster
+
+The party of a save slot, read from the player's own saves and named from the player's own game
+(BUILD-SPEC § v0.4 has the formats and the id rules). Read-only: no command here writes a save,
+and none ever sends one. Types live in `src/types/rift.ts` (§ v0.4).
+
+### Commands
+
+| Command (invoke name) | Args (JS, camelCase) | Returns | Notes |
+|---|---|---|---|
+| `get_muster_slots` | — | `MusterSlotsView` | Every save slot that holds a party, newest first, in every Steam account's DD2 save folder the stone found. Each slot is read once to fill its summary, then cached by file size and modified time. A slot that cannot be read is still listed, with its `problem` and no summary. The game's system data (`data00-1.bin`) and the `SS1_*` files are no slots. A slot's id is its file name without `.bin` (`data009Slot`), and `@<account>` follows when the machine has more than one account with saves (`data009Slot@2`), so an id is unique. A save copied in from another account on this machine opens with that account's key. |
+| `get_muster` | `slotId: string` | `MusterView` | The whole party of one slot. A slot that cannot be read rejects with a `save` error (below). Reading the game's names (the first call after a game update) takes about 2 s; later calls read the cache. |
+| `open_saves_folder` | `slotId: string` | `void` | Opens the slot's save folder in Explorer, Rust-side. The window never sees the folder's path, because it holds the Steam account number. |
+
+### Events
+
+| Event | Payload | When |
+|---|---|---|
+| `rift://muster-changed` | `{}` | A slot file appeared, changed or went (the game saved), debounced 1 s; also when the game's names were rebuilt after a game update. The window re-reads the slot list and the open slot. |
+
+### The `save` error
+
+`RiftError` gains the kind `save`, with the detail `{ detail: <sentence>, reason: SaveReason }`.
+Reasons:
+- `otherAccount`: the slot opens with no account the stone found, so it is another Steam
+  account's save, copied in.
+- `beingWritten`: the slot is busy. Its signature disagrees, or it is cut short (an empty file
+  included), twice 500 ms apart while the file changes, which is the game writing it. Or the
+  file would not be read at all, twice 500 ms apart: another program holds it for a moment
+  (the game, Steam Cloud, an antivirus). It is never remembered, so the next read tries again.
+- `damaged`: the container or the stream is broken, or the same failure as above with the file
+  unchanged. A file larger than any save is damaged without being read.
+- `noParty`: the file opens but holds no party.
+- `gone`: the slot's file is not there: it left the folder since the list was read.
+
+The sentence names the slot by its file name and never by its path, because the path holds the
+Steam account number.
+
+### What a member carries
+
+`MusterMember`:
+- `memberKey`: 16 hex digits hashed from the save's own record id, stable for one pawn across
+  re-reads (the window's THE RE-CARVING tells members apart by it). It is neither a name nor a
+  Rift id.
+- `role` (`arisen`, `mainPawn`, `hiredPawn`) and `name`, which is the player's own and private:
+  shown, never logged.
+- `level` and `experience`.
+- `vocation` and `vocations`: each vocation with experience, highest first.
+- `gains`: what the levels gave to health, stamina, strength, defence, magick, magick defence,
+  weight and knockdown.
+- `gear`: the eight slots in the game's order, main weapon, sub weapon, head, body, legs, cloak,
+  then two rings, with the item or null.
+- `augments` and `skills` for the current vocation, in the order the game keeps them, empty
+  places left out.
+- `pawn`: inclination and specialization, null for the Arisen.
+- `creator`: a hired pawn's creator's level and vocation. Their name stays out of the view.
+
+Every game-named thing is a `Named` (`{ id, name }`), with `name: null` when the game's text has
+no entry for the id or the names could not be read. `MusterView.names` says which: `game` (read
+from the found game), or `missing` with `namesNote`, a sentence on where the names live.
+`MusterSlotsView.names` says the same for the slot list's vocations. `gains` are the integers
+the save keeps; the game's unit for `weight` is not stated, so the window shows it as given.

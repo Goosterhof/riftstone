@@ -130,8 +130,10 @@ export interface RiftError {
     | "refused"
     | "journal"
     | "nexus"
+    | "save"
     | "io";
   /** For kind "nexus" (v0.3): `{ detail: <sentence>, reason?: NexusReason }`.
+   *  For kind "save" (v0.4): `{ detail: <sentence>, reason: SaveReason }`.
    *  The window voices by `reason` first and reads the sentence only as a fallback. */
   detail?: Record<string, string>;
 }
@@ -1064,6 +1066,149 @@ export const EVENTS = {
   downloadProgress: "rift://download-progress",
   /** v0.3 */
   nxmReceived: "rift://nxm-received",
+  /** v0.4: a slot file appeared, changed or went, or the game's names were rebuilt. */
+  musterChanged: "rift://muster-changed",
 } as const;
 
 export type ThumbnailSize = "card" | "full";
+
+// ---------------------------------------------------------------------------
+// v0.4 — the Muster (WINDOW-CONTRACT § v0.4): the party from the player's own
+// saves, named from the player's own game. Read-only.
+// ---------------------------------------------------------------------------
+
+/** v0.4: why a save slot would not open. */
+export type SaveReason =
+  /** The slot opens with no Steam account the stone found: another account's save. */
+  | "otherAccount"
+  /** The slot is busy: twice, 500 ms apart, it was cut short or disagreed with its signature
+   *  while it changed (the game writing it), or it would not be read at all (another program
+   *  holding it). Never remembered: the next read tries again. */
+  | "beingWritten"
+  /** The container or its stream is broken. */
+  | "damaged"
+  /** The file opens but holds no party. */
+  | "noParty"
+  /** The slot left the folder since the list was read. */
+  | "gone";
+
+/** A thing the game names: its id, and the game's own English name for it, or null when the
+ *  game's text has no entry for the id or the names could not be read. */
+export interface Named {
+  id: number;
+  name: string | null;
+}
+
+export interface MusterSlotsView {
+  /** Why no slot can be listed, or null when the stone found a save folder. */
+  problem: MusterFolderProblem | null;
+  /** Newest first, across every Steam account's save folder. */
+  slots: MusterSlot[];
+  /** How many Steam accounts on this machine have Dragon's Dogma 2 saves. */
+  accountCount: number;
+  /** Whether the slots' vocations are named from the game (`game`) or the names could not be
+   *  read (`missing`), so a row can tell "the game has no name" from "no names at all". */
+  names: "game" | "missing";
+}
+
+export type MusterFolderProblem =
+  /** No Steam folder was found (the registry, or the game's own library). */
+  | "noSteam"
+  /** Steam was found, but no account has Dragon's Dogma 2 saves. */
+  | "noSaves";
+
+export interface MusterSlot {
+  /** The handle: the file's name without `.bin` (`data009Slot`). */
+  slotId: string;
+  /** The game's slot number. */
+  slot: number;
+  /** When the game last wrote the slot (the file's modified time, ISO 8601). */
+  savedAt: string;
+  /** 1-based when the machine has more than one account with saves; null otherwise. */
+  account: number | null;
+  /** The Arisen's summary, null when the slot would not open (then `problem` says why). */
+  arisen: MusterSlotArisen | null;
+  problem: SaveReason | null;
+}
+
+export interface MusterSlotArisen {
+  /** The player's own: shown, never logged. */
+  name: string | null;
+  level: number;
+  vocation: Named;
+}
+
+export interface MusterView {
+  slotId: string;
+  slot: number;
+  savedAt: string;
+  names: "game" | "missing";
+  /** With `missing`: where the names live and why they could not be read. */
+  namesNote: string | null;
+  arisen: MusterMember | null;
+  mainPawn: MusterMember | null;
+  /** The hired pawns, in the order the party keeps them (at most two). */
+  hired: MusterMember[];
+  gold: number | null;
+  riftCrystals: number | null;
+}
+
+export type MusterRole = "arisen" | "mainPawn" | "hiredPawn";
+
+export interface MusterMember {
+  /** Stable for one pawn across re-reads of a slot: 16 hex digits hashed from the save's own
+   *  record id. Neither a name nor a Rift id; the window uses it only to tell members apart. */
+  memberKey: string;
+  role: MusterRole;
+  /** The player's own name for the Arisen or a pawn: shown, never logged. */
+  name: string | null;
+  level: number;
+  experience: number;
+  vocation: Named;
+  /** Every vocation this member has experience in, the most experienced first. */
+  vocations: MusterVocation[];
+  gains: MusterGains;
+  /** Always eight: main weapon, sub weapon, head, body, legs, cloak, ring, ring. */
+  gear: MusterGear[];
+  /** For the current vocation, in the game's order, empty places left out. */
+  augments: Named[];
+  skills: Named[];
+  /** A pawn's inclination and specialization; null for the Arisen. */
+  pawn: MusterPawnTraits | null;
+  /** A hired pawn's creator: their level and vocation (their name stays out). */
+  creator: MusterCreator | null;
+}
+
+export interface MusterVocation {
+  vocation: Named;
+  experience: number;
+}
+
+/** What the levels gave (the game's level-up increases, not the gear's). */
+export interface MusterGains {
+  health: number;
+  stamina: number;
+  strength: number;
+  defence: number;
+  magick: number;
+  magickDefence: number;
+  weight: number;
+  knockdown: number;
+}
+
+export type MusterGearSlot = "mainWeapon" | "subWeapon" | "head" | "body" | "legs" | "cloak" | "ring1" | "ring2";
+
+export interface MusterGear {
+  slot: MusterGearSlot;
+  item: Named | null;
+}
+
+export interface MusterPawnTraits {
+  inclination: Named | null;
+  specialization: Named | null;
+}
+
+export interface MusterCreator {
+  level: number;
+  vocation: Named;
+}

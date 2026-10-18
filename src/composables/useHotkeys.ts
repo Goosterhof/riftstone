@@ -1,4 +1,4 @@
-// Keyboard-first (§8.1). "/" or Ctrl+K: search. 1–4: the rooms. L or Ctrl+L:
+// Keyboard-first (§8.1). "/" or Ctrl+K: search. 1–5: the rooms (5, v0.4: THE MUSTER). L or Ctrl+L:
 // the lookbook for the selected card's package. I: plan the install of the
 // selected card (never installs blind). Esc: close the innermost thing.
 // Inside the answers list the page handles ↑/↓, Enter and Space itself.
@@ -10,8 +10,15 @@ import { useNavigation, type Page } from "./useNavigation";
 import { useSearch } from "./useSearch";
 import { useWorld } from "./useWorld";
 import { useLibrary } from "./useLibrary";
+import { useMuster } from "./useMuster";
 
-const ROOMS: Partial<Record<string, Page>> = { "1": "rift", "2": "world", "3": "nexus", "4": "preflight" };
+const ROOMS: Partial<Record<string, Page>> = {
+  "1": "rift",
+  "2": "world",
+  "3": "nexus",
+  "4": "preflight",
+  "5": "muster",
+};
 
 function typing(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -103,6 +110,8 @@ function escape(): boolean {
 function plainKey(event: KeyboardEvent): boolean {
   const room = ROOMS[event.key];
   if (room) {
+    // R17.27: entering THE MUSTER by its key puts the focus on the picked slot
+    if (room === "muster") useMuster().summon();
     useNavigation().go(room);
     return true;
   }

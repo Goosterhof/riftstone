@@ -56,6 +56,12 @@ pub enum RiftError {
         reason: Option<NexusReason>,
     },
 
+    /// v0.4: a save slot would not open. `reason` names the case for the window; `detail` is
+    /// a sentence that names the slot by its file name, never by its path (the path holds the
+    /// Steam account number).
+    #[error("{detail}")]
+    Save { detail: String, reason: SaveReason },
+
     /// Any other filesystem failure while writing.
     #[error("{detail}")]
     Io { detail: String },
@@ -85,6 +91,34 @@ impl RiftError {
     pub fn refused(reason: impl Into<String>) -> Self {
         RiftError::Refused {
             reason: reason.into(),
+        }
+    }
+}
+
+/// Why a save slot would not open (v0.4), so the window can voice it without reading the
+/// sentence. Serialized camelCase into `RiftError::Save`'s detail, and into a slot's
+/// `problem` in the Muster's list (which the DTO tests read back, hence `Deserialize`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SaveReason {
+    /// The slot opens with no Steam account the stone found: another account's save.
+    OtherAccount,
+    /// The slot's signature disagreed twice while its file changed: the game is writing it.
+    BeingWritten,
+    /// The container or its stream is broken.
+    Damaged,
+    /// The file opens but holds no party.
+    NoParty,
+    /// The slot left the folder since the list was read.
+    Gone,
+}
+
+impl RiftError {
+    /// A save slot that would not open, for the window to voice by `reason`.
+    pub fn save(reason: SaveReason, detail: impl Into<String>) -> Self {
+        RiftError::Save {
+            detail: detail.into(),
+            reason,
         }
     }
 }

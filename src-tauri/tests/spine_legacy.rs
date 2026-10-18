@@ -403,24 +403,37 @@ fn a_migration_that_meets_plays_probe_runs_when_the_probe_lets_go() {
         let (banners, legacy) = staged_v02_folder(&bench, &dirs, &bench.mods.join(BANNERS));
         let (state, events) = bench.open(bench.config(dirs.clone()));
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // The probes and the scan start together, and each probe asks at
+        // least once before it looks at `stop`. A busy runner once scheduled a
+        // probe only after the scan had ended, so it asked nothing and the
+        // Sentinel failed (11 of 40 runs on two loaded cores).
+        let start = std::sync::Arc::new(std::sync::Barrier::new(5));
         let probes: Vec<_> = (0..4)
             .map(|_| {
                 let state = std::sync::Arc::clone(&state);
                 let stop = std::sync::Arc::clone(&stop);
+                let start = std::sync::Arc::clone(&start);
                 std::thread::spawn(move || {
+                    start.wait();
                     let mut asked = 0u64;
-                    while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    loop {
                         let _ = state.deploy_busy();
                         asked += 1;
+                        if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                            break asked;
+                        }
                     }
-                    asked
                 })
             })
             .collect();
+        start.wait();
         assert!(state.scan_blocking());
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
         for probe in probes {
-            assert!(probe.join().unwrap() > 0);
+            assert!(
+                probe.join().unwrap() > 0,
+                "trial {trial}: every probe asked once the scan began"
+            );
         }
         assert_eq!(
             deploy::get_installed_impl(&state).unwrap().installs[0].option_id,

@@ -25,7 +25,7 @@ pub mod nexus_name;
 pub mod path;
 pub mod source;
 
-pub use error::{NexusReason, RiftError};
+pub use error::{NexusReason, RiftError, SaveReason};
 pub use model::*;
 pub use path::{fnv1a64, lower_key, normalize_entry_path};
 pub use source::{ExtractItem, ExtractProgress, PackageSource};

@@ -229,7 +229,10 @@ fn env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn steam_roots() -> Vec<PathBuf> {
+/// Every Steam install folder this machine knows about, in the order discovery asks them:
+/// the registry (Windows), `RIFTSTONE_STEAM_ROOT`, then Steam's default folders (Windows).
+/// v0.4: the Muster looks for the saves under these (`userdata`), where Play finds the game.
+pub fn steam_roots() -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
     #[cfg(windows)]
     roots.extend(registry::steam_roots());

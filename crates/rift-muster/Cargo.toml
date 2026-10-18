@@ -1,0 +1,24 @@
+[package]
+name = "rift-muster"
+description = "The party in a Dragon's Dogma 2 save, named from the player's own game: the Muster's model (v0.4)."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rift-save.workspace = true
+rift-pak.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[features]
+# The invented party and game pak, for this crate's tests and the spine's (a dev-dependency
+# feature only: the stone itself never builds a save).
+fixtures = ["rift-save/fixtures", "rift-pak/fixtures"]
+
+[dev-dependencies]
+rift-save = { workspace = true, features = ["fixtures"] }
+rift-pak = { workspace = true, features = ["fixtures"] }
+serde_json.workspace = true
+tempfile.workspace = true

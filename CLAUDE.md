@@ -17,6 +17,15 @@ Nexus key it also shows the account, downloads files straight into the mods fold
 stone; free accounts through the site's Mod Manager Download button, once the player turns the
 stone's nxm handler on), and tracks and endorses mods.
 
+Since v0.4, **THE MUSTER** shows the party of any save slot, read-only, from the player's own saves:
+the Arisen, the main pawn and the hired pawns, each with level, vocation, the experience in every
+vocation, the stats the levels gave, everything worn by slot, the augments and skills set for the
+vocation in use, a pawn's inclination and specialization, and the Arisen's gold and Rift
+Crystals. It decrypts each slot in memory (keyed by the Steam account the save folder belongs
+to) and names what the party carries from the game's own text, read from the player's own
+`re_chunk_000.pak` at run time and never bundled. When the game saves, the page reads the slot
+again and marks what changed (THE RE-CARVING, #00015 R17.25).
+
 The metaphor (design system #00015, *Rift-Lit Basalt*, ruled 2026-10-16, amended for v0.3 on
 2026-10-17): DD2's Riftstone is the monolith you touch to summon the pawns of other Arisen. Mods are
 creations from other worlds; the Rift holds them; installing pulls one through into your world.
@@ -24,7 +33,7 @@ Core nouns stay plain (mod, option, install, update, load order, play, download)
 meaning faster* — and the voice lives in the frame, the states and the two signature interactions.
 
 - **Experiment log:** `zmuuzn/documents/experiment-logs/00068-the-riftstone.md`
-- **Design system:** `zmuuzn/documents/design-systems/00015-system-riftstone.md` (A · The Monolith; §16 is v0.3); audition `docs/design/audition.html`; tokens `docs/design/tokens.uno.ts`
+- **Design system:** `zmuuzn/documents/design-systems/00015-system-riftstone.md` (A · The Monolith; §16 is v0.3, §17 the Muster); audition `docs/design/audition.html`; tokens `docs/design/tokens.uno.ts`
 - **Build spec (the contract every crate was built to):** `docs/BUILD-SPEC.md` (§ v0.3 for this version)
 - **Window contract (every command, event, shape):** `docs/WINDOW-CONTRACT.md` + `src/types/rift.ts`
 
@@ -37,6 +46,7 @@ meaning faster* — and the voice lives in the frame, the states and the two sig
 - **RS-5 — One folder.** The `mods` folder beside `riftstone.exe` is the only library (a bench may point `RIFTSTONE_MODS_DIR` elsewhere). Every archive and folder directly inside it is one package; nothing else is scanned. Folder packages are known by their name, so moving the whole install keeps every link.
 - **RS-6 — Nexus is optional.** Update checks, labels, Find, browsing and a mod's files use the anonymous GraphQL v2 API and need no key. The optional personal API key adds the key's extras through v1: the account, downloads, tracking and endorsing. It lives in Windows Credential Manager, never in a file or the webview; a download URL and an nxm link's key are secrets like it (never logged, never in an error, never in the window). Every request names the Riftstone (`Application-Name`, `Application-Version`), and v1's quota headers are honoured.
 - **RS-7 — Vue 3 + UnoCSS**, `@unocss/reset` before `virtual:uno.css`, the `prefers-reduced-motion` floor.
+- **RS-8 — The saves are the player's (v0.4).** A save is read into memory and nothing else: the stone never writes, renames, re-signs or copies a save, never sends one, and keeps no decrypted copy on disk. It carries no way to encrypt a save, and neither does the rest of the repo outside test builds: the only sealer is `rift-save`'s `fixtures` code (which `rift-muster`'s fixtures build on), and only test builds compile it. The Sentinel measures that on every push: the graph the shipped exe is built from switches on no `fixtures` feature. The privacy sweep's Python opens saves and seals none: its self-test opens `scripts/fixtures/sweep-invented-save.bin`, which that code sealed and `rift-save`'s own test checks opens to exactly its invented party. The game's pak is read the same way, read-only (RS-3 still forbids writing it). A save folder's path holds the Steam account number, so no log line, error or event names it.
 
 ## The DD2 Load Rules (researched 2026-10-16; constants in `crates/rift-core/src/dd2.rs`)
 
@@ -61,13 +71,15 @@ meaning faster* — and the voice lives in the frame, the states and the two sig
 ```
 crates/rift-core      the contract: model, path discipline + zip-slip guard, dd2 constants, errors, Nexus file names
 crates/rift-archive   zip / 7z / rar (UnRAR) / folder readers behind rift_core::PackageSource
-crates/rift-pak       RE Engine KPKA table of contents + the engine's murmur3 path hash
+crates/rift-pak       RE Engine KPKA table of contents + the engine's murmur3 path hash; v0.4: the game's own pak (its encrypted table, chunked/zstd/deflate entries) and its GMSG text files
+crates/rift-save      v0.4: a save file, read-only: the DSSS container, its Mandarin cipher, the self-describing class stream
+crates/rift-muster    v0.4: the party in a save, the save folders and slot files, and the Codex (the game's names, by id)
 crates/rift-catalog   modinfo.ini, option discovery, the addon tree and its nesting, search, conflicts, the scan cache
 crates/rift-deploy    game/REFramework discovery, Play's plan, the journal (schema 2) and its relink, install/uninstall/reorder, preflight
 crates/rift-nexus     anonymous Nexus v2 GraphQL (updates, labels, Find, browse, a mod's files), v1 with the key (account, downloads, tracking, endorsing), the downloader, nxm links
-src-tauri/            the spine: state, persistence, commands, events, thumbnails, the mods-folder watcher, the game watcher, downloads, the nxm handler (and windows/hooks.nsh, the uninstaller's give-back)
+src-tauri/            the spine: state, persistence, commands, events, thumbnails, the mods-folder watcher, the game watcher, downloads, the nxm handler (and windows/hooks.nsh, the uninstaller's give-back); v0.4: muster.rs (slots, parties, the codex cache, the save folders' watchers)
 src/                  the window (Vue 3 + UnoCSS) — services/ is the only door to Tauri; services/mock/ runs it in a browser
-scripts/              privacy-sweep.py — the pre-push gate below
+scripts/              privacy-sweep.py — the pre-push gate below; dd2_saves.py, the save reader it loads (v0.4)
 ```
 
 ## Containment Protocols (the gates on disk)
@@ -92,7 +104,11 @@ python3 -I scripts/privacy-sweep.py --self-test
 **The Sentinel** (`.github/workflows/sentinel.yml`, armed with the first push on 2026-10-18) runs
 those gates on every push to `main` and every pull request against it, in three jobs:
 - *Window*: `npm ci`, then typecheck, lint, test, format:check and build.
-- *Crates*: fmt, clippy with warnings denied, and the workspace's tests. It is pinned to Rust
+- *Crates*: fmt, clippy with warnings denied, RS-8 measured, and the workspace's tests. RS-8's
+  step reads `cargo tree -p riftstone -e normal,build` and fails when any `fixtures` feature
+  reaches the graph the shipped exe is built from. The graph is its own denominator: the step
+  also fails when `cargo tree` fails or lists no `riftstone`, so it cannot pass on nothing. It
+  is pinned to Rust
   1.98.0, the toolchain both benches verified with, because a newer stable's lints can turn
   `-D warnings` red overnight. Moving the pin is a deliberate commit, run on both benches first.
 - *Privacy*: the sweep's `--self-test`.
@@ -143,7 +159,28 @@ The args file keeps this machine's real paths off the public tree, one option pe
 --private-path C:\<builds>\riftstone-releases
 --private-word <the Nexus account name>
 --forbid <a word the repo must never carry>
+--saves /mnt/c/Program Files (x86)/Steam/userdata/<account>/2054970/remote/win64_save
 ```
+
+`--saves` (v0.4) names a Dragon's Dogma 2 save folder. The sweep decrypts each save read-only
+(`scripts/dd2_saves.py`) and collects what a person chose: the Arisen's and the pawns' names and
+nicknames, the hired pawns' creators' names, and the pawns' Rift search ids. It also collects
+the Steam account number the folder's path holds, that account's SteamID64, and the folder's own
+chain. A character's name counts even when it is a short word, which the library's words do not;
+a short name matches in its own case only, because the same letters in another case are a code
+word far more often than anyone's name. A name the repo already held as a word before it read a
+save (`BEFORE_SAVES`, 830fdf0) is set aside and counted: a hit on it could not be told from the
+repo's own text. Two of the game's record types carry a `Name` that is the game's own id; their
+strings never count (2,767 of them on the bench's eight saves).
+
+The sweep reads the live save folder, not a copy, on purpose. A copy goes stale the day a new
+pawn is hired, and a stale copy would pass a leak of exactly the newest names. The bench rule
+below (a COPY, never the real folder) guards against bench runs of the stone itself, an
+unreleased build with watchers and repeated reads. The sweep reads each slot once, whole and
+read-only, and keeps nothing open. It checks a slot the way `rift-save` does: header, signature,
+then a length no save exceeds, before it decrypts anything. A slot that does not open is read
+once more a second later, since the game may have been writing it. One that still does not
+open is counted in the output, never a traceback that stops the gate.
 
 `--nexus` names the stone's `nexus.json`, where every link keeps its mod id, file id, group id
 and sqid and every check keeps the mod's Nexus name and the newer file it found; the sweep also
@@ -185,6 +222,13 @@ its place.)*
 
 ## Running It
 
+The Muster's mock scenes: `?mock=muster`, `musternosteam`, `musternosaves`, `musternames` (the
+names missing), `musterslow` (a read that takes 2 s) and `musterwriting` (a slot the game is writing
+once). In `npm run dev`, `window.riftMock.gameSaved()` saves Slot 9 a level later, for THE
+RE-CARVING. On the bench, `RIFTSTONE_SAVE_DIR` points the stone at one save folder (a COPY of
+one, never the real folder: a bench run must not race the game), with the account read from the
+folder three levels up, or from `RIFTSTONE_SAVE_ACCOUNT`.
+
 ```sh
 npm run dev            # the window in a browser on the mock backend (?mock=empty|emptymods|nofloor|gonemods|nogame|scanning|refoff|patched|offline|fresh|firstrun|key|premium|rejected|quotalow|running|nxmother|nocreations, comma-separated)
 npm run tauri dev      # the real app (WSL bench: set RIFTSTONE_GAME_ROOT / RIFTSTONE_MODS_DIR / RIFTSTONE_DATA_HOME)
@@ -220,9 +264,10 @@ links back too: turn the switch on again after it (WINDOW-CONTRACT § v0.3 The o
 
 **Before a release**, in this order:
 1. Every gate above, on the Linux bench.
-2. The Rust gates natively on Windows: `cargo test --workspace` and `cargo clippy` (the
-   `#[cfg(windows)]` code compiles nowhere else), then `npm run tauri build` (the only build of
-   the uninstall hook).
+2. The Rust gates natively on Windows, because the `#[cfg(windows)]` code compiles nowhere else:
+   `cargo test --workspace -j 4` and `cargo clippy`, then `npm run tauri build` (the only build of
+   the uninstall hook). Keep the `-j 4`: compiling every test binary at once has run out of Windows
+   commit memory (`os error 1455`).
 3. The presses no test makes, on a Windows desktop (Known Limitations).
 4. The README frames, when the window changed what they show: shot again from the mock
    (`npm run dev`, invented names only), then each one looked at.
@@ -266,7 +311,11 @@ links back too: turn the switch on again after it (WINDOW-CONTRACT § v0.3 The o
   `riftstone.exe` and the NSIS installer with the uninstall hook (5.88 MiB), and a read-only
   bench probe of that build, on a copy of real app data, passed (BUILD-SPEC § v0.3 § The second
   native Windows run). For 0.3.1 the tests ran there again at d68df79 (864 passed, 0 failed),
-  the installer was built and the probe passed again (§ The third native Windows run).
+  the installer was built and the probe passed again (§ The third native Windows run). For 0.4.0
+  they ran there at f653d8b (913 passed, 0 failed), the installer was built, and a probe of THE
+  MUSTER on a copy of a real save folder named 80 of 80 equipped things (BUILD-SPEC § v0.4, As
+  built). For 0.4.1, after the General's review round, they ran at e24a73a (920 passed, 0
+  failed), and the installer and the probe passed again.
   `cargo clippy` is not installed on the Windows bench and has never run
   there. Still owed: `cargo clippy` natively, and every press on a Windows desktop: Play by each
   route; Open mods folder, also after deleting it while the stone runs; the nxm switch on and
@@ -275,3 +324,18 @@ links back too: turn the switch on again after it (WINDOW-CONTRACT § v0.3 The o
   (BUILD-SPEC § v0.3 § src-tauri, Open, lists each press in full).
 - No profiles yet.
 - Conflicts cover files the game addresses by path; two REFramework scripts can still clash in behaviour.
+- **The Muster (v0.4)** shows what the levels gave, not the totals the game's own sheet shows with
+  gear on: those need the game's parameter tables, a format the stone does not read yet. It shows
+  each vocation's experience, not its rank, for the same reason.
+- The Muster names augments and skills by id rules measured on one party (BUILD-SPEC § v0.4).
+  An augment or skill a later title update adds, beyond those rules, stays unnamed: the window
+  shows its number. Item names come from the game's three item text files; an item from a
+  source the stone does not read shows its number too.
+- The Muster reads English names only (the text files hold fourteen languages; language 1 is
+  English).
+- The Muster finds saves in the Steam folders Play finds the game through (the registry,
+  `RIFTSTONE_STEAM_ROOT`, the default folders). A Steam folder elsewhere that the registry does not
+  name is not found, and the bench's `RIFTSTONE_SAVE_DIR` is the way in.
+- A slot whose signature disagrees is read once more after 500 ms. If it still disagrees and
+  the file changed meanwhile, the window says the game is saving; if it did not change, the
+  window says the slot is damaged.

@@ -16,6 +16,8 @@
 //! registry seam [`protocol`]) that takes the site's Mod Manager Download
 //! links — `tauri-plugin-single-instance` is the first plugin, so a second
 //! launch hands its link to the running stone.
+//! v0.4: the Muster ([`muster`]) reads the save slots, read-only, and names their parties
+//! from the game's own text.
 //!
 //! Environment overrides, read once at startup (the WSL bench and the tests):
 //! `RIFTSTONE_DATA_HOME` (replaces the app data + cache dirs, and takes the log
@@ -34,6 +36,7 @@ pub mod fresh;
 pub mod keys;
 pub mod library;
 pub mod migrate;
+pub mod muster;
 pub mod nexus;
 pub mod nxm;
 pub mod persist;
@@ -210,5 +213,8 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         commands::deploy::discard_parked,
         commands::overview::get_settings,
         commands::overview::set_settings,
+        commands::muster::get_muster_slots,
+        commands::muster::get_muster,
+        commands::muster::open_saves_folder,
     ])
 }

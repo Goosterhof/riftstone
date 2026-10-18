@@ -12,6 +12,7 @@ The Riftstone is a Windows desktop mod manager for **Dragon's Dogma 2**. Its lib
 - Press Play and the stone starts the game (through Steam when Steam found it), and knows when it is running.
 - It asks Nexus Mods whether a newer file of each download exists. The check is anonymous and needs no account. A 2026 download name carries the file's own id, so the stone checks that exact file.
 - Filter by what Nexus calls a mod. Each linked mod's category and tags come home with that same check. Press categories in the stone (any of them) or tags (all of them), and every chip tells you how many answers it gives. The screenshots of mods Nexus flags adult, and of anything it has not labelled yet, can stay blurred until you hover. A download Nexus cannot recognise by its bytes (an unpacked folder, a repack) can be found by name, and you pick the right mod from up to five.
+- Open THE MUSTER and the stone reads your party from your own save slots, the way a Riftstone in the game shows you a pawn: the Arisen, the main pawn and the hired pawns, each with level, vocation, the experience in every vocation, the stats their levels gave, everything they wear by slot, the augments and skills set for the vocation in use, a pawn's inclination and specialization, and your gold and Rift Crystals. The names come from your own game install, read where they live. Keep the stone open while you play and it notices when the game saves, then marks what changed.
 - Give it your personal Nexus key and it shows your account, tracks and endorses mods, and downloads files straight into the mods folder: a newer version from the update list, any file of a mod, or a mod you found by browsing Nexus from the stone. A premium account downloads in the stone. A free account presses Nexus's own Mod Manager Download button, which reaches the stone once you turn on its link handler. A download lands in the mods folder; installing it stays your choice.
 
 <p>
@@ -23,6 +24,11 @@ The Riftstone is a Windows desktop mod manager for **Dragon's Dogma 2**. Its lib
   <img src="docs/images/riftstone-nothing-answers.png" width="49%" alt="A search that nothing answers: NOTHING ANSWERS “ZZQX MOONSTONE”, the query carved back in capitals, with Include menu-only and Clear search.">
 </p>
 
+<p>
+  <img src="docs/images/riftstone-muster.png" width="49%" alt="THE MUSTER on Slot 9: the slot list with a damaged slot and another account's save, the party's four tabs, and the Arisen Odalric's sheet: eight gear rows with an empty sub weapon, the gains from levels with the party's most marked, three vocations by experience, three augments and three skills.">
+  <img src="docs/images/riftstone-muster-hired.png" width="49%" alt="A hired pawn's sheet on THE MUSTER, cold where the party's own are warm: Bramble, a Sorcerer whose creator is a Lv 52 Warrior, with an inclination, no specialization, three empty gear slots and four augments.">
+</p>
+
 *Every name in these frames is invented. They were shot from the window's mock backend (`npm run dev`), never from a real library.*
 
 ## The promises
@@ -32,6 +38,7 @@ The Riftstone is a Windows desktop mod manager for **Dragon's Dogma 2**. Its lib
 - **A write-ahead journal.** Every install records what it means to do before the first byte moves. If one is cut short by a crash or a power cut, it is rolled back at the next launch.
 - **Nexus is optional.** Searching, installing, update checks, labels and browsing Nexus work without an account. Only the key's extras need one: your account, downloads, tracking and endorsing. A personal API key lives in Windows Credential Manager and never in a file; the stone never shows it, logs it or sends it anywhere but Nexus.
 - **The link handler gives back what it took.** It is off until you turn it on. Turning it on remembers what answered Nexus's Mod Manager Download button before; turning it off puts that back, and the stone touches nothing it did not write. If that memory cannot be read, the stone changes nothing and says so rather than guess.
+- **Your saves are only read.** The stone reads a save slot into memory to show its party, and that is all: it never writes, renames, copies or sends a save, and keeps no decrypted copy anywhere. The names of what your party carries come from your own game's files, read in place.
 - **Uninstalling the stone leaves your mods.** The uninstaller removes only the files it installed. Before it removes any, it asks the stone to give the Mod Manager Download links back, just as turning the handler off would; where the stone cannot put them back, it removes the nxm entry it had claimed, so Windows never sends a link to a program that is gone. Installing a newer version uninstalls the old one first by default, so turn the handler on again after an upgrade. The uninstaller's *Delete the application data* box, unticked unless you tick it, also removes the stone's journal and backups, so uninstall your mods from the stone before you tick it.
 
 ## Development
@@ -47,4 +54,4 @@ The lab journal is in [`CLAUDE.md`](CLAUDE.md): architecture contract, crate map
 
 The git log and the journals are the laboratory's working diary, kept as they were written. In them, "the investor" is the player the stone was built for. Everyone else named there (the main session, its lenses and fixers, the Chaos Monkey, the Artisan, the Illusionist) is an AI agent that built or reviewed it.
 
-Part of the [Zmuuzn laboratory](https://github.com/Goosterhof/zmuuzn). Not affiliated with Capcom, Nexus Mods or the authors of REFramework. Dragon's Dogma 2 is Capcom's; the stone only reads and places your own downloads in your own game folder.
+Part of the [Zmuuzn laboratory](https://github.com/Goosterhof/zmuuzn). Not affiliated with Capcom, Nexus Mods or the authors of REFramework. Dragon's Dogma 2 is Capcom's; the stone only reads and places your own downloads in your own game folder, and reads your own saves and your own copy of the game's text. Nothing of the game's ships with the stone.

@@ -144,3 +144,34 @@ mark.rs-hit {
 .is-veiled:focus-within .rs-thumb::after {
   display: none;
 }
+
+/* v0.4 — THE MUSTER (#00015 §17). A section head of a member sheet (§7.8). */
+.msec {
+  margin: 0 0 var(--rs-space-2);
+  color: var(--rs-muted);
+  font-size: 14px;
+  letter-spacing: 0.1em;
+}
+
+/* THE RE-CARVING (R17.25 step 3): a changed value paints its first frame in
+ * the member's temperature (--temp: gold warm, cyan cold) and eases to its own
+ * rest colour; colour only, no movement, no glow. Under reduced motion the
+ * light is never set and the floor clamps the transition: the value lands at
+ * rest, its mark (R17.25 step 4) already carved. */
+.rc {
+  transition: color var(--rs-dur-answer) var(--rs-ease-answer);
+}
+.rc.is-lit {
+  color: var(--temp);
+  transition: none;
+}
+.rc-mark {
+  /* A gap of its own: Vue drops a template's newline whitespace between two elements, so the
+   * mark never leans on the value before it. */
+  margin-left: 0.3em;
+  color: var(--temp);
+  font-family: var(--rs-font-mono);
+  font-size: var(--rs-text-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
