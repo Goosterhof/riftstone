@@ -297,7 +297,10 @@ links back too: turn the switch on again after it (WINDOW-CONTRACT § v0.3 The o
   `riftstone.exe` and the NSIS installer with the uninstall hook (5.88 MiB), and a read-only
   bench probe of that build, on a copy of real app data, passed (BUILD-SPEC § v0.3 § The second
   native Windows run). For 0.3.1 the tests ran there again at d68df79 (864 passed, 0 failed),
-  the installer was built and the probe passed again (§ The third native Windows run).
+  the installer was built and the probe passed again (§ The third native Windows run). For 0.4.0
+  they ran there at f653d8b (913 passed, 0 failed), the installer was built, and a probe of THE
+  MUSTER on a copy of a real save folder named 80 of 80 equipped things (BUILD-SPEC § v0.4, As
+  built).
   `cargo clippy` is not installed on the Windows bench and has never run
   there. Still owed: `cargo clippy` natively, and every press on a Windows desktop: Play by each
   route; Open mods folder, also after deleting it while the stone runs; the nxm switch on and

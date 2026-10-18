@@ -2359,6 +2359,18 @@ The mock gets `?mock=muster…` scenes with an invented party.
   set aside and counted, since its hits cannot be told from the code's own words. One test
   account number in `rift-save` read as a mod id across a digit separator, so it was changed.
   Then the sweep read 0 hits over the tree, history and messages, in 2 m 46 s.
+- **The first native Windows run of v0.4** (2026-10-18, at `f653d8b`, MSVC, Rust 1.98.0). The
+  workspace's tests ran with `RUSTFLAGS=-D warnings`: 913 passed, 0 failed, 11 benches ignored.
+  v0.4 added 49 tests on each platform (Linux 878 → 927, Windows 864 → 913), so every new test
+  ran on both. On Windows' own file notifications that includes
+  `the_window_hears_when_the_game_saves_and_reads_the_new_slot` and
+  `reading_the_muster_writes_nothing_to_the_save_folder`. `npm run tauri build` built
+  `riftstone.exe` and `The Riftstone_0.4.0_x64-setup.exe` (6.06 MiB). A read-only probe ran the
+  built exe on a fresh bench data home, with `RIFTSTONE_SAVE_DIR` on a COPY of the investor's
+  save folder, removed afterwards. It found 5 slots, all readable, listed in 272 ms. The newest
+  slot held 4 members, and 80 of 80 equipped things were named from the game's own pak. Key 5
+  drew THE MUSTER with 4 member tabs, with 0 page exceptions and 0 console errors. It printed
+  counts only.
 
 ### Ownership in the build
 
