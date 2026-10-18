@@ -1,4 +1,4 @@
-//! The deploy engine: plan, install, uninstall, reorder, adopt, recover.
+//! The deploy engine: plan, install, uninstall, reorder, re-key, recover.
 //!
 //! ## How an install moves bytes
 //!
@@ -6,8 +6,7 @@
 //!    `pak_mods/`), passes the [`guard`], takes the spelling already on disk,
 //!    and learns what sits there now: nothing; another install's file (only
 //!    while the bytes there are still that install's, by size and
-//!    fingerprint); a Fluffy file; a file nobody owns. Its temporary name
-//!    must be free.
+//!    fingerprint); a file no install owns. Its temporary name must be free.
 //! 2. Write-ahead: the journal is saved with an [`Intent`] whose steps name
 //!    every path, every backup slot and every folder the install creates.
 //! 3. The package extracts every file to `<target>.riftstone-part` in one
@@ -47,20 +46,20 @@
 //! record; a superseded backup is deleted only when it really holds the bytes
 //! the uninstalled layer recorded.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use rift_core::dd2::{self, PAK_MODS_DIR};
+use rift_core::error::RiftResult;
 use rift_core::path::{file_name, parent};
 use rift_core::{
     lower_key, normalize_entry_path, DeployTarget, ExtractItem, ExtractProgress, ModOption,
     OptionId, Package, PackageSource, PayloadFile, RiftError,
 };
 
-use crate::fluffy::{FluffyLedger, FluffyMod};
 use crate::fsops::{
     self, join_rel, with_suffix, CaseResolver, PART_SUFFIX, REORDER_MARK, TRASH_MARK,
 };
@@ -72,9 +71,8 @@ use crate::journal::{
 };
 use crate::paks;
 use crate::plan::{
-    AdoptReport, InstallPlan, InstallReport, OwnerKind, ParkedRestoreReport, PlanWarning,
-    PlannedRemoval, PlannedWrite, RecoveryReport, RemovalAction, UninstallPlan, UninstallReport,
-    WriteAction,
+    InstallPlan, InstallReport, OwnerKind, ParkedRestoreReport, PlanWarning, PlannedRemoval,
+    PlannedWrite, RecoveryReport, RemovalAction, UninstallPlan, UninstallReport, WriteAction,
 };
 use crate::reframework::RefStatus;
 use crate::stack::{LayerRef, PathIndex};
@@ -86,8 +84,6 @@ pub struct DeployContext<'a> {
     /// The app data dir: the journal and `backups/` live here.
     pub state_dir: &'a Path,
     pub ref_status: &'a RefStatus,
-    /// Fluffy's ledger, when Fluffy was found.
-    pub fluffy: Option<&'a FluffyLedger>,
     /// Is DD2.exe running? ([`is_game_running`])
     pub game_running: bool,
 }
@@ -383,7 +379,6 @@ fn prepare_install(
     let root = &ctx.game.root;
     let index = PathIndex::build(journal);
     let mut resolver = CaseResolver::new(root);
-    let fluffy_paths = fluffy_paths(ctx.fluffy, journal);
     let payload = dedupe_payload(&option.payload);
 
     let has_paks = payload
@@ -458,14 +453,14 @@ fn prepare_install(
             // a break in the stack. The bytes there belong to whoever wrote
             // them — never to that layer, whose uninstall would otherwise
             // hand them down into the bin.
-            Some(_) if present => foreign_below(fluffy_paths.get(&key), store),
+            Some(_) if present => unowned_below(store),
             Some(top) => (
                 WriteAction::Create,
                 top.file(journal).below.clone(),
                 None,
                 Some(top),
             ),
-            None if present => foreign_below(fluffy_paths.get(&key), store),
+            None if present => unowned_below(store),
             None => (WriteAction::Create, Below::Nothing, None, None),
         };
         if reinstall.is_some() && kind == DeployKind::Pak {
@@ -522,36 +517,18 @@ fn prepare_install(
     PreparedInstall { plan, files, dirs }
 }
 
-/// A file that belongs to no install sits at a target: Fluffy's (per its
-/// ledger) or nobody's. Either way it is backed up under that owner.
-fn foreign_below(
-    fluffy_section: Option<&String>,
-    store: String,
-) -> (WriteAction, Below, Option<String>, Option<LayerRef>) {
-    match fluffy_section {
-        Some(section) => (
-            WriteAction::OverwriteFluffy {
-                section: section.clone(),
-            },
-            Below::Backup {
-                store: store.clone(),
-                owner: BelowOwner::Fluffy {
-                    section: section.clone(),
-                },
-            },
-            Some(store),
-            None,
-        ),
-        None => (
-            WriteAction::OverwriteUnowned,
-            Below::Backup {
-                store: store.clone(),
-                owner: BelowOwner::Unowned,
-            },
-            Some(store),
-            None,
-        ),
-    }
+/// A file no install owns sits at a target: it is backed up as "the file
+/// that was there before", and comes back when this install leaves.
+fn unowned_below(store: String) -> (WriteAction, Below, Option<String>, Option<LayerRef>) {
+    (
+        WriteAction::OverwriteUnowned,
+        Below::Backup {
+            store: store.clone(),
+            owner: BelowOwner::Unowned,
+        },
+        Some(store),
+        None,
+    )
 }
 
 /// The refusal for a temporary name that is already taken.
@@ -645,21 +622,6 @@ fn next_pak_number(
     next
 }
 
-/// Game paths (lower-cased) of Fluffy's un-adopted installs → their section.
-/// A path two Fluffy mods list belongs to the later one (Fluffy overwrote).
-fn fluffy_paths(fluffy: Option<&FluffyLedger>, journal: &Journal) -> HashMap<String, String> {
-    let mut paths = HashMap::new();
-    if let Some(ledger) = fluffy {
-        let adopted = journal.adopted_sections();
-        for fluffy_mod in ledger.unadopted(&adopted) {
-            for file in &fluffy_mod.files {
-                paths.insert(lower_key(file), fluffy_mod.section.clone());
-            }
-        }
-    }
-    paths
-}
-
 fn install_warnings(
     ctx: &DeployContext,
     journal: &Journal,
@@ -696,7 +658,7 @@ fn install_warnings(
             if name.is_empty() || !seen.insert(name_key(name)) {
                 continue;
             }
-            if !requirement_installed(ctx, journal, &option.id, name) {
+            if !requirement_installed(ctx.ref_status, journal, &option.id, name) {
                 warnings.push(PlanWarning::RequiresMissing {
                     name: name.to_string(),
                 });
@@ -706,11 +668,10 @@ fn install_warnings(
     let mut names: Vec<String> = Vec::new();
     let mut paths = 0usize;
     for write in writes {
-        let name = match &write.action {
-            WriteAction::OverwriteRiftstone { option_name, .. } => option_name.clone(),
-            WriteAction::OverwriteFluffy { section } => fluffy_name(ctx.fluffy, section),
-            _ => continue,
+        let WriteAction::OverwriteRiftstone { option_name, .. } = &write.action else {
+            continue;
         };
+        let name = option_name.clone();
         paths += 1;
         if !names.contains(&name) {
             names.push(name);
@@ -741,35 +702,24 @@ fn name_key(name: &str) -> String {
         .collect()
 }
 
+/// Is a `requires=` name met: REFramework itself, or any other install in
+/// the journal (an adopted one too) by its name — or, for an adopted
+/// install, by the label it was taken over under?
 fn requirement_installed(
-    ctx: &DeployContext,
+    ref_status: &RefStatus,
     journal: &Journal,
     self_id: &OptionId,
     name: &str,
 ) -> bool {
     let wanted = name_key(name);
-    if wanted == "reframework" && ctx.ref_status.installed {
+    if wanted == "reframework" && ref_status.installed {
         return true;
     }
-    if journal
-        .installs
-        .iter()
-        .any(|i| &i.option_id != self_id && name_key(&i.name) == wanted)
-    {
-        return true;
-    }
-    let adopted = journal.adopted_sections();
-    ctx.fluffy.is_some_and(|ledger| {
-        ledger
-            .unadopted(&adopted)
-            .any(|m| name_key(&m.name) == wanted || name_key(&m.section) == wanted)
+    journal.installs.iter().any(|i| {
+        &i.option_id != self_id
+            && (name_key(&i.name) == wanted
+                || matches!(&i.origin, Origin::Adopted { label } if name_key(label) == wanted))
     })
-}
-
-fn fluffy_name(fluffy: Option<&FluffyLedger>, section: &str) -> String {
-    fluffy
-        .and_then(|ledger| ledger.mods.iter().find(|m| m.section == section))
-        .map_or_else(|| section.to_string(), |m| m.name.clone())
 }
 
 /// Steps 3 and 4 of an install: one extraction pass into the temporary
@@ -1058,8 +1008,9 @@ fn prepare_uninstall(
     for (file_index, file) in installed.files.iter().enumerate() {
         let key = lower_key(&file.game_path);
         if !seen.insert(key.clone()) {
-            // An older journal may list one path twice for one install (two
-            // spellings in Fluffy's ledger): the first entry speaks for it.
+            // An older journal may list one path twice for one install (an
+            // adopted install recorded it in two spellings): the first entry
+            // speaks for it.
             continue;
         }
         if let Some(above) = index.above(journal, &key, option_id) {
@@ -1127,7 +1078,7 @@ fn prepare_uninstall(
                 (RemovalAction::KeepChanged, removal)
             }
             Below::Backup { store, owner } if fsops::is_file(&join_rel(ctx.state_dir, store)) => {
-                let (label, kind) = owner_label(journal, ctx.fluffy, owner);
+                let (label, kind) = owner_label(journal, owner);
                 (
                     RemovalAction::RestoreBackup {
                         owner: label,
@@ -1188,24 +1139,19 @@ fn parked_above(journal: &Journal, key: &str, option_id: &OptionId) -> Option<us
     })
 }
 
-/// A backup owner as the window names it.
-pub(crate) fn owner_label(
-    journal: &Journal,
-    fluffy: Option<&FluffyLedger>,
-    owner: &BelowOwner,
-) -> (String, OwnerKind) {
+/// A backup owner as the window names it: "the file that was there
+/// before", or the owning install's name (adopted, or the Riftstone's own).
+pub(crate) fn owner_label(journal: &Journal, owner: &BelowOwner) -> (String, OwnerKind) {
     match owner {
         BelowOwner::Unowned => (
             "the file that was there before".to_string(),
             OwnerKind::Unowned,
         ),
-        BelowOwner::Fluffy { section } => (fluffy_name(fluffy, section), OwnerKind::Fluffy),
-        BelowOwner::Riftstone { option_id } => (
-            journal
-                .find(option_id)
-                .map_or_else(|| option_id.to_string(), |i| i.name.clone()),
-            OwnerKind::Riftstone,
-        ),
+        BelowOwner::Riftstone { option_id } => match journal.find(option_id) {
+            Some(install) if install.is_adopted() => (install.name.clone(), OwnerKind::Adopted),
+            Some(install) => (install.name.clone(), OwnerKind::Riftstone),
+            None => (option_id.to_string(), OwnerKind::Riftstone),
+        },
     }
 }
 
@@ -1499,11 +1445,11 @@ fn prune_restored_slots(ctx: &DeployContext, steps: &[IntentStep]) {
 /// simply takes it back. A file nobody owns at the path — usually the change
 /// that made the Riftstone keep it — swaps with it: that file is kept aside
 /// in its turn, so nothing is lost and the swap can be reversed the same way.
-/// Refused while an install or an un-adopted Fluffy mod owns the file at the
-/// path: uninstall that first. A running game does not stop it — the file
-/// loads at the next launch (`restart_needed`); one the game holds open fails
-/// to move, and the swap is rolled back. One journaled intent, rolled back on
-/// failure.
+/// Refused while an install in the journal (an adopted one too) owns the
+/// file at the path: uninstall that first. A running game does not stop it —
+/// the file loads at the next launch (`restart_needed`); one the game holds
+/// open fails to move, and the swap is rolled back. One journaled intent,
+/// rolled back on failure.
 pub fn restore_parked(
     ctx: &DeployContext,
     journal: &mut Journal,
@@ -1544,12 +1490,6 @@ pub fn restore_parked(
                     top.install(journal).name
                 )));
             }
-        }
-        if let Some(section) = fluffy_paths(ctx.fluffy, journal).get(&key) {
-            return Err(RiftError::refused(format!(
-                "The file at {game_path} belongs to Fluffy's \"{}\", and the Riftstone never moves a Fluffy file it has not adopted. Adopt it, or remove it in Fluffy, first.",
-                fluffy_name(ctx.fluffy, section)
-            )));
         }
     }
 
@@ -1874,218 +1814,39 @@ pub fn reorder_paks(
 }
 
 // ---------------------------------------------------------------------------
-// Fluffy adoption
+// Re-keying installs (v0.3: folder ids follow the name; the relink pass)
 // ---------------------------------------------------------------------------
 
-/// Take Fluffy's installs into the journal (RS-5), so the Riftstone can
-/// uninstall them and order their paks. Nothing on disk moves and
-/// `installed.ini` is never written. `match_option` names the library
-/// option a Fluffy mod is (`None`: it is adopted under its Fluffy name).
-/// When the journal cannot be saved, nothing is adopted — in memory either.
-pub fn adopt_fluffy(
+/// Give installs new option ids ([`Journal::rekey`]) and save the journal
+/// once, atomically. A refusal or a failed save changes nothing, on disk or
+/// in memory; a map that changes nothing saves nothing. Nothing in the game
+/// folder moves. Returns how many installs took a new id.
+pub fn rekey(
     ctx: &DeployContext,
     journal: &mut Journal,
-    ledger: &FluffyLedger,
-    match_option: &dyn Fn(&FluffyMod) -> Option<(OptionId, String)>,
-) -> Result<AdoptReport, RiftError> {
+    map: &BTreeMap<OptionId, OptionId>,
+) -> RiftResult<usize> {
+    rekey_with_files(ctx, journal, map, &BTreeMap::new())
+}
+
+/// [`rekey`], and each re-keyed install whose NEW id is in `package_files`
+/// takes that file name as its `package_file` ([`Journal::rekey_with_files`]).
+pub fn rekey_with_files(
+    ctx: &DeployContext,
+    journal: &mut Journal,
+    map: &BTreeMap<OptionId, OptionId>,
+    package_files: &BTreeMap<OptionId, String>,
+) -> RiftResult<usize> {
     if let Some(reason) = common_refusal(ctx, journal) {
         return Err(RiftError::refused(reason));
     }
-    let root = &ctx.game.root;
-    let adopted = journal.adopted_sections();
-    let candidates: Vec<&FluffyMod> = ledger.unadopted(&adopted).collect();
-    let mut report = AdoptReport {
-        already_adopted: ledger.mods.len() - candidates.len(),
-        ..AdoptReport::default()
-    };
-    // A path two Fluffy mods list holds the later one's bytes.
-    let mut last_lister: HashMap<String, usize> = HashMap::new();
-    for (n, fluffy_mod) in candidates.iter().enumerate() {
-        for file in &fluffy_mod.files {
-            last_lister.insert(lower_key(file), n);
-        }
-    }
-    let index = PathIndex::build(journal);
-    let mut resolver = CaseResolver::new(root);
-    let mut used_ids: HashSet<OptionId> = journal
-        .installs
-        .iter()
-        .map(|i| i.option_id.clone())
-        .collect();
-    let mut new_installs: Vec<InstalledOption> = Vec::new();
-    let mut relinks: Vec<(LayerRef, OptionId)> = Vec::new();
-    let mut seq = allocate_seq(journal, ctx.state_dir);
-
-    for (n, fluffy_mod) in candidates.iter().enumerate() {
-        let (option_id, name) = match match_option(fluffy_mod) {
-            Some((id, name)) if !used_ids.contains(&id) => (id, name),
-            _ => {
-                report.unmatched.push(fluffy_mod.section.clone());
-                let mut id = OptionId(format!("fluffy#{}", fluffy_mod.section));
-                let mut k = 2;
-                while used_ids.contains(&id) {
-                    id = OptionId(format!("fluffy#{}#{k}", fluffy_mod.section));
-                    k += 1;
-                }
-                (id, fluffy_mod.name.clone())
-            }
-        };
-        let mut files = Vec::new();
-        let mut file_relinks = Vec::new();
-        // One file, however many spellings the ledger lists it under.
-        let mut listed = HashSet::new();
-        for listed_path in &fluffy_mod.files {
-            let key = lower_key(listed_path);
-            if !listed.insert(key.clone()) {
-                continue;
-            }
-            if last_lister.get(&key) != Some(&n) {
-                report.shared_files += 1;
-                continue;
-            }
-            let Ok(normalized) = guard::check_game_path(listed_path) else {
-                report.refused_files += 1;
-                continue;
-            };
-            let game_path = resolver.resolve(&normalized);
-            let below = adopted_below(&normalized);
-            let kind = adopted_kind(&normalized);
-            // A Riftstone install sits on this Fluffy file: its bytes are in
-            // that install's backup slot, and the adopted layer goes beneath.
-            if let Some(layer) = index.above_fluffy(journal, &key, &fluffy_mod.section) {
-                let Below::Backup { store, .. } = &layer.file(journal).below else {
-                    continue;
-                };
-                let slot = join_rel(ctx.state_dir, store);
-                let Some(size) = fsops::file_len(&slot) else {
-                    report.missing_files += 1;
-                    continue;
-                };
-                files.push(DeployedFile {
-                    game_path,
-                    kind,
-                    size,
-                    entry: None,
-                    below,
-                    fingerprint: fsops::fingerprint(&slot).ok(),
-                });
-                file_relinks.push(layer);
-                continue;
-            }
-            if index.claimed(&key) {
-                report.shared_files += 1;
-                continue;
-            }
-            let path = join_rel(root, &game_path);
-            let Some(size) = fsops::file_len(&path) else {
-                report.missing_files += 1;
-                continue;
-            };
-            files.push(DeployedFile {
-                game_path,
-                kind,
-                size,
-                entry: None,
-                below,
-                fingerprint: fsops::fingerprint(&path).ok(),
-            });
-        }
-        if files.is_empty() {
-            continue;
-        }
-        while journal.installs.iter().any(|i| i.seq == seq)
-            || ctx.state_dir.join("backups").join(seq.to_string()).exists()
-        {
-            seq += 1;
-        }
-        relinks.extend(
-            file_relinks
-                .into_iter()
-                .map(|layer| (layer, option_id.clone())),
-        );
-        used_ids.insert(option_id.clone());
-        report.adopted += 1;
-        report.adopted_ids.push(option_id.clone());
-        new_installs.push(InstalledOption {
-            seq,
-            option_id: option_id.clone(),
-            name,
-            package_file: String::new(),
-            package_path: std::path::PathBuf::new(),
-            package_size: 0,
-            option_root: option_id.root().to_string(),
-            version: None,
-            installed_at: now(),
-            game_build: ctx.game.build_id.clone(),
-            origin: Origin::AdoptedFromFluffy {
-                section: fluffy_mod.section.clone(),
-            },
-            files,
-        });
-        seq += 1;
-    }
-
-    if new_installs.is_empty() {
-        return Ok(report);
-    }
     let mut committed = journal.clone();
-    for (layer, option_id) in relinks {
-        if let Below::Backup { owner, .. } =
-            &mut committed.installs[layer.install].files[layer.file].below
-        {
-            *owner = BelowOwner::Riftstone { option_id };
-        }
+    let rekeyed = committed.rekey_with_files(map, package_files)?;
+    if committed != *journal {
+        committed.save(ctx.state_dir)?;
+        *journal = committed;
     }
-    committed.next_seq = committed.next_seq.max(seq);
-    committed.installs.extend(new_installs);
-    // The pak order is the order the names load in: adopted Fluffy paks
-    // (x0000-…) sort before every zrift- name.
-    let mut order: Vec<OptionId> = committed.pak_order.clone();
-    for install in &committed.installs {
-        if install.has_paks() && !order.contains(&install.option_id) {
-            order.push(install.option_id.clone());
-        }
-    }
-    let first_pak = |id: &OptionId| {
-        committed
-            .find(id)
-            .and_then(|i| {
-                i.pak_files()
-                    .map(|f| paks::ntfs_order_key(file_name(&f.game_path)))
-                    .min()
-            })
-            .unwrap_or_default()
-    };
-    order.sort_by_cached_key(first_pak);
-    committed.pak_order = order;
-    committed.save(ctx.state_dir)?;
-    *journal = committed;
-    Ok(report)
-}
-
-/// What sat below a file Fluffy deployed: nothing, for the places mods live
-/// and REFramework itself; unknown — possibly a game file — elsewhere in
-/// the game root.
-fn adopted_below(normalized: &str) -> Below {
-    let lower = lower_key(normalized);
-    let first = lower.split('/').next().unwrap_or_default();
-    if matches!(first, "natives" | "reframework" | PAK_MODS_DIR)
-        || lower == crate::reframework::REFRAMEWORK_DLL
-    {
-        Below::Nothing
-    } else {
-        Below::UnknownVanilla
-    }
-}
-
-fn adopted_kind(normalized: &str) -> DeployKind {
-    let lower = lower_key(normalized);
-    match lower.split('/').next().unwrap_or_default() {
-        PAK_MODS_DIR => DeployKind::Pak,
-        "natives" => DeployKind::Loose,
-        "reframework" => DeployKind::Reframework,
-        _ => DeployKind::Root,
-    }
+    Ok(rekeyed)
 }
 
 // ---------------------------------------------------------------------------
@@ -2612,12 +2373,21 @@ fn undo_reorder(root: &Path, steps: &[&IntentStep], phase: u8, outcome: &mut Und
 /// and superseded backups), and the folders the Riftstone created that this
 /// empties — never a folder it did not create. Failures stay listed for the
 /// next try.
+///
+/// The journal is saved only when this changed it. A leftover that cannot go
+/// yet changes nothing, and saving anyway would rewrite the journal at every
+/// launch for nothing: one an older build wrote, lifted in memory, would come
+/// back as schema 2 although nothing happened (WINDOW-CONTRACT § v0.3 Legacy
+/// data: schema 2 is saved at the next write, never at load). Every caller
+/// saved its own changes before calling this.
 fn process_cleanup(ctx: &DeployContext, journal: &mut Journal) {
     if journal.cleanup.is_empty() {
         return;
     }
     let root = &ctx.game.root;
     let backups = ctx.state_dir.join("backups");
+    let listed = journal.cleanup.len();
+    let created_before = journal.created_dirs.clone();
     let mut remaining = Vec::new();
     for item in std::mem::take(&mut journal.cleanup) {
         let path = match &item {
@@ -2643,7 +2413,13 @@ fn process_cleanup(ctx: &DeployContext, journal: &mut Journal) {
             }
         }
     }
+    // `remaining` keeps entries of the list in their order, and pruning only
+    // takes folders out of `created_dirs`: equal lengths and equal folders
+    // mean nothing changed.
     journal.cleanup = remaining;
+    if journal.cleanup.len() == listed && journal.created_dirs == created_before {
+        return;
+    }
     if let Err(err) = journal.save(ctx.state_dir) {
         log::warn!("could not save the journal after cleaning up: {err}");
     }

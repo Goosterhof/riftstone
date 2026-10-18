@@ -1,6 +1,13 @@
 //! Nexus Mods: the update rows, the check, MD5 identification, Find on Nexus
-//! by name (v0.2), links, the optional API key and its quota, and the labels
-//! (v0.2) the window filters by.
+//! by name (v0.2), links, the optional API key, its account (v0.3) and its
+//! quota, and the labels (v0.2) the window filters by. The key's other
+//! extras live beside this module: tracking and endorsing in
+//! [`super::standings`], downloads in [`super::downloads`], the nxm handler
+//! in [`super::nxm`]; browsing and a mod's files (anonymous) in
+//! [`super::browse`].
+//!
+//! The update check is anonymous (v2): it never waits on the key, its
+//! validation or its v1 quota, and none of those waits on it.
 //!
 //! Every network call here runs on a blocking thread (the commands' blocking
 //! pool or the wake-up thread): rift-nexus's client is `reqwest::blocking`,
@@ -17,10 +24,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rift_core::{LinkSource, NexusLink, Package, PackageFormat, PackageId, RiftError};
 use rift_nexus::{ModFilesReport, NexusMod};
 
+use crate::account;
 use crate::commands::{blocking, not_found, Spine};
 use crate::dto::{
-    self, LabelFacets, Md5Result, NexusCandidate, NexusFindings, NexusQuota, NexusSummary,
-    UpdateRow, UpdateStateView, UpdatesPhase, UpdatesProgressEvent, UpdatesView,
+    self, LabelFacets, Md5Result, NexusCandidate, NexusFindings, NexusKeyStanding, NexusQuota,
+    NexusSummary, UpdateRow, UpdateStateView, UpdatesPhase, UpdatesProgressEvent, UpdatesView,
 };
 use crate::events;
 use crate::library::Shelf;
@@ -38,11 +46,26 @@ fn rows(store: &NexusStore, shelf: &Shelf) -> Vec<UpdateRow> {
         .collect()
 }
 
+/// The Nexus side of the overview, with the stored key's standing and (once
+/// validated) its account ([`crate::account`]).
 pub fn summary(state: &AppState, shelf: &Shelf) -> NexusSummary {
-    let store = lock(&state.nexus);
-    let rows = rows(&store, shelf);
+    let (last_check_ms, rows) = {
+        let store = lock(&state.nexus);
+        (store.last_check_ms, rows(&store, shelf))
+    };
+    let has_api_key = state.has_api_key.load(Ordering::SeqCst);
+    let (key, account) = if has_api_key {
+        let word = lock(&state.account);
+        match word.standing {
+            // A key is stored: whatever the word, it is never "none".
+            NexusKeyStanding::None => (NexusKeyStanding::Unchecked, None),
+            standing => (standing, word.view()),
+        }
+    } else {
+        (NexusKeyStanding::None, None)
+    };
     NexusSummary {
-        last_check_ms: store.last_check_ms,
+        last_check_ms,
         checking: state.nexus_checking.load(Ordering::SeqCst),
         linked: rows.iter().filter(|r| r.link.is_some()).count(),
         unlinked: rows.iter().filter(|r| r.link.is_none()).count(),
@@ -50,7 +73,9 @@ pub fn summary(state: &AppState, shelf: &Shelf) -> NexusSummary {
             .iter()
             .filter(|r| matches!(r.state, UpdateStateView::UpdateAvailable { .. }))
             .count(),
-        has_api_key: state.has_api_key.load(Ordering::SeqCst),
+        has_api_key,
+        key,
+        account,
     }
 }
 
@@ -369,10 +394,9 @@ pub fn link_package_impl(
     let package = shelf
         .package(&PackageId(package_id.to_string()))
         .ok_or_else(|| not_found(package_id))?;
-    let (mod_id, file_id) =
-        rift_nexus::parse_mod_url(url_or_id).ok_or_else(|| RiftError::Nexus {
-            detail: "it is neither a nexusmods.com/dragonsdogma2 mod page nor a mod id".into(),
-        })?;
+    let (mod_id, file_id) = rift_nexus::parse_mod_url(url_or_id).ok_or_else(|| {
+        RiftError::nexus("it is neither a nexusmods.com/dragonsdogma2 mod page nor a mod id")
+    })?;
     let row = {
         let mut store = lock(&state.nexus);
         store.set_link(
@@ -418,26 +442,42 @@ pub fn get_labels_impl(state: &AppState) -> LabelFacets {
     LabelFacets::from(&state.shelf().label_facets())
 }
 
-/// Set (validated against v1 `users/validate.json` first) or clear the
-/// personal API key. The key goes to the credential store and the client;
-/// nowhere else.
+/// Set (validated against v1 `users/validate.json` first, which spends no
+/// quota) or clear the personal API key. The key goes to the credential
+/// store and the client, nowhere else; the account it validated stays with
+/// the summary (`key: "connected"`), and the old key's standings are
+/// forgotten. A key Nexus refuses is not stored.
 pub fn set_nexus_key_impl(state: &AppState, key: Option<&str>) -> Result<NexusSummary, RiftError> {
     let key = key.map(str::trim).filter(|k| !k.is_empty());
     let base = read(&state.nexus_client).clone();
-    match key {
+    let changed = match key {
         Some(key) => {
             let keyed = base.with_api_key(Some(key.to_string()));
-            keyed.validate_key().map_err(nexus_error)?;
+            let account = keyed.validate_key().map_err(nexus_error)?;
             state.keys.store(key)?;
             *write(&state.nexus_client) = keyed;
             state.has_api_key.store(true, Ordering::SeqCst);
+            account::key_changed(state, Some(account))
         }
         None => {
             state.keys.forget()?;
             *write(&state.nexus_client) = base.with_api_key(None);
             state.has_api_key.store(false, Ordering::SeqCst);
+            account::key_changed(state, None)
         }
+    };
+    if changed {
+        state.events.changed(events::UPDATES_CHANGED);
     }
+    Ok(summary(state, &state.shelf()))
+}
+
+/// Validate the stored key again (`/v1/users/validate.json`, no quota
+/// spent). A key Nexus refuses comes back as `key: "rejected"`, not as an
+/// error; Nexus out of reach is a `nexus` error with reason `offline`, and
+/// the key reads `unchecked`. Without a key nothing is asked.
+pub fn refresh_nexus_account_impl(state: &AppState) -> Result<NexusSummary, RiftError> {
+    account::validate(state)?;
     Ok(summary(state, &state.shelf()))
 }
 
@@ -513,6 +553,11 @@ pub async fn set_nexus_key(
 }
 
 #[tauri::command]
+pub async fn refresh_nexus_account(state: Spine<'_>) -> Result<NexusSummary, RiftError> {
+    blocking(&state, |state| refresh_nexus_account_impl(state)).await
+}
+
+#[tauri::command]
 pub async fn get_nexus_quota(state: Spine<'_>) -> Result<Option<NexusQuota>, RiftError> {
     blocking(&state, |state| Ok(get_nexus_quota_impl(state))).await
 }
@@ -550,7 +595,6 @@ mod tests {
     fn package(display_name: &str, options: Vec<ModOption>) -> Package {
         Package {
             id: PackageId("00000000000000aa".into()),
-            root_id: "fluffy".into(),
             path: PathBuf::from(format!("/mods/{display_name}")),
             file_name: display_name.into(),
             display_name: display_name.into(),
@@ -659,7 +703,7 @@ mod tests {
         let silent = package("DD2 v1.2", vec![option("DD2 v1.2", None)]);
         assert_eq!(find_plan(&silent), (String::new(), None));
         assert_eq!(find_plan(&package("1.0", vec![])), (String::new(), None));
-        let silent_bundle = package("DD2 v1.2", vec![option("v3", Some("FMM"))]);
+        let silent_bundle = package("DD2 v1.2", vec![option("v3", Some("(v4)"))]);
         assert_eq!(find_plan(&silent_bundle), (String::new(), None));
     }
 

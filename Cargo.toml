@@ -9,16 +9,17 @@
 #   rift-archive  reads a package: zip / 7z / rar / plain folder
 #   rift-pak      reads an RE Engine .pak table of contents; murmur3 path hashes
 #   rift-catalog  modinfo.ini, option discovery, the addon tree, search, conflicts
-#   rift-deploy   the game install, preflight, the Fluffy ledger, install/uninstall
-#   rift-nexus    Nexus Mods: filename links, md5 lookup, update checks
-#   src-tauri     the window: state, commands, events
+#   rift-deploy   the game install, preflight, Play's plan, the journal, install/uninstall
+#   rift-nexus    Nexus Mods: links, md5 lookup, update checks, browse; with a key the
+#                 account, downloads, tracking and endorsing; nxm links
+#   src-tauri     the window's spine: state, commands, events, downloads, Play
 
 [workspace]
 resolver = "2"
 members = ["crates/*", "src-tauri"]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.1"
 edition = "2021"
 authors = ["Gerard Oosterhof <gerard@script.nl>"]
 rust-version = "1.85"
@@ -36,7 +37,6 @@ serde_json = "1"
 thiserror = "2"
 log = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
-dirs = "7"
 encoding_rs = "0.8"
 base64 = "0.23"
 md-5 = "0.11"

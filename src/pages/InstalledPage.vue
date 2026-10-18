@@ -1,14 +1,16 @@
 <script setup lang="ts">
 // §8.4 — YOUR WORLD, the whole right of the stone warm. The load order (480)
 // beside everything else (552): loose/script/root installs, who overrides
-// whom, REFramework's proof that the paks loaded, strays, missing files, and
-// Fluffy's installs waiting to be adopted — shown as a plan before writing.
+// whom, REFramework's proof that the paks loaded, strays and missing files.
+// v0.3: every install, a pak in the load order too, has an uninstall door;
+// THE RETURN shows its plan before a byte moves, and comes into view when a
+// door far from it is pressed.
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useInstalled } from "@/composables/useInstalled";
 import { useStone } from "@/composables/useStone";
 import { usePreflight, REFRAMEWORK_URL } from "@/composables/usePreflight";
 import { formatBytes, formatDate, kindsPresent, plural } from "@/services/format";
-import { missingPackageTitle } from "@/services/voice";
+import { ADOPTED_TITLE, PACKAGE_GONE_LINE, missingPackageTitle } from "@/services/voice";
 import {
   PARKED_OCCUPIED_LINE,
   parkedMeta,
@@ -30,7 +32,6 @@ const preflight = usePreflight();
 
 const view = computed(() => installed.view.value);
 const game = computed(() => stone.overview.value?.game ?? null);
-const fluffy = computed(() => view.value?.fluffyUnadopted ?? []);
 const pakCount = computed(() => installed.pakRows.value.reduce((n, r) => n + r.paks.length, 0));
 
 const pakLoadLine = computed(() => {
@@ -43,6 +44,7 @@ const pakLoadLine = computed(() => {
 });
 
 const parkedSection = ref<HTMLElement | null>(null);
+const returnPanel = ref<HTMLElement | null>(null);
 const parked = computed(() => view.value?.parked ?? []);
 
 /** Smooth only when the user has not asked for less motion: an explicit JS
@@ -65,6 +67,19 @@ async function revealParked(): Promise<void> {
 watch(installed.parkedSummons, (n) => {
   if (n > 0) void revealParked();
 });
+
+/** A door pressed in the load order opens THE RETURN in the other column (or
+ *  far below, at the narrow posture): bring the plan into view and hand it
+ *  the keyboard, so its Uninstall is the next press. */
+watch(
+  () => installed.returning.value?.optionId ?? null,
+  async (id) => {
+    if (!id) return;
+    await nextTick();
+    returnPanel.value?.scrollIntoView?.({ block: "nearest", behavior: scrollBehavior() });
+    returnPanel.value?.focus({ preventScroll: true });
+  },
+);
 
 onMounted(() => {
   void installed.load().then(() => {
@@ -124,9 +139,6 @@ async function putBack(store: string, index: number): Promise<void> {
           }}<template v-if="game"> · build {{ game.buildId ?? "unknown" }}</template>
         </p>
       </div>
-      <RiftButton v-if="fluffy.length" variant="primary" @click="installed.openAdoption()"
-        >Adopt Fluffy's installs</RiftButton
-      >
     </header>
 
     <FailureNotice
@@ -148,38 +160,6 @@ async function putBack(store: string, index: number): Promise<void> {
         <RiftButton size="sm" @click="stone.dismissBuildChange()">I've tested it, dismiss</RiftButton>
       </RiftInscription>
     </div>
-
-    <section v-if="installed.adoptStage.value !== 'closed'" class="home__adopt" aria-label="Adopt Fluffy's installs">
-      <h2 class="home__h rs-inscription">FLUFFY'S INSTALLS — THE ADOPTION</h2>
-      <template v-if="installed.adoptStage.value === 'done' && installed.adoptResult.value">
-        <p class="home__line is-world">{{ installed.adoptLine.value }}</p>
-        <RiftButton size="sm" @click="installed.closeAdoption()">Done</RiftButton>
-      </template>
-      <template v-else>
-        <p class="home__line">
-          The stone reads Fluffy's installed.ini and takes each install into its own journal, so you can uninstall and
-          reorder it here. Nothing is moved and Fluffy's files are not changed.
-        </p>
-        <ul class="home__rows">
-          <li v-for="f in fluffy" :key="f.section" class="home__row">
-            <span class="home__name">{{ f.name }}</span>
-            <span class="rs-mono home__dim">[{{ f.section }}] · {{ plural(f.fileCount, "file") }}</span>
-            <span class="home__dim">{{
-              f.matchedOptionId ? "matches a library option" : "no library match: adopted under its Fluffy name"
-            }}</span>
-          </li>
-        </ul>
-        <div class="home__acts">
-          <RiftButton
-            variant="world"
-            :busy="installed.adoptStage.value === 'adopting'"
-            @click="installed.confirmAdopt()"
-            >Adopt {{ plural(fluffy.length, "install") }}</RiftButton
-          >
-          <RiftButton @click="installed.closeAdoption()">Cancel</RiftButton>
-        </div>
-      </template>
-    </section>
 
     <div class="home__split">
       <section class="home__left">
@@ -218,8 +198,10 @@ async function putBack(store: string, index: number): Promise<void> {
             <span class="home__name">{{ r.name }}</span>
             <KindBadge v-for="k in kindsPresent(r.kinds)" :key="k" :kind="k" />
             <span class="rs-mono home__dim">{{ plural(r.fileCount, "file") }}</span>
-            <span v-if="r.origin === 'fluffy'" class="rs-mono home__dim">via Fluffy</span>
-            <span v-if="r.packageMissing" class="rs-mono is-warn" :title="missingPackageTitle(r)">no package</span>
+            <span v-if="r.origin === 'adopted'" class="rs-mono home__dim" :title="ADOPTED_TITLE">adopted</span>
+            <span v-if="r.packageMissing" class="home__dim home__gone" :title="missingPackageTitle(r)">{{
+              PACKAGE_GONE_LINE
+            }}</span>
             <RiftButton
               size="sm"
               variant="danger"
@@ -230,7 +212,13 @@ async function putBack(store: string, index: number): Promise<void> {
           </li>
         </ul>
 
-        <div v-if="installed.returning.value" class="home__return">
+        <div
+          v-if="installed.returning.value"
+          ref="returnPanel"
+          class="home__return"
+          tabindex="-1"
+          :aria-label="`The return of ${installed.returning.value.name}`"
+        >
           <h3 class="home__h rs-inscription">THE RETURN — {{ returnHeading(installed.returning.value.removals) }}</h3>
           <p v-if="installed.returning.value.refused" class="home__line is-ember">
             {{ installed.returning.value.refused }}
@@ -338,7 +326,7 @@ async function putBack(store: string, index: number): Promise<void> {
         <template v-if="view?.strays.length">
           <h2 class="home__h rs-inscription home__gap">STRAYS</h2>
           <p class="home__line home__dim">
-            Files in the mod folders that no manager put there. The stone leaves them alone.
+            Files in the game's mod places that no install put there. The stone leaves them alone.
           </p>
           <ul class="home__rows rs-mono">
             <li v-for="s in view.strays" :key="s.gamePath" class="home__row">
@@ -346,15 +334,6 @@ async function putBack(store: string, index: number): Promise<void> {
               ><span class="home__dim">{{ formatBytes(s.size) }}</span>
             </li>
           </ul>
-        </template>
-
-        <template v-if="fluffy.length && installed.adoptStage.value === 'closed'">
-          <h2 class="home__h rs-inscription home__gap">FLUFFY'S INSTALLS</h2>
-          <p class="home__line">
-            Fluffy installed {{ plural(fluffy.length, "mod") }} the stone does not manage yet:
-            {{ fluffy.map((f) => f.name).join(", ") }}.
-          </p>
-          <RiftButton size="sm" variant="primary" @click="installed.openAdoption()">Adopt Fluffy's installs</RiftButton>
         </template>
       </section>
     </div>
@@ -387,14 +366,8 @@ async function putBack(store: string, index: number): Promise<void> {
   margin: 4px 0 0;
   color: var(--rs-faint);
 }
-.home__banner,
-.home__adopt {
+.home__banner {
   margin-top: var(--rs-space-4);
-}
-.home__adopt {
-  padding: var(--rs-space-4);
-  border-left: 3px solid var(--rs-world);
-  background: var(--rs-hearthhi);
 }
 .home__split {
   display: grid;
@@ -466,6 +439,11 @@ async function putBack(store: string, index: number): Promise<void> {
 .home__dim {
   color: var(--rs-faint);
 }
+/* R16.26: a package no longer in the mods folder, said in Alegreya 14, faint */
+.home__gone {
+  font: 400 var(--rs-text-sm) var(--rs-font-sans);
+  color: var(--rs-faint);
+}
 /* PAK LOAD PROOF: the pak's own name is the datum, so it keeps its full width
    and the slot line wraps under it instead of squeezing it to "zrif…". */
 .home__row--proof .home__name {
@@ -485,6 +463,13 @@ async function putBack(store: string, index: number): Promise<void> {
   padding: var(--rs-space-4);
   border-left: 3px solid var(--rs-ember);
   background: rgba(35, 28, 19, 0.6);
+}
+.home__return:focus {
+  outline: none;
+}
+.home__return:focus-visible {
+  outline: 2px solid var(--rs-rift);
+  outline-offset: 2px;
 }
 .home__warn {
   margin: var(--rs-space-3) 0 0;
@@ -537,7 +522,7 @@ async function putBack(store: string, index: number): Promise<void> {
   font-size: var(--rs-text-xs);
   letter-spacing: 0.08em;
 }
-.park--fluffy .park__tag {
+.park--adopted .park__tag {
   color: var(--rs-world);
 }
 .park--riftstone .park__tag {

@@ -76,8 +76,6 @@ use rift_core::{ArchiveEntry, ModOption, OptionId, Package, PackageId};
 pub struct SearchFilters {
     /// `Some(true)` installed only, `Some(false)` not installed only.
     pub installed: Option<bool>,
-    /// Restrict to these library roots (empty = all).
-    pub root_ids: Vec<String>,
     /// Include pure menu entries (default false — they install nothing).
     pub include_menu_only: bool,
     /// v0.2: Nexus categories, ANY-of — a mod has one category, so each entry
@@ -96,7 +94,9 @@ pub struct SearchFilters {
 pub struct SearchQuery {
     pub text: String,
     pub filters: SearchFilters,
-    /// Maximum hits returned (0 = default 200).
+    /// Maximum hits returned; 0 = no cap, every match (v0.3 — v0.2 read 0 as
+    /// 200). A positive limit keeps the best: ranked hits by score, an empty
+    /// text the first in library order.
     pub limit: usize,
 }
 
@@ -206,7 +206,6 @@ pub struct LabelFacets {
     pub unlabeled_packages: usize,
 }
 
-const DEFAULT_LIMIT: usize = 200;
 const MAX_FILE_MATCHES: usize = 5;
 const NO_TEXT: u32 = u32::MAX;
 const FILE_WEIGHT: f32 = 1.0;
@@ -266,7 +265,6 @@ fn weighted(weight: f32, quality: Quality) -> f32 {
 #[derive(Clone, Default)]
 pub struct SearchIndex {
     options: Vec<OptionRecord>,
-    roots: Vec<String>,
     /// Every distinct package, in library order (an option's `package` slot).
     packages: Vec<PackageSlot>,
     /// Package id → its slot.
@@ -293,7 +291,6 @@ struct OptionRecord {
     id: OptionId,
     /// The package's slot in `SearchIndex::packages`.
     package: u32,
-    root: u32,
     name_key: String,
     menu_only: bool,
     texts: [u32; SLOTS.len()],
@@ -585,8 +582,8 @@ impl SearchIndex {
     }
 
     /// The filter chips (v0.2): every category and every tag with the number
-    /// of installable options carrying it (menu entries excluded, every root,
-    /// installed or not — what a chip alone finds with no text and the default
+    /// of installable options carrying it (menu entries excluded, installed
+    /// or not — what a chip alone finds with no text and the default
     /// filters), and the packages a label filter would hide. O(packages +
     /// labels); nothing is cached, so it always agrees with the last
     /// `set_labels`.
@@ -684,18 +681,11 @@ impl SearchIndex {
         is_installed: &dyn Fn(&OptionId) -> bool,
     ) -> Vec<SearchHit> {
         let limit = if query.limit == 0 {
-            DEFAULT_LIMIT
+            usize::MAX
         } else {
             query.limit
         };
         let filters = &query.filters;
-        let root_allowed: Vec<bool> = self
-            .roots
-            .iter()
-            .map(|root| {
-                filters.root_ids.is_empty() || filters.root_ids.iter().any(|wanted| wanted == root)
-            })
-            .collect();
         let label_allowed = self.label_allowed(filters);
         if label_allowed
             .as_ref()
@@ -723,7 +713,6 @@ impl SearchIndex {
         let mut candidates: Vec<(u32, f32)> = Vec::new();
         'options: for (index, option) in self.options.iter().enumerate() {
             if (option.menu_only && !filters.include_menu_only)
-                || !root_allowed[option.root as usize]
                 || label_allowed
                     .as_ref()
                     .is_some_and(|allowed| !allowed[option.package as usize])
@@ -1048,7 +1037,6 @@ impl TermMatch {
 struct Builder {
     index: SearchIndex,
     text_ids: FastMap<String, u32>,
-    root_ids: FastMap<String, u32>,
     spelled_ids: FastMap<String, u32>,
     lower_ids: FastMap<String, u32>,
     /// The previous path's segment ids: consecutive paths share folders, so
@@ -1064,22 +1052,12 @@ struct Builder {
 /// What every option of one package shares.
 struct PackageTexts {
     slot: u32,
-    root: u32,
     display_name: u32,
     file_name: u32,
 }
 
 impl Builder {
     fn add_package(&mut self, package: &Package) {
-        let root = match self.root_ids.get(&package.root_id) {
-            Some(&id) => id,
-            None => {
-                let id = to_u32(self.index.roots.len());
-                self.index.roots.push(package.root_id.clone());
-                self.root_ids.insert(package.root_id.clone(), id);
-                id
-            }
-        };
         // One slot per package id: the catalog keeps one copy of a package,
         // and a second copy would carry the same labels anyway.
         let slot = match self.index.package_slots.get(&package.id) {
@@ -1098,7 +1076,6 @@ impl Builder {
         self.index.packages[slot as usize].installable += to_u32(installable);
         let shared = PackageTexts {
             slot,
-            root,
             display_name: self.text(&package.display_name),
             file_name: self.text(&package.file_name),
         };
@@ -1151,7 +1128,6 @@ impl Builder {
         self.index.options.push(OptionRecord {
             id: option.id.clone(),
             package: shared.slot,
-            root: shared.root,
             name_key: option.name.to_lowercase(),
             menu_only: option.menu_only,
             texts,
@@ -1483,7 +1459,7 @@ mod tests {
         }
     }
 
-    fn package(root_id: &str, display_name: &str, file_name: &str, options: &[Opt<'_>]) -> Package {
+    fn package(display_name: &str, file_name: &str, options: &[Opt<'_>]) -> Package {
         let id = PackageId::for_archive(file_name, 1);
         let options = options
             .iter()
@@ -1537,8 +1513,7 @@ mod tests {
             .collect();
         Package {
             id,
-            root_id: root_id.to_string(),
-            path: PathBuf::from(format!("/library/{file_name}")),
+            path: PathBuf::from(format!("/mods/{file_name}")),
             file_name: file_name.to_string(),
             display_name: display_name.to_string(),
             format: PackageFormat::Zip,
@@ -1556,7 +1531,6 @@ mod tests {
     fn library() -> Vec<Package> {
         vec![
             package(
-                "fluffy",
                 "Vernworth Cloaks Collection",
                 "Vernworth Cloaks Collection.zip",
                 &[
@@ -1595,7 +1569,6 @@ mod tests {
                 ],
             ),
             package(
-                "fluffy",
                 "Lantern Glow Recolor",
                 "Lantern Glow-123-1-2-1711234567.zip",
                 &[Opt {
@@ -1606,7 +1579,6 @@ mod tests {
                 }],
             ),
             package(
-                "downloads",
                 "Vernworth Banners",
                 "Vernworth Banners.zip",
                 &[Opt {
@@ -1798,19 +1770,6 @@ mod tests {
             ["ermine cape - black"]
         );
 
-        let mut q = query("lantern");
-        assert_eq!(
-            names(&index, &index.search(&q, &nothing_installed)),
-            ["lantern glow recolor", "vernworth banners"]
-        );
-        q.filters.root_ids = vec!["downloads".into()];
-        assert_eq!(
-            names(&index, &index.search(&q, &nothing_installed)),
-            ["vernworth banners"]
-        );
-        q.filters.root_ids = vec!["nowhere".into()];
-        assert!(index.search(&q, &nothing_installed).is_empty());
-
         let mut q = query("cloaks");
         assert_eq!(
             names(&index, &index.search(&q, &nothing_installed)),
@@ -1847,7 +1806,6 @@ mod tests {
     #[test]
     fn whole_words_outrank_word_starts_outrank_substrings() {
         let packages = vec![package(
-            "fluffy",
             "Lanterns",
             "Lanterns.zip",
             &[opt("Glowcape", "a"), opt("Cape", "b"), opt("Capeless", "c")],
@@ -1920,7 +1878,6 @@ mod tests {
         );
 
         let packages = vec![package(
-            "fluffy",
             "Big",
             "Big.zip",
             &[Opt {
@@ -2011,6 +1968,34 @@ mod tests {
         assert_eq!(hits[0], all[0]);
     }
 
+    /// v0.3: a search shows everything it finds — v0.2 stopped at 200.
+    #[test]
+    fn a_zero_limit_returns_every_match_and_a_positive_one_still_caps() {
+        let library = synthetic_library(3, 1_000, 1);
+        let index = SearchIndex::build(&library, &HashMap::new());
+        assert_eq!(query("").limit, 0, "the default asks for every match");
+
+        let every = index.search(&query(""), &nothing_installed);
+        assert_eq!(every.len(), 3_000, "no text: every option, uncapped");
+        let robes = index.search(&query("robe"), &nothing_installed);
+        assert_eq!(robes.len(), 300, "every robe, ranked, uncapped");
+
+        let mut q = query("robe");
+        q.limit = 250;
+        assert_eq!(
+            index.search(&q, &nothing_installed),
+            robes[..250],
+            "a positive limit keeps the best, in the same order"
+        );
+        let mut q = query("");
+        q.limit = 250;
+        assert_eq!(
+            index.search(&q, &nothing_installed),
+            every[..250],
+            "and with no text, the first in library order"
+        );
+    }
+
     #[test]
     fn an_empty_index_answers_nothing() {
         let index = SearchIndex::default();
@@ -2035,13 +2020,22 @@ mod tests {
             .unwrap()
             .ends_with("#Vernworth Cloaks Collection/Cloaks/Ermine Cape/White"));
         assert!(json["fileMatches"].is_array());
+        // A v0.1 query: no label filters, and a rootIds filter v0.3 no longer knows.
         let q: SearchQuery =
-            serde_json::from_str(r#"{"text":"robe","filters":{"installed":null,"rootIds":[],"includeMenuOnly":true},"limit":0}"#).unwrap();
+            serde_json::from_str(r#"{"text":"lantern","filters":{"installed":null,"rootIds":["mods"],"includeMenuOnly":true},"limit":0}"#).unwrap();
         assert!(q.filters.include_menu_only);
         assert!(
             q.filters.categories.is_empty() && q.filters.tags.is_empty(),
             "a v0.1 query (no label filters) still reads"
         );
+        assert_eq!(
+            names(&index, &index.search(&q, &nothing_installed)),
+            ["lantern glow recolor", "vernworth banners"],
+            "the unknown filter narrows nothing"
+        );
+        assert!(serde_json::to_value(&q).unwrap()["filters"]
+            .get("rootIds")
+            .is_none());
         assert!(json["labels"].is_null(), "no labels were set");
     }
 
@@ -2408,7 +2402,6 @@ mod tests {
     fn facets_count_installable_options_per_category_and_tag() {
         let mut library = library();
         library.push(package(
-            "fluffy",
             "Vernworth Menus",
             "Vernworth Menus.zip",
             &[Opt {
@@ -2673,12 +2666,7 @@ mod tests {
             }
             library.push(Package {
                 id,
-                root_id: if p % 2 == 0 {
-                    "fluffy".into()
-                } else {
-                    "downloads".into()
-                },
-                path: PathBuf::from(format!("/library/{display_name}.zip")),
+                path: PathBuf::from(format!("/mods/{display_name}.zip")),
                 file_name: format!("{display_name}.zip"),
                 display_name,
                 format: PackageFormat::Zip,
@@ -2799,8 +2787,8 @@ mod tests {
     fn assert_chips_predict_their_results(index: &SearchIndex) {
         let facets = index.label_facets();
         let found = |categories: &[&str], tags: &[&str]| {
-            let mut q = label_query("", categories, tags);
-            q.limit = usize::MAX;
+            let q = label_query("", categories, tags);
+            assert_eq!(q.limit, 0, "every match");
             index.search(&q, &nothing_installed).len()
         };
         for facet in &facets.categories {
@@ -2874,7 +2862,11 @@ mod tests {
 
         // The results are right, not just fast.
         let hits = index.search(&query("black robe"), &nothing_installed);
-        assert!(!hits.is_empty() && hits.len() <= DEFAULT_LIMIT);
+        assert_eq!(
+            hits.len(),
+            100,
+            "every black robe: two per package, uncapped"
+        );
         let hits = index.search(&query("robe_7_4"), &nothing_installed);
         assert!(hits.iter().all(|h| h.matched.contains(&MatchedField::File)));
         assert!(index.search(&query("zzzz"), &nothing_installed).is_empty());

@@ -9,9 +9,10 @@
 // by mod id names no file: the check pins one only where the spine can (a file
 // id, sqid, upload stamp or version to match), and the toast says which.
 
-import { computed, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 import type {
   Md5Result,
+  NexusBrowseSort,
   NexusCandidate,
   NexusFindings,
   UpdateRow,
@@ -21,7 +22,8 @@ import type {
 import { asRiftFailure, rift } from "@/services/rift";
 import { quotaProbe, type NexusQuota } from "@/services/pending";
 import { plural } from "@/services/format";
-import { voice, voicedLine, type Voiced } from "@/services/voice";
+import { farCaseOf, voice, voicedLine, type FarCase, type Voiced } from "@/services/voice";
+import { useNavigation } from "./useNavigation";
 import { useToasts } from "./useToasts";
 import { useStone } from "./useStone";
 
@@ -30,6 +32,10 @@ const progress = ref<UpdatesProgressEvent | null>(null);
 const checking = ref(false);
 const checkFailure = ref<Voiced | null>(null);
 const keyFailure = ref<Voiced | null>(null);
+/** Why the last key paste failed, as the voice read it: only "keyRejected"
+ *  means Nexus refused the key; "offline" means Nexus was never asked (the
+ *  spine then stores nothing and keeps whatever key it held). */
+const keyFailureCase = ref<FarCase | null>(null);
 const keyBusy = ref(false);
 const quota = ref<NexusQuota | null>(null);
 const linkingId = ref<string | null>(null);
@@ -53,6 +59,69 @@ const linkingCandidate = ref<string | null>(null);
 /** The one live line the finds speak through (a screen reader hears this, not
  *  every row's list): a single find's answer, or Find all's sum. */
 const findNote = ref<string | null>(null);
+
+/** v0.3 FIND ON NEXUS (browse_nexus). The field's words leave the machine
+ *  only on Enter or Search (the contract's privacy rule): `browseText` is what
+ *  is typed, `browsed` is what Nexus answered, and the two never sync by
+ *  themselves. Kept here, not in the section, so a mod's files can replace
+ *  the page's scroll and hand the same list back. */
+export interface BrowseState {
+  text: string;
+  sort: NexusBrowseSort;
+  total: number;
+  mods: NexusCandidate[];
+}
+const browseText = ref("");
+const browseSort = ref<NexusBrowseSort>("endorsements");
+const browsed = ref<BrowseState | null>(null);
+/** "new" while a first page is asked for, "more" while the next is appended. */
+const browsing = ref<"new" | "more" | null>(null);
+const browseFailure = ref<Voiced | null>(null);
+let browseSeq = 0;
+/** One page: 20 mods (WINDOW-CONTRACT: 20 per page). */
+export const BROWSE_PAGE = 20;
+
+/** Relevance needs words: an empty field browses the whole game by another order. */
+function sortFor(text: string, sort: NexusBrowseSort): NexusBrowseSort {
+  return !text && sort === "relevance" ? "endorsements" : sort;
+}
+
+/** What one press asks: the field's words for a first page, or the page on
+ *  screen's own words and order for the next one. */
+function browseAsk(more: boolean): { text: string; sort: NexusBrowseSort; offset: number; kept: NexusCandidate[] } {
+  const before = browsed.value;
+  if (more && before) return { text: before.text, sort: before.sort, offset: before.mods.length, kept: before.mods };
+  const text = browseText.value.trim();
+  return { text, sort: sortFor(text, browseSort.value), offset: 0, kept: [] };
+}
+
+/** Ask Nexus for the first page of what the field holds, or (`more`) the page
+ *  after the one on screen, with the words and order that page was asked by. */
+async function browse(more = false): Promise<boolean> {
+  if (more && !browsed.value) return false;
+  const { text, sort, offset, kept } = browseAsk(more);
+  const mine = ++browseSeq;
+  browsing.value = more ? "more" : "new";
+  browseFailure.value = null;
+  try {
+    const backend = await rift();
+    const page = await backend.browseNexus({ text, sort, offset });
+    if (mine !== browseSeq) return false;
+    const seen = new Set(kept.map((m) => m.modId));
+    browsed.value = { text, sort, total: page.total, mods: [...kept, ...page.mods.filter((m) => !seen.has(m.modId))] };
+    return true;
+  } catch (raw) {
+    if (mine === browseSeq) browseFailure.value = voice(asRiftFailure(raw), "browse");
+    return false;
+  } finally {
+    if (mine === browseSeq) browsing.value = null;
+  }
+}
+
+const browseHasMore = computed(() => {
+  const b = browsed.value;
+  return b !== null && b.mods.length > 0 && b.mods.length < b.total;
+});
 
 const linked = computed(() => (updates.value?.rows ?? []).filter((r) => r.link !== null));
 const unlinked = computed(() => (updates.value?.rows ?? []).filter((r) => r.link === null));
@@ -284,6 +353,7 @@ export function candidateLine(c: NexusCandidate): string {
 async function setKey(key: string | null): Promise<boolean> {
   keyBusy.value = true;
   keyFailure.value = null;
+  keyFailureCase.value = null;
   try {
     const backend = await rift();
     await backend.setNexusKey(key);
@@ -292,11 +362,42 @@ async function setKey(key: string | null): Promise<boolean> {
     await refreshQuota();
     return true;
   } catch (raw) {
-    keyFailure.value = voice(asRiftFailure(raw), "nexusKey");
+    const failure = asRiftFailure(raw);
+    keyFailure.value = voice(failure, "nexusKey");
+    keyFailureCase.value = farCaseOf(failure, "nexusKey");
     return false;
   } finally {
     keyBusy.value = false;
   }
+}
+
+/** The last paste was refused by Nexus itself (the chip reads REJECTED). */
+const keyRefused = computed(() => keyFailureCase.value === "keyRejected");
+/** The last paste never reached Nexus (the chip reads OFFLINE, nothing was stored). */
+const keyUnreached = computed(() => keyFailureCase.value === "offline");
+
+// ---------------------------------------------------------------------------
+// The key's one door
+// ---------------------------------------------------------------------------
+
+/** THE FAR WORLD's key form (its ACCOUNT section) is open. */
+const keyFormOpen = ref(false);
+/** Counts the presses of the key's door: at each one THE FAR WORLD gives way
+ *  to its scroll (a mod's FILES closes), so the form can take the focus. */
+const keyDoorPresses = ref(0);
+
+/** The key's one door, wherever the key is the way out: a mod's FILES without
+ *  one (Add key…), a refused nxm link's toast (the voice's Add key… or
+ *  Replace key…), and the far world's own Paste key… and Replace key…. From
+ *  any room it goes to THE FAR WORLD, waits for the page to be drawn, opens
+ *  the ACCOUNT section's key form and puts the focus in its password field. */
+async function openKeyForm(): Promise<void> {
+  useNavigation().go("nexus");
+  keyFormOpen.value = true;
+  keyDoorPresses.value += 1;
+  // the room changes, and the form opens, at the next render
+  await nextTick();
+  document.querySelector<HTMLInputElement>("#far-account input[type=password]")?.focus();
 }
 
 export function useFarWorld() {
@@ -306,6 +407,8 @@ export function useFarWorld() {
     checking,
     checkFailure,
     keyFailure,
+    keyRefused,
+    keyUnreached,
     keyBusy,
     quota,
     linkingId,
@@ -317,6 +420,7 @@ export function useFarWorld() {
     updateCount,
     offline,
     load,
+    refreshQuota,
     check,
     link,
     unlink,
@@ -331,6 +435,16 @@ export function useFarWorld() {
     findAll,
     linkCandidate,
     setKey,
+    browseText,
+    browseSort,
+    browsed,
+    browsing,
+    browseFailure,
+    browseHasMore,
+    browse,
+    keyFormOpen,
+    keyDoorPresses,
+    openKeyForm,
     onProgress: (event: UpdatesProgressEvent) => (progress.value = event),
   };
 }
@@ -341,6 +455,7 @@ export function resetFarWorld(): void {
   checking.value = false;
   checkFailure.value = null;
   keyFailure.value = null;
+  keyFailureCase.value = null;
   keyBusy.value = false;
   quota.value = null;
   linkingId.value = null;
@@ -351,4 +466,12 @@ export function resetFarWorld(): void {
   findAllProgress.value = null;
   linkingCandidate.value = null;
   findNote.value = null;
+  browseText.value = "";
+  browseSort.value = "endorsements";
+  browsed.value = null;
+  browsing.value = null;
+  browseFailure.value = null;
+  browseSeq = 0;
+  keyFormOpen.value = false;
+  keyDoorPresses.value = 0;
 }

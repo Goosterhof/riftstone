@@ -7,7 +7,7 @@ use std::path::Path;
 use md5::{Digest, Md5};
 
 /// Read size per step. Packages reach several GB; memory stays flat.
-const CHUNK: usize = 1 << 20;
+const CHUNK: usize = crate::DOWNLOAD_CHUNK_BYTES;
 
 /// The MD5 of a file, streamed in 1 MiB steps. `progress` hears the running
 /// byte count after every step. Lower-case hex.
@@ -35,7 +35,8 @@ pub fn is_md5(text: &str) -> bool {
     text.len() == 32 && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-fn hex(bytes: &[u8]) -> String {
+/// Lower-case hex of a digest (shared with the downloader's running MD5).
+pub(crate) fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {

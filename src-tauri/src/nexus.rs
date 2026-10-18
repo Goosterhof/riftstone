@@ -4,7 +4,9 @@
 //!
 //! 1. the player: a pasted URL or mod id (`manual`), or an explicit unlink —
 //!    which also silences the catalog's guess below;
-//! 2. an MD5 lookup (`md5`) — already pinned to the exact file;
+//! 2. an MD5 lookup (`md5`), or (v0.3) a download the stone made itself
+//!    (`download`, written before the scan that finds the archive) — both
+//!    already pinned to the exact file;
 //! 3. a pin made by an update check (`pin_link` against the mod's file list),
 //!    which keeps the link's original source;
 //! 4. the catalog: the Nexus download file name (`filename`) or a modinfo
@@ -21,7 +23,12 @@
 //! its file name, an MD5 match or by hand is labeled once a check has heard
 //! of that mod, an unlinked one has none, and a re-link takes the other mod's.
 //! Labels are kept like verdicts: a check that did not ask about a mod (its
-//! package was out of the library just then) leaves them as they were.
+//! package was out of the mods folder just then) leaves them as they were.
+//!
+//! **Moved packages (v0.3).** A record is keyed by its package's id. A folder
+//! package's id follows its name since v0.3, and the relink pass can find a
+//! package under a new id; [`NexusStore::move_records`] lets the record
+//! follow (the spine's migration, after every scan).
 //! The spine hands them to the catalog's index after every check, every link
 //! change and every scan ([`NexusStore::package_labels`]).
 
@@ -143,7 +150,13 @@ impl NexusStore {
 
     /// A pasted link (or a fresh MD5 match) replaces whatever was there.
     pub fn set_link(&mut self, package: &Package, link: NexusLink) {
-        let record = self.packages.entry(package.id.0.clone()).or_default();
+        self.set_link_for(&package.id, link);
+    }
+
+    /// [`NexusStore::set_link`] by id, for a package the shelf does not hold
+    /// yet (v0.3: a download links its archive before the scan that finds it).
+    pub fn set_link_for(&mut self, package_id: &PackageId, link: NexusLink) {
+        let record = self.packages.entry(package_id.0.clone()).or_default();
         if record.state_mod_id != Some(link.mod_id) {
             record.state = None;
             record.state_mod_id = None;
@@ -266,6 +279,23 @@ impl NexusStore {
             })
     }
 
+    /// Give records the ids their packages carry now (v0.3: `from → to`). A
+    /// record moves only onto an id that has none of its own, and is never
+    /// merged into one. `true` when anything moved.
+    pub fn move_records(&mut self, moves: &BTreeMap<PackageId, PackageId>) -> bool {
+        let mut moved = false;
+        for (from, to) in moves {
+            if from == to || self.packages.contains_key(&to.0) {
+                continue;
+            }
+            if let Some(record) = self.packages.remove(&from.0) {
+                self.packages.insert(to.0.clone(), record);
+                moved = true;
+            }
+        }
+        moved
+    }
+
     /// The labels a package carries now: those of the mod its link names, as
     /// the latest check heard them. `None` when it is unlinked, or no check
     /// has heard of its mod yet.
@@ -352,15 +382,10 @@ pub fn judge(
     }
 }
 
-/// A Nexus failure in the shared vocabulary. A rate limit says so in words
-/// the window's voice recognises.
+/// A Nexus failure in the shared vocabulary: rift-nexus names the reason
+/// (offline, rate limited, …) the window voices it by.
 pub fn nexus_error(err: NexusError) -> rift_core::RiftError {
-    match err {
-        NexusError::RateLimited { .. } => rift_core::RiftError::Nexus {
-            detail: format!("rate limit: {err}"),
-        },
-        other => other.into(),
-    }
+    err.into()
 }
 
 /// The v1 budget as the window shows it; `None` until a v1 answer carried all
@@ -394,10 +419,7 @@ mod tests {
     fn package(nexus: Option<NexusLink>) -> Package {
         Package {
             id: PackageId("00000000000000aa".into()),
-            root_id: "downloads".into(),
-            path: PathBuf::from(
-                "/downloads/Vernworth Cloaks 2207 8 2026-10-14T14-23Z Rk4vLmN2Q.zip",
-            ),
+            path: PathBuf::from("/mods/Vernworth Cloaks 2207 8 2026-10-14T14-23Z Rk4vLmN2Q.zip"),
             file_name: "Vernworth Cloaks 2207 8 2026-10-14T14-23Z Rk4vLmN2Q.zip".into(),
             display_name: "Vernworth Cloaks".into(),
             format: PackageFormat::Zip,
@@ -805,13 +827,58 @@ mod tests {
     }
 
     #[test]
-    fn rate_limits_speak_the_words_the_window_listens_for() {
+    fn rate_limits_carry_the_reason_the_window_voices() {
         let err = nexus_error(NexusError::RateLimited {
             retry_after_s: Some(30),
         });
-        let rift_core::RiftError::Nexus { detail } = err else {
+        let rift_core::RiftError::Nexus { reason, .. } = &err else {
             panic!("a Nexus failure stays a Nexus failure");
         };
-        assert!(detail.starts_with("rate limit"));
+        assert_eq!(*reason, Some(rift_core::NexusReason::RateLimited));
+        let wire = serde_json::to_value(&err).unwrap();
+        assert_eq!(wire["detail"]["reason"], "rateLimited");
+    }
+
+    #[test]
+    fn a_record_follows_its_package_onto_a_free_id_only() {
+        let mut store = NexusStore::new();
+        let old = PackageId("00000000000000aa".into());
+        let new = PackageId("00000000000000bb".into());
+        let taken = PackageId("00000000000000cc".into());
+        let elsewhere = PackageId("00000000000000dd".into());
+        store.packages.insert(
+            old.0.clone(),
+            LinkRecord {
+                link: Some(manual(2207)),
+                ..LinkRecord::default()
+            },
+        );
+        store.packages.insert(
+            taken.0.clone(),
+            LinkRecord {
+                unlinked: true,
+                ..LinkRecord::default()
+            },
+        );
+        store.packages.insert(
+            elsewhere.0.clone(),
+            LinkRecord {
+                link: Some(manual(5150)),
+                ..LinkRecord::default()
+            },
+        );
+        assert!(!store.move_records(&BTreeMap::new()));
+        // Onto an id with a record of its own: nothing is merged or lost.
+        assert!(!store.move_records(&BTreeMap::from([(elsewhere.clone(), taken.clone())])));
+        assert!(store.packages[&taken.0].unlinked);
+        assert_eq!(store.packages[&elsewhere.0].link, Some(manual(5150)));
+        // Onto a free id: the record moves whole.
+        assert!(store.move_records(&BTreeMap::from([(old.clone(), new.clone())])));
+        assert!(!store.packages.contains_key(&old.0));
+        assert_eq!(store.packages[&new.0].link, Some(manual(2207)));
+        assert!(
+            !store.move_records(&BTreeMap::from([(old, new)])),
+            "a second pass finds nothing to move"
+        );
     }
 }

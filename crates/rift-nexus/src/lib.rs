@@ -1,6 +1,6 @@
 //! rift-nexus — the Riftstone's line to Nexus Mods.
 //!
-//! Four jobs, all optional (RS-6: everything else works offline):
+//! Seven jobs, all optional (RS-6: everything else works offline):
 //!
 //! 1. **Look mods up** — names, statuses and every file on a mod page, from
 //!    Nexus's public GraphQL v2 API. Anonymous: no account, no API key.
@@ -13,6 +13,23 @@
 //! 4. **Decide whether an update exists** — [`pin_link`] ties a package to its
 //!    exact file on the mod page, [`update_state`] compares it with the files
 //!    the page lists now.
+//! 5. **Read and browse** (v0.3, anonymous) — one mod's files with their
+//!    descriptions and patch notes ([`NexusClient::mod_file_details`]), and
+//!    Dragon's Dogma 2's mods page by page ([`NexusClient::browse`]).
+//! 6. **The key's extras** (v0.3, v1 with the personal API key) — the account
+//!    ([`NexusClient::validate_key`]), download links
+//!    ([`NexusClient::download_links`]), tracking
+//!    ([`NexusClient::tracked_mods`], [`NexusClient::track`],
+//!    [`NexusClient::untrack`]) and endorsing ([`NexusClient::endorsements`],
+//!    [`NexusClient::endorse`], [`NexusClient::abstain`]).
+//! 7. **Download** (v0.3) — [`Downloader::download_to`] streams one archive
+//!    from a mirror into a new file, the MD5 on the way, and
+//!    [`NexusClient::verify_download`] checks what arrived: Nexus must know
+//!    those bytes as the file asked for, or not know them yet while a stated
+//!    size vouched for their count ([`NexusClient::confirm_download`] is its
+//!    MD5 half alone). A free account's download goes through the site's Mod
+//!    Manager Download button: [`parse_nxm`] reads the `nxm://` link it hands
+//!    over, whose grant ([`NxmGrant`]) unlocks the download link.
 //!
 //! # What the live API says (verified 2026-10-16)
 //!
@@ -37,7 +54,9 @@
 //!   REMOVED ARCHIVED`), `date: Int!` (unix seconds of the upload), `primary: Int!`
 //!   (0/1, not a boolean), `sizeInBytes: BigInt` (nullable, sent as a JSON
 //!   **string**). Authors often move superseded versions to `ARCHIVED`, not
-//!   `OLD_VERSION`.
+//!   `OLD_VERSION`. (v0.3) `description` and `changelogText: [String!]!` (the
+//!   file's patch notes, one entry per line) come from the same field; a
+//!   `ModFile` carries no MD5, so a download is verified through `fileHashes`.
 //! - `fileHashes(md5s: [String!]!) -> [FileHash!]` searches ALL games:
 //!   `FileHash { md5 fileName fileSize gameId modFileId createdAt modFile }` where
 //!   `fileSize` is a string BigInt, `modFileId` equals `modFile.fileId`, and
@@ -47,23 +66,39 @@
 //!   uploads across games (the empty file matches ~500); hits are filtered to
 //!   game 6234.
 //! - (v0.2, measured on the anonymous API) `mods(filter: ModsFilter, sort:
-//!   [ModsSort!], count: Int) -> ModPage` searches by name.
+//!   [ModsSort!], offset: Int, count: Int) -> ModPage` searches by name.
 //!   `ModsFilter.gameDomainName` and `.nameStemmed` are `[BaseFilterValue!]`
 //!   (`{ value, op }`): `op: MATCHES` wants every term in any order, stems
 //!   matching; `op: WILDCARD` wants every term with leading and trailing
 //!   wildcards. `ModsSort { relevance: { direction: DESC } }` puts the best
-//!   first. A node answers `modId` (Int), `name`, `version`, `author`,
+//!   first; (v0.3) `endorsements`, `downloads` and `updatedAt` sort the same
+//!   way. A node answers `modId` (Int), `name`, `version`, `author`,
 //!   `uploader { name }`, `category`, `modCategory { name }`, `adultContent`,
 //!   `downloads`, `endorsements`, `summary`, `updatedAt` (ISO-8601,
-//!   `2024-05-04T01:30:45Z`) and `game { domainName }`. A phrase no mod holds
-//!   answers `totalCount: 0, nodes: []`, not an error.
+//!   `2024-05-04T01:30:45Z`) and `game { domainName }`, and the page its
+//!   `totalCount`. A phrase no mod holds answers `totalCount: 0, nodes: []`,
+//!   not an error. The filter's fields combine as AND; a top-level `op: OR`
+//!   would let other games in, so it is never sent.
 //! - Every request carries `Application-Name`, `Application-Version` and a
 //!   descriptive `User-Agent` (Nexus's acceptable-use policy). v2 anonymous has no
 //!   documented rate limit and sends no quota headers; the client still batches,
 //!   and backs off on HTTP 429 (honouring `Retry-After`).
-//! - v1 REST (`https://api.nexusmods.com/v1`, header `apikey`) is optional:
-//!   [`NexusClient::validate_key`] and [`NexusClient::files_v1`] only. Its quota
-//!   headers (`X-RL-*`) are recorded ([`NexusClient::last_quota`]) and honoured.
+//! - v1 REST (`https://api.nexusmods.com/v1`, header `apikey`) is optional and
+//!   key-only. Its quota headers (`X-RL-*`) are recorded
+//!   ([`NexusClient::last_quota`]) and honoured: every v1 call but
+//!   `users/validate.json` is refused locally while both buckets are spent.
+//!   (v0.3, researched 2026-10-17) `validate.json` answers `user_id`, `name`,
+//!   `is_premium` and `is_supporter` (older spellings end in `?`), plus the
+//!   key and the e-mail, which are never read. `download_link.json` answers
+//!   `[{ "URI", "name", "short_name" }]`: 403 for a free account without the
+//!   site's `key` + `expires`, 410 once those expired, 400 when they are not
+//!   for this account or file, 404 for a file that is gone.
+//!   `user/tracked_mods.json` lists `[{ mod_id, domain_name }]`; POST and
+//!   DELETE take `?domain_name=` and the form `mod_id` (201 tracked, 200
+//!   already). `endorse.json` / `abstain.json` take the form `Version` and
+//!   refuse with `NOT_DOWNLOADED_MOD`, `TOO_SOON_AFTER_DOWNLOAD` or
+//!   `IS_OWN_MOD`; `user/endorsements.json` lists `[{ mod_id, domain_name,
+//!   date, version, status }]`.
 //!
 //! # What the client refuses to believe
 //!
@@ -72,16 +107,28 @@
 //!   reads exactly like an empty one. A lookup that failed must never read as
 //!   "nothing found" (nor a label that failed as "no label": an `adultContent`
 //!   whose resolver failed comes back null, and the window's veil must never
-//!   take that for "not adult"). So [`NexusClient::mods`] and
-//!   [`NexusClient::find_mods`] refuse any answer with an error,
+//!   take that for "not adult"). So [`NexusClient::mods`],
+//!   [`NexusClient::find_mods`], [`NexusClient::browse`] and
+//!   [`NexusClient::mod_file_details`] refuse any answer with an error,
 //!   [`NexusClient::files_by_md5`] tolerates only errors inside another game's
 //!   upload, and [`NexusClient::mod_files_report`] leaves unchecked exactly the
 //!   mods an error's path names. Each case returns [`NexusError::BadResponse`] or
 //!   reports the refusal; none is only logged.
-//! - **A redirect.** The client follows none. The key's `apikey` header is not
-//!   one reqwest strips when a redirect leaves the host, and Nexus's API never
-//!   redirects, so a 3xx is [`NexusError::Http`]. The client is HTTPS-only except
-//!   towards a loopback test server.
+//! - **A redirect, on the API.** The API client follows none. The key's
+//!   `apikey` header is not one reqwest strips when a redirect leaves the
+//!   host, and Nexus's API never redirects, so a 3xx is [`NexusError::Http`].
+//!   The client is HTTPS-only except towards a loopback test server. The
+//!   [`Downloader`] does follow redirects (a CDN may), at most
+//!   [`MAX_DOWNLOAD_REDIRECTS`], https only, with no `Referer`: it never holds
+//!   the key, so none can ride along.
+//!
+//! # Secrets
+//!
+//! The API key, an nxm link's `key` and a download link are never logged,
+//! never put in an error and never shown by `Debug` ([`NexusClient`],
+//! [`NxmGrant`] and [`DownloadMirror`] print `<redacted>`); neither
+//! [`NxmGrant`] nor [`DownloadMirror`] serializes. reqwest's errors carry the
+//! request's URL, so it is stripped before an error is read.
 //!
 //! # Threading
 //!
@@ -89,11 +136,16 @@
 //! (`tauri::async_runtime::spawn_blocking`, `std::thread`), never from an async
 //! task: the underlying `reqwest::blocking` client must not be created, used or
 //! dropped on an async runtime thread. A [`NexusClient`] is `Send + Sync + Clone`;
-//! clones share one connection pool and one back-off state.
+//! clones share one connection pool and one back-off state. A [`Downloader`]
+//! is `Send + Sync + Clone` and shares nothing.
+
+use std::time::Duration;
 
 mod client;
+mod download;
 mod error;
 mod hash;
+mod nxm;
 mod page_url;
 mod pin;
 mod terms;
@@ -101,14 +153,17 @@ mod types;
 mod wire;
 
 pub use client::{NexusClient, V1Quota};
-pub use error::NexusError;
+pub use download::{Downloaded, Downloader};
+pub use error::{EndorseRefusal, NexusError};
 pub use hash::{is_md5, md5_file};
-pub use page_url::{file_page_url, mod_page_url, parse_mod_url};
+pub use nxm::{parse_nxm, NxmGrant, NxmLink, NxmMessage, NxmRefusal};
+pub use page_url::{file_page_url, mod_manager_page_url, mod_page_url, parse_mod_url};
 pub use pin::{pin_link, update_state, UpdateState, STATUS_NOT_FOUND};
 pub use terms::search_terms;
 pub use types::{
+    BrowsePage, BrowseQuery, BrowseSort, DownloadCheck, DownloadMirror, EndorseStatus,
     FileCategory, FileUpdate, Md5Hit, ModCandidate, ModFilesReport, NexusAccount, NexusFile,
-    NexusMod, V1FileList,
+    NexusFileDetail, NexusMod, V1FileList,
 };
 
 /// Dragon's Dogma 2 on Nexus Mods (re-exported from [`rift_core::dd2`]).
@@ -131,3 +186,24 @@ pub const MOD_FILES_PER_REQUEST: usize = 20;
 pub const MD5S_PER_REQUEST: usize = 100;
 /// Candidates a name search asks for and keeps (v0.2, Find on Nexus).
 pub const CANDIDATES_PER_FIND: usize = 5;
+
+/// Mods per browse page (v0.3; Nexus caps a page at 80).
+pub const BROWSE_PAGE_SIZE: usize = 20;
+/// The longest file description [`NexusClient::mod_file_details`] keeps, in
+/// characters (v0.3).
+pub const FILE_DESCRIPTION_CHARS: usize = 400;
+
+/// The most bytes one read of a download (and one step of [`md5_file`])
+/// handles: 1 MiB.
+pub const DOWNLOAD_CHUNK_BYTES: usize = 1 << 20;
+/// How long a download may take to connect (v0.3).
+pub const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a download may wait for its answer's head and then for each
+/// read (v0.3). There is no total timeout.
+pub const DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// The most redirects a download follows (v0.3).
+pub const MAX_DOWNLOAD_REDIRECTS: usize = 5;
+/// The most a download's body may bring when neither Nexus nor the server
+/// stated its size (v0.3): 32 GiB. A stated size is always the bound when
+/// there is one; this only keeps a body nobody sized from streaming forever.
+pub const MAX_UNSTATED_DOWNLOAD_BYTES: u64 = 32 << 30;

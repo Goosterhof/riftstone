@@ -10,6 +10,7 @@ import { useStone } from "@/composables/useStone";
 import { useNavigation, type Page } from "@/composables/useNavigation";
 import { useFarWorld } from "@/composables/useFarWorld";
 import RiftSearchWell from "./RiftSearchWell.vue";
+import PlayStone from "./PlayStone.vue";
 import FarWorldLabels from "./FarWorldLabels.vue";
 import { useLabels } from "@/composables/useLabels";
 import { seamReach } from "@/services/seam";
@@ -87,10 +88,6 @@ function onType(value: string): void {
   search.setText(value);
 }
 
-function rootLabel(label: string, path: string): string {
-  return label || path;
-}
-
 onMounted(() => {
   const el = well.value?.el;
   if (el?.parentElement) {
@@ -141,17 +138,17 @@ defineExpose({ focusSearch: () => well.value?.focus() });
     </button>
 
     <div class="pillar__facets" :class="{ 'is-dark': !awake }" :inert="!awake">
-      <h2 class="pillar__head rs-inscription">LIBRARY ROOTS</h2>
-      <label v-for="root in stone.overview.value?.roots ?? []" :key="root.id" class="facet" :title="root.path">
+      <!-- Q16.1, measured at 1024×680: the pinned Play slab leaves the facet block
+           too short, so §8.0's named fallback holds: Show menu-only above STATE,
+           where the fold never cuts it -->
+      <label class="facet facet--lead">
         <input
           type="checkbox"
-          :checked="!search.offRoots.value.includes(root.id)"
-          @change="search.toggleRoot(root.id)"
+          :checked="search.includeMenuOnly.value"
+          @change="search.setMenuOnly(!search.includeMenuOnly.value)"
         />
-        <span class="facet__label">{{ rootLabel(root.label, root.path) }}</span>
-        <span class="facet__n">{{ stone.rootCounts.value[root.id] ?? 0 }}</span>
+        <span class="facet__label">Show menu-only</span>
       </label>
-
       <h2 class="pillar__head rs-inscription">STATE</h2>
       <div role="radiogroup" aria-label="State">
         <label v-for="s in STATES" :key="s.id" class="facet">
@@ -164,14 +161,6 @@ defineExpose({ focusSearch: () => well.value?.focus() });
           <span class="facet__label">{{ s.label }}</span>
         </label>
       </div>
-      <label class="facet facet--gap">
-        <input
-          type="checkbox"
-          :checked="search.includeMenuOnly.value"
-          @change="search.setMenuOnly(!search.includeMenuOnly.value)"
-        />
-        <span class="facet__label">Show menu-only</span>
-      </label>
 
       <FarWorldLabels />
     </div>
@@ -195,6 +184,9 @@ defineExpose({ focusSearch: () => well.value?.focus() });
         </span>
       </button>
     </nav>
+
+    <!-- §16.2: Play, its own pinned slab between the rooms and the foot -->
+    <PlayStone />
 
     <footer class="pillar__foot" aria-label="Game state">
       <span v-if="game">build {{ game.buildId ?? "?" }}</span>
@@ -337,8 +329,8 @@ defineExpose({ focusSearch: () => well.value?.focus() });
   color: var(--rs-text);
   cursor: pointer;
 }
-.facet--gap {
-  margin-top: var(--rs-space-2);
+.facet--lead {
+  margin-bottom: var(--rs-space-2);
 }
 .facet input {
   flex: none;
@@ -352,10 +344,6 @@ defineExpose({ focusSearch: () => well.value?.focus() });
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.facet__n {
-  color: var(--rs-faint);
-  font: 12px var(--rs-font-mono);
 }
 .pillar__facets.is-dark,
 .pillar__nav.is-dark {
@@ -424,8 +412,9 @@ defineExpose({ focusSearch: () => well.value?.focus() });
   font: 12px var(--rs-font-mono);
   white-space: nowrap;
 }
+/* §7.1 the foot is faint mono; R16.12: the stone's only gold is THE WORLD IS AWAKE */
 .is-ok {
-  color: var(--rs-world);
+  color: var(--rs-faint);
 }
 .is-warn {
   color: var(--rs-warn);

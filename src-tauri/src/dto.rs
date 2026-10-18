@@ -31,14 +31,6 @@ pub enum PackageFormat {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum RootKind {
-    Fluffy,
-    Downloads,
-    Custom,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub enum DeployKind {
     Pak,
     Loose,
@@ -55,14 +47,16 @@ pub struct PayloadKinds {
     pub root: u32,
 }
 
+/// v0.3: the one library, the mods folder beside the installed
+/// `riftstone.exe` (or `RIFTSTONE_MODS_DIR` on a bench).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LibraryRoot {
-    pub id: String,
+pub struct ModsFolderView {
     pub path: String,
-    pub label: String,
-    pub kind: RootKind,
-    pub dd2_shaped_only: bool,
+    /// False whenever the folder is not there at the moment of the read (it
+    /// could not be made at launch, or it was moved or deleted since); the
+    /// `mods` check says which.
+    pub exists: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,6 +159,8 @@ pub enum LinkSource {
     Homepage,
     Md5,
     Manual,
+    /// v0.3: the stone fetched this exact file from Nexus itself.
+    Download,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,13 +201,28 @@ pub struct BuildChanged {
     pub now: String,
 }
 
+/// v0.3: how Play starts the game: through Steam (the game was found
+/// through Steam), or `DD2.exe` in the game folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LaunchRoute {
+    Steam,
+    Exe,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameSummary {
     pub root: String,
     pub build_id: Option<String>,
     pub source: GameSource,
+    /// DD2.exe runs, as the game watcher last saw it.
     pub running: bool,
+    /// v0.3: when the stone first saw this run of the game (ms); `None`
+    /// while the game is not running.
+    pub started_ms: Option<u64>,
+    /// v0.3: the route Play takes.
+    pub launch: LaunchRoute,
     pub build_changed: Option<BuildChanged>,
 }
 
@@ -224,15 +235,6 @@ pub struct ReframeworkSummary {
     pub loose_file_loader: Option<bool>,
     pub pak_directory: Option<bool>,
     pub faulty_files: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FluffySummary {
-    pub root: String,
-    pub mods_dir: String,
-    pub installed_count: usize,
-    pub unadopted_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -280,7 +282,6 @@ pub enum SwitchKey {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum CheckAction {
-    AdoptFluffy,
     EnableSwitch {
         switch: SwitchKey,
     },
@@ -292,6 +293,8 @@ pub enum CheckAction {
     Rescan,
     /// v0.2: open the parked-backup review (`InstalledView.parked`).
     ReviewParked,
+    /// v0.3: open the mods folder in Explorer (`open_mods_folder`).
+    OpenModsFolder,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -304,6 +307,33 @@ pub struct Check {
     pub action: Option<CheckAction>,
 }
 
+/// v0.3: who the stored key belongs to (`/v1/users/validate.json`). Never
+/// the key, never the e-mail.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NexusAccountView {
+    pub name: String,
+    pub premium: bool,
+    pub supporter: bool,
+    /// When the key was last validated, ms since the epoch.
+    pub checked_ms: u64,
+}
+
+/// v0.3: the stored key's standing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NexusKeyStanding {
+    /// No key; everything anonymous still works.
+    #[default]
+    None,
+    /// Validated this session; `account` is set.
+    Connected,
+    /// A key is stored but not validated this session yet.
+    Unchecked,
+    /// Nexus refused the stored key at its last validation.
+    Rejected,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NexusSummary {
@@ -313,6 +343,10 @@ pub struct NexusSummary {
     pub unlinked: usize,
     pub updates: usize,
     pub has_api_key: bool,
+    /// v0.3
+    pub key: NexusKeyStanding,
+    /// v0.3: set exactly when `key` is `connected`.
+    pub account: Option<NexusAccountView>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -338,8 +372,8 @@ pub struct RecoveryNote {
 pub struct Overview {
     pub game: Option<GameSummary>,
     pub reframework: Option<ReframeworkSummary>,
-    pub fluffy: Option<FluffySummary>,
-    pub roots: Vec<LibraryRoot>,
+    /// v0.3: the one library folder.
+    pub mods: ModsFolderView,
     pub library: LibraryStats,
     pub scan: ScanState,
     pub checks: Vec<Check>,
@@ -371,7 +405,6 @@ pub enum MatchedField {
 #[serde(rename_all = "camelCase")]
 pub struct SearchFilters {
     pub installed: Option<bool>,
-    pub root_ids: Vec<String>,
     pub include_menu_only: bool,
     /// v0.2: Nexus categories, ANY-of (a mod has one category). Empty = no
     /// filter. Read as empty when a query leaves it out (a v0.1 query).
@@ -387,16 +420,18 @@ pub struct SearchFilters {
 pub struct SearchQuery {
     pub text: String,
     pub filters: SearchFilters,
-    /// 0 = backend default (200).
+    /// 0 = no cap: every match (v0.3; v0.2 capped 0 at 200). A v0.2 query's
+    /// `rootIds` is read and ignored.
     pub limit: usize,
 }
 
+/// Who put an install in the journal: the Riftstone itself, or the journal
+/// took it over from files already in the game (`adopted`, v0.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum InstallOrigin {
     Riftstone,
-    Fluffy,
-    FluffyUnadopted,
+    Adopted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -425,7 +460,6 @@ pub struct SearchResult {
     pub bundle: Option<String>,
     pub package_name: String,
     pub package_format: PackageFormat,
-    pub root_id: String,
     pub author: Option<String>,
     pub version: Option<String>,
     pub category: Option<String>,
@@ -487,7 +521,6 @@ pub struct LabelFacets {
 #[serde(rename_all = "camelCase")]
 pub struct PackageSummary {
     pub id: String,
-    pub root_id: String,
     pub path: String,
     pub file_name: String,
     pub display_name: String,
@@ -518,14 +551,6 @@ pub struct InstalledFile {
     pub size: u64,
 }
 
-/// Who put an install in the journal: the Riftstone itself, or Fluffy (adopted).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum JournalOrigin {
-    Riftstone,
-    Fluffy,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstalledInfo {
@@ -533,7 +558,7 @@ pub struct InstalledInfo {
     pub installed_at: String,
     pub version: Option<String>,
     pub game_build: Option<String>,
-    pub origin: JournalOrigin,
+    pub origin: InstallOrigin,
     pub files: Vec<InstalledFile>,
 }
 
@@ -619,8 +644,6 @@ pub struct OptionDetail {
     pub parent_name: Option<String>,
     pub children: Vec<OptionRef>,
     pub installed: Option<InstalledInfo>,
-    /// Installed by Fluffy and not adopted yet (matched by name).
-    pub fluffy_installed: bool,
     pub conflicts: Vec<ConflictView>,
     pub update: Option<UpdateRow>,
     /// v0.2: `None` when the package is unlinked, never checked, or its
@@ -644,7 +667,10 @@ pub struct TreeNode {
     pub kind: TreeNodeKind,
     pub menu_only: bool,
     pub has_screenshot: bool,
+    /// A bundle: any child is installed.
     pub installed: bool,
+    /// v0.3: the option takes part in a conflict (a bundle: any child does).
+    pub conflicted: bool,
     pub kinds: PayloadKinds,
     pub children: Vec<TreeNode>,
 }
@@ -658,6 +684,41 @@ pub struct PackageDetail {
 }
 
 // ---------------------------------------------------------------------------
+// v0.3 — the library tree (get_library): the Rift's idle view
+// ---------------------------------------------------------------------------
+
+/// One package of the mods folder with its options nested the way their
+/// menus nest them (rift-catalog `tree::nest`), without the entry list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryPackage {
+    pub package: PackageSummary,
+    /// Options that install something (not menu-only).
+    pub installable: usize,
+    /// Options of this package in your world now (journal installs).
+    pub installed: usize,
+    /// `None` when the package is not linked to Nexus.
+    pub update: Option<UpdateBadge>,
+    /// `None` when Nexus has not labelled the package.
+    pub labels: Option<NexusLabels>,
+    /// Nexus flags the linked mod adult.
+    pub adult: bool,
+    /// At least one option of it takes part in a conflict.
+    pub conflicted: bool,
+    /// Empty for a package that yielded no options (its problems say why).
+    pub tree: Vec<TreeNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryView {
+    pub mods: ModsFolderView,
+    /// Every package in the mods folder, troubled ones too, by display name
+    /// (case-blind), then file name.
+    pub packages: Vec<LibraryPackage>,
+}
+
+// ---------------------------------------------------------------------------
 // install / uninstall
 // ---------------------------------------------------------------------------
 
@@ -665,13 +726,10 @@ pub struct PackageDetail {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum WriteAction {
     Create,
+    /// Over a file an install in the journal owns (adopted installs too).
     #[serde(rename_all = "camelCase")]
     OverwriteRiftstone {
         option_name: String,
-    },
-    #[serde(rename_all = "camelCase")]
-    OverwriteFluffy {
-        section: String,
     },
     OverwriteUnowned,
     Reinstall,
@@ -789,19 +847,18 @@ pub struct UninstallResultView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstalledRow {
-    /// A library option's id — or, for an adopted Fluffy install that matched
-    /// no option, the stand-in `fluffy#<section>` (rift-deploy's adoption
-    /// scheme; conflict layers use it too for un-adopted Fluffy installs).
+    /// Opaque: a library option's id, or, for an adopted install that matched
+    /// no library option, a stand-in (`adopted#<label>` since v0.3).
     pub option_id: String,
     pub name: String,
     pub package_name: String,
-    /// The library holds no package for this install: its package left the
-    /// library, or (a `fluffy#` stand-in) it never had one there.
+    /// The mods folder holds no package for this install: its package left
+    /// the folder, or (a stand-in) it never had one. Uninstall still works.
     pub package_missing: bool,
     pub version: Option<String>,
     pub installed_at: String,
     pub game_build: Option<String>,
-    pub origin: JournalOrigin,
+    pub origin: InstallOrigin,
     pub kinds: PayloadKinds,
     pub file_count: usize,
     pub paks: Vec<PakView>,
@@ -845,15 +902,6 @@ pub struct MissingFile {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FluffyModView {
-    pub section: String,
-    pub name: String,
-    pub file_count: usize,
-    pub matched_option_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct InjectedPak {
     pub file_name: String,
     pub native_name: String,
@@ -877,7 +925,6 @@ pub struct InstalledView {
     pub conflicts: Vec<ConflictView>,
     pub strays: Vec<StrayFile>,
     pub missing: Vec<MissingFile>,
-    pub fluffy_unadopted: Vec<FluffyModView>,
     pub pak_load: Option<PakLoadReport>,
     pub pak_count_warning: usize,
     /// v0.2: files kept aside in the backup store, each with put back / discard.
@@ -889,7 +936,8 @@ pub struct InstalledView {
 #[serde(rename_all = "camelCase")]
 pub enum OwnerKind {
     Unowned,
-    Fluffy,
+    /// v0.3: the owner is an adopted install.
+    Adopted,
     Riftstone,
 }
 
@@ -901,8 +949,8 @@ pub struct ParkedFileView {
     pub store: String,
     /// Where it belongs in the game folder.
     pub game_path: String,
-    /// Whose bytes it holds: "the file that was there before", a Fluffy
-    /// mod's name, or an install's.
+    /// Whose bytes it holds: "the file that was there before", or an
+    /// install's name.
     pub owner: String,
     pub owner_kind: OwnerKind,
     /// Its size in the store; `None` when the kept file is gone from it.
@@ -927,17 +975,43 @@ pub struct ParkedRestoreReport {
     pub restart_needed: bool,
 }
 
+// ---------------------------------------------------------------------------
+// v0.3 — Play (plan_launch, launch_game)
+// ---------------------------------------------------------------------------
+
+/// Reasons a launch may not go as the player expects; never blockers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LaunchWarning {
+    /// Pak installs exist but REFramework's dinput8.dll is missing.
+    #[serde(rename_all = "camelCase")]
+    ReframeworkMissing { paks: usize },
+    /// REFramework's pak folder switch is off.
+    #[serde(rename_all = "camelCase")]
+    PakFolderOff { paks: usize },
+    /// The loose file loader is off while loose files are installed.
+    #[serde(rename_all = "camelCase")]
+    LooseLoaderOff { files: usize },
+    /// Steam updated the game since the newest install.
+    #[serde(rename_all = "camelCase")]
+    BuildChanged { recorded: String, now: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AdoptResultView {
-    pub adopted: usize,
-    pub already_adopted: usize,
-    pub missing_files: usize,
-    /// v0.2: files left to Fluffy (outside the places the stone manages).
-    pub refused_files: usize,
-    /// v0.2: files whose bytes belong to another layer.
-    pub shared_files: usize,
-    pub unmatched: Vec<String>,
+pub struct LaunchPlanView {
+    pub launch: LaunchRoute,
+    pub warnings: Vec<LaunchWarning>,
+    /// A full sentence when Play cannot start now.
+    pub refused: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchReport {
+    pub launch: LaunchRoute,
+    /// When the stone asked Steam or Windows to start the game (ms).
+    pub launched_ms: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -1032,6 +1106,219 @@ pub struct NexusFindings {
 }
 
 // ---------------------------------------------------------------------------
+// v0.3 — a mod's files on Nexus (get_mod_files), browsing Nexus (browse_nexus)
+// ---------------------------------------------------------------------------
+
+/// Nexus's file categories. Retired: `oldVersion`, `removed`, `archived`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NexusFileCategory {
+    Main,
+    Update,
+    Optional,
+    OldVersion,
+    Miscellaneous,
+    Removed,
+    Archived,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NexusFileEntry {
+    pub file_id: u64,
+    /// The file's name on its Nexus page (not the archive's file name).
+    pub name: String,
+    pub version: Option<String>,
+    pub category: NexusFileCategory,
+    /// Bytes; `None` when Nexus does not say.
+    pub size: Option<u64>,
+    pub uploaded_ms: u64,
+    /// Whitespace-collapsed, at most 400 characters.
+    pub description: Option<String>,
+    /// The file's own patch notes, one line each.
+    pub changelog: Vec<String>,
+    /// A package in the mods folder is pinned to this exact file.
+    pub in_library: bool,
+    /// The newest file of its group that is not retired: what an update fetches.
+    pub newest: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NexusModFiles {
+    pub mod_id: u64,
+    /// The mod's name on Nexus; `None` when Nexus did not say.
+    pub mod_name: Option<String>,
+    /// `https://www.nexusmods.com/dragonsdogma2/mods/<modId>`
+    pub page_url: String,
+    pub adult: bool,
+    /// Main, update, optional, miscellaneous, then the retired ones; newest
+    /// upload first within a category.
+    pub files: Vec<NexusFileEntry>,
+}
+
+/// How `browse_nexus` orders Dragon's Dogma 2 mods. `relevance` needs text.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NexusBrowseSort {
+    #[default]
+    Endorsements,
+    Downloads,
+    Updated,
+    Relevance,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NexusBrowseQuery {
+    /// Words the player typed; `""` browses the whole game by `sort`.
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub sort: NexusBrowseSort,
+    /// Paging: 0, 20, 40 …
+    #[serde(default)]
+    pub offset: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NexusBrowsePage {
+    /// Every match Nexus counts, across pages.
+    pub total: u64,
+    pub offset: u64,
+    /// The same card shape as Find on Nexus.
+    pub mods: Vec<NexusCandidate>,
+}
+
+// ---------------------------------------------------------------------------
+// v0.3 — the key's extras: tracked mods and endorsements (get_nexus_standings)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EndorseStatus {
+    Endorsed,
+    Abstained,
+}
+
+/// One decided endorsement: `{ modId, status }`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EndorsementView {
+    pub mod_id: u64,
+    pub status: EndorseStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NexusStandings {
+    /// Dragon's Dogma 2 mods this account tracks on Nexus, as cards.
+    pub tracked: Vec<NexusCandidate>,
+    /// This account's decided endorsements; a mod absent here is undecided.
+    pub endorsements: Vec<EndorsementView>,
+    /// When the spine last asked Nexus (ms).
+    pub checked_ms: u64,
+}
+
+// ---------------------------------------------------------------------------
+// v0.3 — downloads into the mods folder
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DownloadPhase {
+    /// A free account's download, parked until the site's Mod Manager
+    /// Download link (nxm://) for the same mod and file arrives.
+    Waiting,
+    Queued,
+    /// Asking Nexus for a download link.
+    Linking,
+    Downloading,
+    /// The size, then the MD5 round trip.
+    Verifying,
+    /// In the mods folder.
+    Landed,
+    Failed,
+    Cancelled,
+}
+
+impl DownloadPhase {
+    /// Landed, failed or cancelled: the row is over (`clear_downloads`
+    /// forgets these).
+    pub fn is_over(self) -> bool {
+        matches!(
+            self,
+            DownloadPhase::Landed | DownloadPhase::Failed | DownloadPhase::Cancelled
+        )
+    }
+}
+
+/// One download of this session. Serialize-only: `failure` is rift-core's
+/// `RiftError`, which crosses the bridge exactly as a rejected command's
+/// error does (`{ kind, detail }`) and is never read back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadView {
+    pub id: String,
+    pub mod_id: u64,
+    pub file_id: u64,
+    /// The mod's name on Nexus, when known.
+    pub mod_name: Option<String>,
+    /// The file's name on its Nexus page, when known.
+    pub file_name: Option<String>,
+    pub version: Option<String>,
+    /// The package this download updates, when it started from an update row.
+    pub for_package_id: Option<String>,
+    pub phase: DownloadPhase,
+    pub bytes_done: u64,
+    /// `None` until Nexus or the server states it.
+    pub bytes_total: Option<u64>,
+    /// The archive's file name in the mods folder once landed.
+    pub landed_as: Option<String>,
+    /// The new package's id once landed.
+    pub package_id: Option<String>,
+    /// The same file was in the mods folder already: nothing new was written.
+    pub already_had: bool,
+    /// For phase `failed`: the failure the window voices.
+    pub failure: Option<rift_core::RiftError>,
+    /// For phase `waiting`: the file's page on Nexus, where Mod Manager
+    /// Download sends the link back to the stone.
+    pub nexus_page_url: Option<String>,
+    pub started_ms: u64,
+    pub finished_ms: Option<u64>,
+}
+
+// ---------------------------------------------------------------------------
+// v0.3 — the nxm:// handler (Nexus's Mod Manager Download button)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NxmHandlerState {
+    /// Windows sends nxm:// links to this riftstone.exe.
+    Ours,
+    /// No program answers them.
+    None,
+    /// Another program answers them (`other` names its exe).
+    Other,
+    /// Not on Windows (the bench).
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NxmHandlerView {
+    pub state: NxmHandlerState,
+    /// The other program's file name only (`Wagonmaster.exe`); never a path.
+    pub other: Option<String>,
+    /// Turning the stone off gives the link back to this program's file
+    /// name (the handler the stone replaced), or to nobody.
+    pub gives_back_to: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // settings
 // ---------------------------------------------------------------------------
 
@@ -1076,6 +1363,9 @@ impl Default for Settings {
 pub struct ScanProgressEvent {
     pub done: usize,
     pub total: usize,
+    /// The file name of the package just read; v0.3: while the scan confirms
+    /// a relink by reading a package, `checking <file name> against the
+    /// installed files (<i> of <n>)` (the counts above stand).
     pub current: String,
 }
 
@@ -1105,8 +1395,33 @@ pub struct UpdatesProgressEvent {
     pub total: usize,
 }
 
-/// The `{}` payload of `rift://library-changed`, `rift://game-changed` and
-/// `rift://updates-changed`.
+/// v0.3: `rift://download-progress`, at most one per 200 ms per download,
+/// plus the last.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadProgressEvent {
+    pub id: String,
+    pub phase: DownloadPhase,
+    pub bytes_done: u64,
+    pub bytes_total: Option<u64>,
+}
+
+/// v0.3: `rift://nxm-received`. `accepted`: a download was started or a
+/// waiting one resumed (`download_id`); otherwise `refusal` says why. The
+/// ids are `None` when the link could not be read. Serialize-only, like
+/// [`DownloadView`]: `refusal` is rift-core's `RiftError`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NxmReceivedEvent {
+    pub mod_id: Option<u64>,
+    pub file_id: Option<u64>,
+    pub accepted: bool,
+    pub download_id: Option<String>,
+    pub refusal: Option<rift_core::RiftError>,
+}
+
+/// The `{}` payload of `rift://library-changed`, `rift://game-changed`,
+/// `rift://updates-changed` and `rift://downloads-changed`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Nothing {}
 
@@ -1138,16 +1453,6 @@ impl From<rift_core::PackageFormat> for PackageFormat {
     }
 }
 
-impl From<rift_core::RootKind> for RootKind {
-    fn from(kind: rift_core::RootKind) -> Self {
-        match kind {
-            rift_core::RootKind::Fluffy => RootKind::Fluffy,
-            rift_core::RootKind::Downloads => RootKind::Downloads,
-            rift_core::RootKind::Custom => RootKind::Custom,
-        }
-    }
-}
-
 impl From<rift_deploy::DeployKind> for DeployKind {
     fn from(kind: rift_deploy::DeployKind) -> Self {
         match kind {
@@ -1166,18 +1471,6 @@ impl From<rift_core::PayloadKinds> for PayloadKinds {
             loose: kinds.loose,
             reframework: kinds.reframework,
             root: kinds.root,
-        }
-    }
-}
-
-impl From<&rift_core::LibraryRoot> for LibraryRoot {
-    fn from(root: &rift_core::LibraryRoot) -> Self {
-        LibraryRoot {
-            id: root.id.clone(),
-            path: path_text(&root.path),
-            label: root.label.clone(),
-            kind: root.kind.into(),
-            dd2_shaped_only: root.dd2_shaped_only,
         }
     }
 }
@@ -1298,6 +1591,7 @@ impl From<rift_core::LinkSource> for LinkSource {
             rift_core::LinkSource::Homepage => LinkSource::Homepage,
             rift_core::LinkSource::Md5 => LinkSource::Md5,
             rift_core::LinkSource::Manual => LinkSource::Manual,
+            rift_core::LinkSource::Download => LinkSource::Download,
         }
     }
 }
@@ -1383,7 +1677,6 @@ impl From<&rift_deploy::CheckAction> for CheckAction {
     /// `discard_parked`.
     fn from(action: &rift_deploy::CheckAction) -> Self {
         match action {
-            rift_deploy::CheckAction::AdoptFluffy => CheckAction::AdoptFluffy,
             rift_deploy::CheckAction::EnableSwitch { switch_key } => CheckAction::EnableSwitch {
                 switch: (*switch_key).into(),
             },
@@ -1395,16 +1688,18 @@ impl From<&rift_deploy::CheckAction> for CheckAction {
     }
 }
 
-/// rift-deploy's preflight checks whose facts the window draws as rows of
-/// its own: the Preflight page lists the game, its build, REFramework, both
-/// switches and Fluffy itself, and skips the checks under its `OWN_CHECKS`
-/// ids (`src/pages/PreflightPage.vue`). rift-deploy names four of them
-/// differently: its id → the window's.
+/// The checks whose facts the window draws as rows of its own: the Preflight
+/// page lists the game, its build, REFramework, both switches and the mods
+/// folder itself, and skips the checks under its `OWN_CHECKS` ids
+/// (`src/pages/PreflightPage.vue`). Besides `game` and `reframework`, whose
+/// ids both sides share, each row is here as the id its check is made under
+/// → the window's: rift-deploy names three of them differently, and `mods`
+/// is the spine's own mods-folder check (v0.3).
 pub const WINDOW_CHECK_IDS: &[(&str, &str)] = &[
     ("buildChanged", "build"),
     ("pakDirectory", "pakdir"),
     ("looseFileLoader", "loose"),
-    ("fluffyUnadopted", "fluffy"),
+    ("mods", "mods"),
 ];
 
 /// rift-deploy's checks the window shows from other overview fields and never
@@ -1432,11 +1727,11 @@ impl From<&rift_deploy::Check> for Check {
     }
 }
 
-impl From<&rift_deploy::Origin> for JournalOrigin {
+impl From<&rift_deploy::Origin> for InstallOrigin {
     fn from(origin: &rift_deploy::Origin) -> Self {
         match origin {
-            rift_deploy::Origin::Riftstone => JournalOrigin::Riftstone,
-            rift_deploy::Origin::AdoptedFromFluffy { .. } => JournalOrigin::Fluffy,
+            rift_deploy::Origin::Riftstone => InstallOrigin::Riftstone,
+            rift_deploy::Origin::Adopted { .. } => InstallOrigin::Adopted,
         }
     }
 }
@@ -1471,9 +1766,6 @@ impl From<&rift_deploy::WriteAction> for WriteAction {
                     option_name: option_name.clone(),
                 }
             }
-            rift_deploy::WriteAction::OverwriteFluffy { section } => WriteAction::OverwriteFluffy {
-                section: section.clone(),
-            },
             rift_deploy::WriteAction::OverwriteUnowned => WriteAction::OverwriteUnowned,
             rift_deploy::WriteAction::Reinstall => WriteAction::Reinstall,
         }
@@ -1594,15 +1886,43 @@ impl From<&rift_deploy::UninstallReport> for UninstallResultView {
     }
 }
 
-impl From<&rift_deploy::AdoptReport> for AdoptResultView {
-    fn from(report: &rift_deploy::AdoptReport) -> Self {
-        AdoptResultView {
-            adopted: report.adopted,
-            already_adopted: report.already_adopted,
-            missing_files: report.missing_files,
-            refused_files: report.refused_files,
-            shared_files: report.shared_files,
-            unmatched: report.unmatched.clone(),
+impl From<&rift_deploy::LaunchRoute> for LaunchRoute {
+    fn from(route: &rift_deploy::LaunchRoute) -> Self {
+        match route {
+            rift_deploy::LaunchRoute::Steam { .. } => LaunchRoute::Steam,
+            rift_deploy::LaunchRoute::Exe { .. } => LaunchRoute::Exe,
+        }
+    }
+}
+
+impl From<&rift_deploy::LaunchWarning> for LaunchWarning {
+    fn from(warning: &rift_deploy::LaunchWarning) -> Self {
+        match warning {
+            rift_deploy::LaunchWarning::ReframeworkMissing { paks } => {
+                LaunchWarning::ReframeworkMissing { paks: *paks }
+            }
+            rift_deploy::LaunchWarning::PakFolderOff { paks } => {
+                LaunchWarning::PakFolderOff { paks: *paks }
+            }
+            rift_deploy::LaunchWarning::LooseLoaderOff { files } => {
+                LaunchWarning::LooseLoaderOff { files: *files }
+            }
+            rift_deploy::LaunchWarning::BuildChanged { recorded, now } => {
+                LaunchWarning::BuildChanged {
+                    recorded: recorded.clone(),
+                    now: now.clone(),
+                }
+            }
+        }
+    }
+}
+
+impl From<&rift_deploy::LaunchPlan> for LaunchPlanView {
+    fn from(plan: &rift_deploy::LaunchPlan) -> Self {
+        LaunchPlanView {
+            launch: (&plan.route).into(),
+            warnings: plan.warnings.iter().map(LaunchWarning::from).collect(),
+            refused: plan.refused.clone(),
         }
     }
 }
@@ -1611,7 +1931,7 @@ impl From<rift_deploy::OwnerKind> for OwnerKind {
     fn from(kind: rift_deploy::OwnerKind) -> Self {
         match kind {
             rift_deploy::OwnerKind::Unowned => OwnerKind::Unowned,
-            rift_deploy::OwnerKind::Fluffy => OwnerKind::Fluffy,
+            rift_deploy::OwnerKind::Adopted => OwnerKind::Adopted,
             rift_deploy::OwnerKind::Riftstone => OwnerKind::Riftstone,
         }
     }
@@ -1745,7 +2065,6 @@ impl From<&SearchQuery> for rift_catalog::SearchQuery {
             text: query.text.clone(),
             filters: rift_catalog::SearchFilters {
                 installed: query.filters.installed,
-                root_ids: query.filters.root_ids.clone(),
                 include_menu_only: query.filters.include_menu_only,
                 categories: query.filters.categories.clone(),
                 tags: query.filters.tags.clone(),
@@ -1815,6 +2134,83 @@ impl From<&rift_nexus::UpdateState> for UpdateStateView {
     }
 }
 
+impl From<rift_nexus::FileCategory> for NexusFileCategory {
+    fn from(category: rift_nexus::FileCategory) -> Self {
+        match category {
+            rift_nexus::FileCategory::Main => NexusFileCategory::Main,
+            rift_nexus::FileCategory::Update => NexusFileCategory::Update,
+            rift_nexus::FileCategory::Optional => NexusFileCategory::Optional,
+            rift_nexus::FileCategory::OldVersion => NexusFileCategory::OldVersion,
+            rift_nexus::FileCategory::Miscellaneous => NexusFileCategory::Miscellaneous,
+            rift_nexus::FileCategory::Removed => NexusFileCategory::Removed,
+            rift_nexus::FileCategory::Archived => NexusFileCategory::Archived,
+            rift_nexus::FileCategory::Unknown => NexusFileCategory::Unknown,
+        }
+    }
+}
+
+impl From<NexusBrowseSort> for rift_nexus::BrowseSort {
+    fn from(sort: NexusBrowseSort) -> Self {
+        match sort {
+            NexusBrowseSort::Endorsements => rift_nexus::BrowseSort::Endorsements,
+            NexusBrowseSort::Downloads => rift_nexus::BrowseSort::Downloads,
+            NexusBrowseSort::Updated => rift_nexus::BrowseSort::Updated,
+            NexusBrowseSort::Relevance => rift_nexus::BrowseSort::Relevance,
+        }
+    }
+}
+
+impl From<rift_nexus::EndorseStatus> for EndorseStatus {
+    fn from(status: rift_nexus::EndorseStatus) -> Self {
+        match status {
+            rift_nexus::EndorseStatus::Endorsed => EndorseStatus::Endorsed,
+            rift_nexus::EndorseStatus::Abstained => EndorseStatus::Abstained,
+        }
+    }
+}
+
+impl From<EndorseStatus> for rift_nexus::EndorseStatus {
+    fn from(status: EndorseStatus) -> Self {
+        match status {
+            EndorseStatus::Endorsed => rift_nexus::EndorseStatus::Endorsed,
+            EndorseStatus::Abstained => rift_nexus::EndorseStatus::Abstained,
+        }
+    }
+}
+
+impl NexusCandidate {
+    /// A mod the account tracks, as a card: named through the batched v2 mod
+    /// lookup, which knows the name, the mod-level version, the category,
+    /// the adult flag and the last update, and leaves the rest unknown.
+    /// `None` for `known` is a mod that lookup did not return (gone from
+    /// Nexus): it still gets a card, so it can be untracked.
+    pub fn of_tracked(
+        mod_id: u64,
+        known: Option<&rift_nexus::NexusMod>,
+        linked_packages: usize,
+    ) -> Self {
+        NexusCandidate {
+            mod_id,
+            name: known
+                .map(|known| known.name.trim().to_string())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| format!("Nexus mod {mod_id}")),
+            author: None,
+            version: known.and_then(|known| known.version.clone()),
+            category: known.and_then(|known| known.category.clone()),
+            adult: known.is_some_and(|known| known.adult),
+            downloads: None,
+            endorsements: None,
+            summary: None,
+            updated_ms: known
+                .and_then(|known| known.updated_ms)
+                .and_then(|ms| i64::try_from(ms).ok()),
+            page_url: rift_nexus::mod_page_url(mod_id),
+            linked_packages,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests — every key the TS reads, every union tag, every string literal.
 // ---------------------------------------------------------------------------
@@ -1822,6 +2218,7 @@ impl From<&rift_nexus::UpdateState> for UpdateStateView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rift_core::{NexusReason, RiftError};
     use serde::de::DeserializeOwned;
     use serde_json::{json, Value};
 
@@ -1907,8 +2304,7 @@ mod tests {
     fn package_summary() -> PackageSummary {
         PackageSummary {
             id: "00000000000000aa".into(),
-            root_id: "fluffy".into(),
-            path: "C:\\Modding\\Fluffy\\Games\\DragonsDogma2\\Mods\\Vernworth Cloaks.zip".into(),
+            path: "D:\\Vernworth\\The Riftstone\\mods\\Vernworth Cloaks.zip".into(),
             file_name: "Vernworth Cloaks.zip".into(),
             display_name: "Vernworth Cloaks".into(),
             format: PackageFormat::Zip,
@@ -1991,11 +2387,6 @@ mod tests {
             (PackageFormat::Folder, "folder"),
         ]);
         literals(&[
-            (RootKind::Fluffy, "fluffy"),
-            (RootKind::Downloads, "downloads"),
-            (RootKind::Custom, "custom"),
-        ]);
-        literals(&[
             (DeployKind::Pak, "pak"),
             (DeployKind::Loose, "loose"),
             (DeployKind::Reframework, "reframework"),
@@ -2021,6 +2412,7 @@ mod tests {
             (LinkSource::Homepage, "homepage"),
             (LinkSource::Md5, "md5"),
             (LinkSource::Manual, "manual"),
+            (LinkSource::Download, "download"),
         ]);
         literals(&[
             (GameSource::Steam, "steam"),
@@ -2062,22 +2454,24 @@ mod tests {
         ]);
         literals(&[
             (OwnerKind::Unowned, "unowned"),
-            (OwnerKind::Fluffy, "fluffy"),
+            (OwnerKind::Adopted, "adopted"),
             (OwnerKind::Riftstone, "riftstone"),
         ]);
         literals(&[
             (InstallOrigin::Riftstone, "riftstone"),
-            (InstallOrigin::Fluffy, "fluffy"),
-            (InstallOrigin::FluffyUnadopted, "fluffyUnadopted"),
+            (InstallOrigin::Adopted, "adopted"),
+        ]);
+        literals(&[(LaunchRoute::Steam, "steam"), (LaunchRoute::Exe, "exe")]);
+        literals(&[
+            (NexusKeyStanding::None, "none"),
+            (NexusKeyStanding::Connected, "connected"),
+            (NexusKeyStanding::Unchecked, "unchecked"),
+            (NexusKeyStanding::Rejected, "rejected"),
         ]);
         literals(&[
             (UpdateBadge::Available, "available"),
             (UpdateBadge::Current, "current"),
             (UpdateBadge::Unknown, "unknown"),
-        ]);
-        literals(&[
-            (JournalOrigin::Riftstone, "riftstone"),
-            (JournalOrigin::Fluffy, "fluffy"),
         ]);
         literals(&[
             (TreeNodeKind::Option, "option"),
@@ -2145,10 +2539,10 @@ mod tests {
     #[test]
     fn check_action_union() {
         for (action, kind) in [
-            (CheckAction::AdoptFluffy, "adoptFluffy"),
             (CheckAction::PickGameFolder, "pickGameFolder"),
             (CheckAction::Rescan, "rescan"),
             (CheckAction::ReviewParked, "reviewParked"),
+            (CheckAction::OpenModsFolder, "openModsFolder"),
         ] {
             assert_eq!(round_trip(&action, &["kind"])["kind"], kind);
         }
@@ -2261,13 +2655,6 @@ mod tests {
             &["kind", "optionName"],
         );
         assert_eq!(riftstone["kind"], "overwriteRiftstone");
-        let fluffy = round_trip(
-            &WriteAction::OverwriteFluffy {
-                section: "LanternGlow-v2.1".into(),
-            },
-            &["kind", "section"],
-        );
-        assert_eq!(fluffy["kind"], "overwriteFluffy");
     }
 
     #[test]
@@ -2362,14 +2749,11 @@ mod tests {
     #[test]
     fn library_atoms_carry_exactly_the_ts_keys() {
         round_trip(
-            &LibraryRoot {
-                id: "downloads".into(),
-                path: "C:\\Users\\arisen\\Downloads".into(),
-                label: "Downloads".into(),
-                kind: RootKind::Downloads,
-                dd2_shaped_only: true,
+            &ModsFolderView {
+                path: "D:\\Vernworth\\The Riftstone\\mods".into(),
+                exists: true,
             },
-            &["id", "path", "label", "kind", "dd2ShapedOnly"],
+            &["path", "exists"],
         );
         round_trip(&kinds(), &["pak", "loose", "reframework", "root"]);
         round_trip(
@@ -2443,7 +2827,9 @@ mod tests {
                 root: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Dragons Dogma 2".into(),
                 build_id: Some("25290080".into()),
                 source: GameSource::Steam,
-                running: false,
+                running: true,
+                started_ms: Some(1_792_000_000_000),
+                launch: LaunchRoute::Steam,
                 build_changed: Some(BuildChanged {
                     recorded: "25290080".into(),
                     now: "25391144".into(),
@@ -2457,13 +2843,10 @@ mod tests {
                 pak_directory: None,
                 faulty_files: vec![],
             }),
-            fluffy: Some(FluffySummary {
-                root: "C:\\Modding\\Fluffy".into(),
-                mods_dir: "C:\\Modding\\Fluffy\\Games\\DragonsDogma2\\Mods".into(),
-                installed_count: 6,
-                unadopted_count: 1,
-            }),
-            roots: vec![],
+            mods: ModsFolderView {
+                path: "D:\\Vernworth\\The Riftstone\\mods".into(),
+                exists: true,
+            },
             library: LibraryStats {
                 packages: 11,
                 options: 300,
@@ -2487,7 +2870,14 @@ mod tests {
                 linked: 4,
                 unlinked: 7,
                 updates: 1,
-                has_api_key: false,
+                has_api_key: true,
+                key: NexusKeyStanding::Connected,
+                account: Some(NexusAccountView {
+                    name: "Arisen of Vernworth".into(),
+                    premium: true,
+                    supporter: false,
+                    checked_ms: 1_792_000_000_000,
+                }),
             },
             recovered: Some(RecoveryNote {
                 option_name: "Lantern Glow Recolor".into(),
@@ -2500,8 +2890,7 @@ mod tests {
             &[
                 "game",
                 "reframework",
-                "fluffy",
-                "roots",
+                "mods",
                 "library",
                 "scan",
                 "checks",
@@ -2511,8 +2900,18 @@ mod tests {
         );
         assert_eq!(
             keys(&json["game"]),
-            sorted(&["root", "buildId", "source", "running", "buildChanged"])
+            sorted(&[
+                "root",
+                "buildId",
+                "source",
+                "running",
+                "startedMs",
+                "launch",
+                "buildChanged"
+            ])
         );
+        assert_eq!(json["game"]["launch"], "steam");
+        assert_eq!(keys(&json["mods"]), sorted(&["path", "exists"]));
         assert_eq!(
             keys(&json["game"]["buildChanged"]),
             sorted(&["recorded", "now"])
@@ -2529,10 +2928,6 @@ mod tests {
             ])
         );
         assert!(json["reframework"]["pakDirectory"].is_null());
-        assert_eq!(
-            keys(&json["fluffy"]),
-            sorted(&["root", "modsDir", "installedCount", "unadoptedCount"])
-        );
         assert_eq!(
             keys(&json["library"]),
             sorted(&[
@@ -2558,8 +2953,28 @@ mod tests {
                 "unlinked",
                 "updates",
                 "hasApiKey",
+                "key",
+                "account",
             ])
         );
+        assert_eq!(
+            keys(&json["nexus"]["account"]),
+            sorted(&["name", "premium", "supporter", "checkedMs"])
+        );
+        // No key: "none", and the account is null, never absent.
+        let bare = serde_json::to_value(NexusSummary::default()).unwrap();
+        assert_eq!(bare["key"], "none");
+        assert!(bare["account"].is_null());
+        // Not running: startedMs is null, never absent.
+        let stopped = serde_json::to_value(GameSummary {
+            running: false,
+            started_ms: None,
+            launch: LaunchRoute::Exe,
+            ..overview.game.clone().unwrap()
+        })
+        .unwrap();
+        assert!(stopped["startedMs"].is_null());
+        assert_eq!(stopped["launch"], "exe");
         assert_eq!(
             keys(&json["recovered"]),
             sorted(&["optionName", "action", "filesRolledBack"])
@@ -2569,41 +2984,41 @@ mod tests {
     #[test]
     fn search_shapes_carry_exactly_the_ts_keys() {
         let query: SearchQuery = serde_json::from_value(json!({
-            "text": "\"ermine cape\" top_314",
+            "text": "\"ermine cape\" ermine_cape",
             "filters": {
-                "installed": null, "rootIds": ["fluffy"], "includeMenuOnly": false,
+                "installed": null, "includeMenuOnly": false,
                 "categories": ["Armour", "Visuals"], "tags": ["Utilities for Players"]
             },
             "limit": 0
         }))
         .unwrap();
-        assert_eq!(query.filters.root_ids, vec!["fluffy".to_string()]);
         assert_eq!(query.filters.installed, None);
         assert_eq!(query.filters.categories, vec!["Armour", "Visuals"]);
         assert_eq!(query.filters.tags, vec!["Utilities for Players"]);
         let json = round_trip(&query, &["text", "filters", "limit"]);
         assert_eq!(
             keys(&json["filters"]),
-            sorted(&[
-                "installed",
-                "rootIds",
-                "includeMenuOnly",
-                "categories",
-                "tags"
-            ])
+            sorted(&["installed", "includeMenuOnly", "categories", "tags"])
         );
-        // The crate gets both label filters as the window sent them.
+        // The crate gets both label filters as the window sent them, and the
+        // window's 0 as the catalog's "no cap".
         let crate_query = rift_catalog::SearchQuery::from(&query);
         assert_eq!(crate_query.filters.categories, query.filters.categories);
         assert_eq!(crate_query.filters.tags, query.filters.tags);
-        // A v0.1 query (no label filters) still reads: no label filter.
+        assert_eq!(crate_query.limit, 0);
+        // A v0.1 query (no label filters) still reads: no label filter; a
+        // v0.2 query's root filter is read and ignored.
         let v01: SearchQuery = serde_json::from_value(json!({
             "text": "",
-            "filters": { "installed": null, "rootIds": [], "includeMenuOnly": false },
+            "filters": { "installed": null, "rootIds": ["custom-1"], "includeMenuOnly": false },
             "limit": 0
         }))
         .unwrap();
         assert!(v01.filters.categories.is_empty() && v01.filters.tags.is_empty());
+        assert_eq!(
+            keys(&serde_json::to_value(&v01).unwrap()["filters"]),
+            sorted(&["installed", "includeMenuOnly", "categories", "tags"])
+        );
 
         let result = SearchResult {
             option_id: "00000000000000aa#Glow".into(),
@@ -2614,7 +3029,6 @@ mod tests {
             bundle: None,
             package_name: "Lantern Glow Recolor".into(),
             package_format: PackageFormat::Zip,
-            root_id: "fluffy".into(),
             author: None,
             version: None,
             category: None,
@@ -2625,8 +3039,8 @@ mod tests {
             matched: vec![MatchedField::Name, MatchedField::File],
             file_matches: vec!["Glow/LanternGlow.pak".into()],
             installed: Some(InstallBadge {
-                origin: InstallOrigin::FluffyUnadopted,
-                installed_at: None,
+                origin: InstallOrigin::Adopted,
+                installed_at: Some("2026-10-16T10:00:00Z".into()),
             }),
             update: Some(UpdateBadge::Current),
             conflicted: false,
@@ -2645,7 +3059,6 @@ mod tests {
                 "bundle",
                 "packageName",
                 "packageFormat",
-                "rootId",
                 "author",
                 "version",
                 "category",
@@ -2736,7 +3149,6 @@ mod tests {
             &package_summary(),
             &[
                 "id",
-                "rootId",
                 "path",
                 "fileName",
                 "displayName",
@@ -2799,7 +3211,7 @@ mod tests {
                 installed_at: "2026-10-16T10:00:00Z".into(),
                 version: Some("2.1".into()),
                 game_build: Some("25290080".into()),
-                origin: JournalOrigin::Riftstone,
+                origin: InstallOrigin::Riftstone,
                 files: vec![InstalledFile {
                     game_path: "pak_mods/zrift-0000-LanternGlow.pak".into(),
                     kind: DeployKind::Pak,
@@ -2826,7 +3238,6 @@ mod tests {
             parent_name: Some("Cloaks".into()),
             children: vec![],
             installed: None,
-            fluffy_installed: false,
             conflicts: vec![conflict.clone()],
             update: Some(update_row()),
             labels: Some(NexusLabels {
@@ -2843,7 +3254,6 @@ mod tests {
                 "parentName",
                 "children",
                 "installed",
-                "fluffyInstalled",
                 "conflicts",
                 "update",
                 "labels",
@@ -2863,29 +3273,173 @@ mod tests {
             "unlinked or never checked: null, not absent"
         );
 
-        let tree = round_trip(
-            &TreeNode {
-                option_id: None,
-                label: "Cloaks".into(),
-                kind: TreeNodeKind::Bundle,
+        let tree = round_trip(&tree_node(), &TREE_NODE_KEYS);
+        assert!(tree["optionId"].is_null());
+        assert_eq!(tree["conflicted"], true);
+    }
+
+    const TREE_NODE_KEYS: [&str; 9] = [
+        "optionId",
+        "label",
+        "kind",
+        "menuOnly",
+        "hasScreenshot",
+        "installed",
+        "conflicted",
+        "kinds",
+        "children",
+    ];
+
+    fn tree_node() -> TreeNode {
+        TreeNode {
+            option_id: None,
+            label: "Cloaks".into(),
+            kind: TreeNodeKind::Bundle,
+            menu_only: false,
+            has_screenshot: false,
+            installed: false,
+            conflicted: true,
+            kinds: kinds(),
+            children: vec![TreeNode {
+                option_id: Some("00000000000000aa#Cloaks/Ermine Cape".into()),
+                label: "Ermine Cape".into(),
+                kind: TreeNodeKind::Option,
                 menu_only: false,
-                has_screenshot: false,
+                has_screenshot: true,
                 installed: false,
+                conflicted: true,
                 kinds: kinds(),
                 children: vec![],
+            }],
+        }
+    }
+
+    #[test]
+    fn the_library_view_carries_exactly_the_ts_keys() {
+        let view = LibraryView {
+            mods: ModsFolderView {
+                path: "D:\\Vernworth\\The Riftstone\\mods".into(),
+                exists: true,
             },
-            &[
-                "optionId",
-                "label",
-                "kind",
-                "menuOnly",
-                "hasScreenshot",
+            packages: vec![LibraryPackage {
+                package: package_summary(),
+                installable: 2,
+                installed: 1,
+                update: Some(UpdateBadge::Available),
+                labels: Some(NexusLabels {
+                    category: Some("Armour".into()),
+                    tags: vec!["Cloaks".into()],
+                    adult: false,
+                }),
+                adult: false,
+                conflicted: true,
+                tree: vec![tree_node()],
+            }],
+        };
+        let json = round_trip(&view, &["mods", "packages"]);
+        assert_eq!(
+            keys(&json["packages"][0]),
+            sorted(&[
+                "package",
+                "installable",
                 "installed",
-                "kinds",
-                "children",
-            ],
+                "update",
+                "labels",
+                "adult",
+                "conflicted",
+                "tree",
+            ])
         );
-        assert!(tree["optionId"].is_null());
+        assert_eq!(
+            keys(&json["packages"][0]["tree"][0]),
+            sorted(&TREE_NODE_KEYS)
+        );
+        assert_eq!(
+            keys(&json["packages"][0]["tree"][0]["children"][0]),
+            sorted(&TREE_NODE_KEYS)
+        );
+        // Unlinked and unlabelled: null, never absent.
+        let bare = serde_json::to_value(LibraryPackage {
+            update: None,
+            labels: None,
+            tree: vec![],
+            ..view.packages[0].clone()
+        })
+        .unwrap();
+        assert!(bare["update"].is_null() && bare["labels"].is_null());
+        assert_eq!(bare["tree"], json!([]));
+    }
+
+    #[test]
+    fn play_shapes_carry_exactly_the_ts_keys() {
+        let plan = round_trip(
+            &LaunchPlanView {
+                launch: LaunchRoute::Exe,
+                warnings: vec![
+                    LaunchWarning::ReframeworkMissing { paks: 2 },
+                    LaunchWarning::PakFolderOff { paks: 2 },
+                    LaunchWarning::LooseLoaderOff { files: 3 },
+                    LaunchWarning::BuildChanged {
+                        recorded: "25290080".into(),
+                        now: "25391144".into(),
+                    },
+                ],
+                refused: None,
+            },
+            &["launch", "warnings", "refused"],
+        );
+        assert_eq!(plan["launch"], "exe");
+        assert!(plan["refused"].is_null(), "null, never absent");
+        assert_eq!(
+            plan["warnings"],
+            json!([
+                { "kind": "reframeworkMissing", "paks": 2 },
+                { "kind": "pakFolderOff", "paks": 2 },
+                { "kind": "looseLoaderOff", "files": 3 },
+                { "kind": "buildChanged", "recorded": "25290080", "now": "25391144" }
+            ])
+        );
+        round_trip(
+            &LaunchReport {
+                launch: LaunchRoute::Steam,
+                launched_ms: 1_792_000_000_000,
+            },
+            &["launch", "launchedMs"],
+        );
+
+        // From rift-deploy's plan, field for field: the route crosses as its name.
+        let from_crate = LaunchPlanView::from(&rift_deploy::LaunchPlan {
+            route: rift_deploy::LaunchRoute::Exe {
+                exe: std::path::PathBuf::from("/game/DD2.exe"),
+                cwd: std::path::PathBuf::from("/game"),
+            },
+            warnings: vec![rift_deploy::LaunchWarning::LooseLoaderOff { files: 1 }],
+            refused: Some("Dragon's Dogma 2 is already running.".into()),
+        });
+        assert_eq!(
+            serde_json::to_value(from_crate).unwrap(),
+            json!({
+                "launch": "exe",
+                "warnings": [{ "kind": "looseLoaderOff", "files": 1 }],
+                "refused": "Dragon's Dogma 2 is already running."
+            }),
+            "the exe's path never crosses the bridge"
+        );
+        // rift-deploy serializes its warnings the same way.
+        for warning in [
+            rift_deploy::LaunchWarning::ReframeworkMissing { paks: 1 },
+            rift_deploy::LaunchWarning::PakFolderOff { paks: 1 },
+            rift_deploy::LaunchWarning::LooseLoaderOff { files: 1 },
+            rift_deploy::LaunchWarning::BuildChanged {
+                recorded: "1".into(),
+                now: "2".into(),
+            },
+        ] {
+            assert_eq!(
+                serde_json::to_value(LaunchWarning::from(&warning)).unwrap(),
+                serde_json::to_value(&warning).unwrap()
+            );
+        }
     }
 
     #[test]
@@ -2973,24 +3527,6 @@ mod tests {
                 "restartNeeded",
             ],
         );
-        round_trip(
-            &AdoptResultView {
-                adopted: 1,
-                already_adopted: 5,
-                missing_files: 0,
-                refused_files: 2,
-                shared_files: 1,
-                unmatched: vec!["Ox Cart Express".into()],
-            },
-            &[
-                "adopted",
-                "alreadyAdopted",
-                "missingFiles",
-                "refusedFiles",
-                "sharedFiles",
-                "unmatched",
-            ],
-        );
     }
 
     #[test]
@@ -3004,7 +3540,7 @@ mod tests {
                 version: None,
                 installed_at: "2026-10-16T10:00:00Z".into(),
                 game_build: None,
-                origin: JournalOrigin::Fluffy,
+                origin: InstallOrigin::Adopted,
                 kinds: kinds(),
                 file_count: 1,
                 paks: vec![PakView {
@@ -3023,12 +3559,6 @@ mod tests {
                 option_id: "00000000000000aa#Glow".into(),
                 option_name: "Lantern Glow Recolor".into(),
                 game_path: "natives/stm/a.mesh".into(),
-            }],
-            fluffy_unadopted: vec![FluffyModView {
-                section: "OxCart".into(),
-                name: "Ox Cart Express".into(),
-                file_count: 1,
-                matched_option_id: None,
             }],
             pak_load: Some(PakLoadReport {
                 log_started: Some("2026-10-14 21:34:14.970".into()),
@@ -3059,7 +3589,6 @@ mod tests {
                 "conflicts",
                 "strays",
                 "missing",
-                "fluffyUnadopted",
                 "pakLoad",
                 "pakCountWarning",
                 "parked",
@@ -3106,10 +3635,6 @@ mod tests {
         assert_eq!(
             keys(&json["missing"][0]),
             sorted(&["optionId", "optionName", "gamePath"])
-        );
-        assert_eq!(
-            keys(&json["fluffyUnadopted"][0]),
-            sorted(&["section", "name", "fileCount", "matchedOptionId",])
         );
         assert_eq!(
             keys(&json["pakLoad"]),
@@ -3328,6 +3853,298 @@ mod tests {
         );
     }
 
+    fn file_entry() -> NexusFileEntry {
+        NexusFileEntry {
+            file_id: 9001,
+            name: "Lantern Glow Recolor".into(),
+            version: Some("2.2".into()),
+            category: NexusFileCategory::Main,
+            size: Some(12_845_056),
+            uploaded_ms: 1_791_987_780_000,
+            description: Some("Warmer amber for every hand lantern.".into()),
+            changelog: vec!["Amber for every lantern.".into()],
+            in_library: false,
+            newest: true,
+        }
+    }
+
+    fn download_view() -> DownloadView {
+        DownloadView {
+            id: "18f3a2b4c5d-1".into(),
+            mod_id: 2207,
+            file_id: 9001,
+            mod_name: Some("Lantern Glow Recolor".into()),
+            file_name: Some("Lantern Glow Recolor".into()),
+            version: Some("2.2".into()),
+            for_package_id: None,
+            phase: DownloadPhase::Waiting,
+            bytes_done: 0,
+            bytes_total: Some(12_845_056),
+            landed_as: None,
+            package_id: None,
+            already_had: false,
+            failure: None,
+            nexus_page_url: Some(
+                "https://www.nexusmods.com/dragonsdogma2/mods/2207?tab=files&file_id=9001&nmm=1"
+                    .into(),
+            ),
+            started_ms: 1_791_987_780_000,
+            finished_ms: None,
+        }
+    }
+
+    const DOWNLOAD_KEYS: [&str; 17] = [
+        "id",
+        "modId",
+        "fileId",
+        "modName",
+        "fileName",
+        "version",
+        "forPackageId",
+        "phase",
+        "bytesDone",
+        "bytesTotal",
+        "landedAs",
+        "packageId",
+        "alreadyHad",
+        "failure",
+        "nexusPageUrl",
+        "startedMs",
+        "finishedMs",
+    ];
+
+    #[test]
+    fn v03_nexus_shapes_carry_exactly_the_ts_keys() {
+        literals(&[
+            (NexusFileCategory::Main, "main"),
+            (NexusFileCategory::Update, "update"),
+            (NexusFileCategory::Optional, "optional"),
+            (NexusFileCategory::OldVersion, "oldVersion"),
+            (NexusFileCategory::Miscellaneous, "miscellaneous"),
+            (NexusFileCategory::Removed, "removed"),
+            (NexusFileCategory::Archived, "archived"),
+            (NexusFileCategory::Unknown, "unknown"),
+        ]);
+        literals(&[
+            (NexusBrowseSort::Endorsements, "endorsements"),
+            (NexusBrowseSort::Downloads, "downloads"),
+            (NexusBrowseSort::Updated, "updated"),
+            (NexusBrowseSort::Relevance, "relevance"),
+        ]);
+        literals(&[
+            (EndorseStatus::Endorsed, "endorsed"),
+            (EndorseStatus::Abstained, "abstained"),
+        ]);
+        literals(&[
+            (DownloadPhase::Waiting, "waiting"),
+            (DownloadPhase::Queued, "queued"),
+            (DownloadPhase::Linking, "linking"),
+            (DownloadPhase::Downloading, "downloading"),
+            (DownloadPhase::Verifying, "verifying"),
+            (DownloadPhase::Landed, "landed"),
+            (DownloadPhase::Failed, "failed"),
+            (DownloadPhase::Cancelled, "cancelled"),
+        ]);
+        literals(&[
+            (NxmHandlerState::Ours, "ours"),
+            (NxmHandlerState::None, "none"),
+            (NxmHandlerState::Other, "other"),
+            (NxmHandlerState::Unsupported, "unsupported"),
+        ]);
+
+        let entry = round_trip(
+            &file_entry(),
+            &[
+                "fileId",
+                "name",
+                "version",
+                "category",
+                "size",
+                "uploadedMs",
+                "description",
+                "changelog",
+                "inLibrary",
+                "newest",
+            ],
+        );
+        assert_eq!(entry["category"], "main");
+        let files = round_trip(
+            &NexusModFiles {
+                mod_id: 2207,
+                mod_name: None,
+                page_url: "https://www.nexusmods.com/dragonsdogma2/mods/2207".into(),
+                adult: false,
+                files: vec![file_entry()],
+            },
+            &["modId", "modName", "pageUrl", "adult", "files"],
+        );
+        assert!(files["modName"].is_null(), "null, never absent");
+
+        let query = round_trip(
+            &NexusBrowseQuery {
+                text: "lantern".into(),
+                sort: NexusBrowseSort::Updated,
+                offset: 20,
+            },
+            &["text", "sort", "offset"],
+        );
+        assert_eq!(query["sort"], "updated");
+        round_trip(
+            &NexusBrowsePage {
+                total: 41,
+                offset: 20,
+                mods: vec![candidate()],
+            },
+            &["total", "offset", "mods"],
+        );
+
+        let standings = round_trip(
+            &NexusStandings {
+                tracked: vec![candidate()],
+                endorsements: vec![EndorsementView {
+                    mod_id: 2207,
+                    status: EndorseStatus::Endorsed,
+                }],
+                checked_ms: 1_791_987_780_000,
+            },
+            &["tracked", "endorsements", "checkedMs"],
+        );
+        assert_eq!(
+            standings["endorsements"][0],
+            json!({ "modId": 2207, "status": "endorsed" })
+        );
+        assert_eq!(keys(&standings["tracked"][0]), sorted(&CANDIDATE_KEYS));
+
+        // Downloads and their events serialize only (`failure`/`refusal` are
+        // rift-core's RiftError): the keys, and the error as the window reads it.
+        let waiting = serde_json::to_value(download_view()).unwrap();
+        assert_eq!(keys(&waiting), sorted(&DOWNLOAD_KEYS));
+        for key in [
+            "forPackageId",
+            "landedAs",
+            "packageId",
+            "failure",
+            "finishedMs",
+        ] {
+            assert!(waiting[key].is_null(), "{key} in {waiting}");
+        }
+        let failed = serde_json::to_value(DownloadView {
+            phase: DownloadPhase::Failed,
+            failure: Some(rift_core::RiftError::nexus_because(
+                rift_core::NexusReason::LinkExpired,
+                "The download link from Nexus Mods has expired.",
+            )),
+            nexus_page_url: None,
+            finished_ms: Some(1_791_987_790_000),
+            ..download_view()
+        })
+        .unwrap();
+        assert_eq!(keys(&failed), sorted(&DOWNLOAD_KEYS));
+        assert_eq!(
+            failed["failure"],
+            json!({ "kind": "nexus", "detail": {
+                "detail": "The download link from Nexus Mods has expired.",
+                "reason": "linkExpired"
+            } })
+        );
+        assert_eq!(failed["phase"], "failed");
+
+        round_trip(
+            &DownloadProgressEvent {
+                id: "18f3a2b4c5d-1".into(),
+                phase: DownloadPhase::Downloading,
+                bytes_done: 1_048_576,
+                bytes_total: None,
+            },
+            &["id", "phase", "bytesDone", "bytesTotal"],
+        );
+        let accepted = serde_json::to_value(NxmReceivedEvent {
+            mod_id: Some(2207),
+            file_id: Some(9001),
+            accepted: true,
+            download_id: Some("18f3a2b4c5d-1".into()),
+            refusal: None,
+        })
+        .unwrap();
+        assert_eq!(
+            keys(&accepted),
+            sorted(&["modId", "fileId", "accepted", "downloadId", "refusal"])
+        );
+        assert!(accepted["refusal"].is_null());
+        let refused = serde_json::to_value(NxmReceivedEvent {
+            mod_id: None,
+            file_id: None,
+            accepted: false,
+            download_id: None,
+            refusal: Some(rift_core::RiftError::refused(
+                "That Nexus Mods link opens a collection.",
+            )),
+        })
+        .unwrap();
+        assert!(refused["modId"].is_null() && refused["downloadId"].is_null());
+        assert_eq!(refused["refusal"]["kind"], "refused");
+
+        let handler = round_trip(
+            &NxmHandlerView {
+                state: NxmHandlerState::Ours,
+                other: None,
+                gives_back_to: Some("Wagonmaster.exe".into()),
+            },
+            &["state", "other", "givesBackTo"],
+        );
+        assert_eq!(handler["state"], "ours");
+    }
+
+    #[test]
+    fn v03_crate_shapes_convert_for_the_window() {
+        assert_eq!(
+            NexusFileCategory::from(rift_nexus::FileCategory::OldVersion),
+            NexusFileCategory::OldVersion
+        );
+        assert_eq!(
+            rift_nexus::BrowseSort::from(NexusBrowseSort::Updated),
+            rift_nexus::BrowseSort::Updated
+        );
+        assert_eq!(
+            EndorseStatus::from(rift_nexus::EndorseStatus::Abstained),
+            EndorseStatus::Abstained
+        );
+        assert_eq!(
+            rift_nexus::EndorseStatus::from(EndorseStatus::Endorsed),
+            rift_nexus::EndorseStatus::Endorsed
+        );
+        assert!(DownloadPhase::Landed.is_over() && DownloadPhase::Cancelled.is_over());
+        assert!(!DownloadPhase::Verifying.is_over() && !DownloadPhase::Waiting.is_over());
+
+        // A tracked mod as a card: named by the v2 lookup, the rest unknown.
+        let known = rift_nexus::NexusMod {
+            mod_id: 2207,
+            name: "Lantern Glow Recolor".into(),
+            version: Some("2.2".into()),
+            updated_ms: Some(1_791_987_780_000),
+            status: "published".into(),
+            category: Some("Visuals".into()),
+            tags: vec![],
+            adult: true,
+        };
+        let card = serde_json::to_value(NexusCandidate::of_tracked(2207, Some(&known), 2)).unwrap();
+        assert_eq!(keys(&card), sorted(&CANDIDATE_KEYS));
+        assert_eq!(card["name"], "Lantern Glow Recolor");
+        assert_eq!(card["adult"], true);
+        assert_eq!(card["linkedPackages"], 2);
+        assert_eq!(card["updatedMs"], 1_791_987_780_000_i64);
+        assert!(card["author"].is_null() && card["downloads"].is_null());
+        let gone = NexusCandidate::of_tracked(31337, None, 0);
+        assert_eq!(
+            gone.name, "Nexus mod 31337",
+            "a card even when Nexus forgot the mod"
+        );
+        assert_eq!(
+            gone.page_url,
+            "https://www.nexusmods.com/dragonsdogma2/mods/31337"
+        );
+    }
+
     fn parked_backup(store: &str) -> rift_deploy::ParkedBackup {
         rift_deploy::ParkedBackup {
             store: store.into(),
@@ -3361,14 +4178,6 @@ mod tests {
             (1, 2, 3, 4, 2)
         );
         assert!(uninstall.restart_needed);
-
-        let adopt = AdoptResultView::from(&rift_deploy::AdoptReport {
-            adopted: 1,
-            refused_files: 2,
-            shared_files: 3,
-            ..rift_deploy::AdoptReport::default()
-        });
-        assert_eq!((adopt.refused_files, adopt.shared_files), (2, 3));
         assert_eq!(
             MatchedField::from(&rift_catalog::MatchedField::NexusLabel),
             MatchedField::NexusLabel
@@ -3505,7 +4314,8 @@ mod tests {
             assert_eq!(window_check_id(deploy), *window);
         }
         // …so do the ids both sides already share (the spine's game check,
-        // rift-deploy's REFramework check)…
+        // rift-deploy's REFramework check); the spine's mods-folder check is
+        // in the table under its own id…
         for shared in ["game", "reframework"] {
             assert!(own.iter().any(|id| id == shared), "{shared} in {own:?}");
             assert_eq!(window_check_id(shared), shared);
@@ -3529,5 +4339,188 @@ mod tests {
         // Every other check passes through as rift-deploy names it.
         assert_eq!(window_check_id("paksLoaded"), "paksLoaded");
         assert_eq!(window_check_id("parkedBackups"), "parkedBackups");
+    }
+
+    // -- the error literals: rift-core's own types, read off the wire ------
+
+    /// The window's types, as it is built.
+    const WIRE: &str = include_str!("../../src/types/rift.ts");
+
+    /// `text` without its comments — block comments (the TSDoc between a
+    /// union's members) and lines that are only a `//` comment — so a quoted
+    /// word in a comment is never read as a literal. (A `//` after code is
+    /// left alone: `"rift://…"` is a literal.)
+    fn without_comments(text: &str) -> String {
+        let mut blocks_out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(start) = rest.find("/*") {
+            blocks_out.push_str(&rest[..start]);
+            let comment = &rest[start..];
+            rest = comment.find("*/").map_or("", |end| &comment[end + 2..]);
+        }
+        blocks_out.push_str(rest);
+        blocks_out
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The string literals between `head` and the first `;` after it, in
+    /// `wire`, sorted: the members of a union of literals.
+    fn union_after(wire: &str, head: &str) -> Vec<String> {
+        let start = wire
+            .find(head)
+            .unwrap_or_else(|| panic!("rift.ts declares {head}"))
+            + head.len();
+        let body = &wire[start..];
+        let body = &body[..body
+            .find(';')
+            .unwrap_or_else(|| panic!("{head} closes with a ;"))];
+        let mut literals: Vec<String> = body
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect();
+        literals.sort();
+        literals
+    }
+
+    /// Every `RiftError` kind, each once. The match has no wildcard arm: a
+    /// kind added to rift-core does not build here until it is listed.
+    fn every_rift_error() -> Vec<RiftError> {
+        let text = String::new;
+        let all = vec![
+            RiftError::Unreadable {
+                path: text(),
+                detail: text(),
+            },
+            RiftError::UnsupportedFormat { path: text() },
+            RiftError::Encrypted { path: text() },
+            RiftError::CorruptArchive {
+                path: text(),
+                detail: text(),
+            },
+            RiftError::UnsafeEntryPath { entry: text() },
+            RiftError::EntryNotFound { entry: text() },
+            RiftError::GameNotFound,
+            RiftError::Refused { reason: text() },
+            RiftError::Journal { detail: text() },
+            RiftError::Nexus {
+                detail: text(),
+                reason: None,
+            },
+            RiftError::Io { detail: text() },
+        ];
+        for err in &all {
+            match err {
+                RiftError::Unreadable { .. }
+                | RiftError::UnsupportedFormat { .. }
+                | RiftError::Encrypted { .. }
+                | RiftError::CorruptArchive { .. }
+                | RiftError::UnsafeEntryPath { .. }
+                | RiftError::EntryNotFound { .. }
+                | RiftError::GameNotFound
+                | RiftError::Refused { .. }
+                | RiftError::Journal { .. }
+                | RiftError::Nexus { .. }
+                | RiftError::Io { .. } => {}
+            }
+        }
+        all
+    }
+
+    /// Every `NexusReason`, each once. As above, a reason added to
+    /// rift-core does not build here until it is listed.
+    fn every_nexus_reason() -> Vec<NexusReason> {
+        use NexusReason as R;
+        let all = vec![
+            R::Offline,
+            R::RateLimited,
+            R::NoKey,
+            R::KeyRejected,
+            R::PremiumRequired,
+            R::LinkExpired,
+            R::LinkNotYours,
+            R::LinkRefused,
+            R::FileGone,
+            R::SizeMismatch,
+            R::NotTheFile,
+            R::EndorseNotDownloaded,
+            R::EndorseTooSoon,
+            R::EndorseOwnMod,
+        ];
+        for reason in &all {
+            match reason {
+                R::Offline
+                | R::RateLimited
+                | R::NoKey
+                | R::KeyRejected
+                | R::PremiumRequired
+                | R::LinkExpired
+                | R::LinkNotYours
+                | R::LinkRefused
+                | R::FileGone
+                | R::SizeMismatch
+                | R::NotTheFile
+                | R::EndorseNotDownloaded
+                | R::EndorseTooSoon
+                | R::EndorseOwnMod => {}
+            }
+        }
+        all
+    }
+
+    #[test]
+    fn error_kinds_and_nexus_reasons_are_the_literals_the_window_reads() {
+        let wire = without_comments(WIRE);
+        let interface = &wire[wire
+            .find("export interface RiftError {")
+            .expect("rift.ts declares RiftError")..];
+        let mut kinds: Vec<String> = every_rift_error()
+            .iter()
+            .map(|err| {
+                serde_json::to_value(err).unwrap()["kind"]
+                    .as_str()
+                    .expect("every RiftError crosses with a kind")
+                    .to_string()
+            })
+            .collect();
+        kinds.sort();
+        assert_eq!(
+            kinds,
+            union_after(interface, "kind:"),
+            "rift-core's RiftError kinds and rift.ts's RiftError.kind are one list"
+        );
+
+        let mut reasons: Vec<String> = every_nexus_reason()
+            .iter()
+            .map(|reason| {
+                serde_json::to_value(reason)
+                    .unwrap()
+                    .as_str()
+                    .expect("a reason crosses as a string")
+                    .to_string()
+            })
+            .collect();
+        reasons.sort();
+        assert_eq!(
+            reasons,
+            union_after(&wire, "export type NexusReason ="),
+            "rift-core's NexusReason and rift.ts's NexusReason are one list"
+        );
+    }
+
+    #[test]
+    fn the_literal_reader_skips_comments_and_stops_at_the_union_s_end() {
+        let wire = without_comments(
+            "export type Mood =\n  | \"calm\"\n  /** not \"stormy\" */\n  // nor \"wild\"\n  | \"grim\";\nconst x = \"after\";",
+        );
+        assert_eq!(union_after(&wire, "export type Mood ="), ["calm", "grim"]);
+        assert_eq!(
+            without_comments("const e = \"rift://scan-progress\";"),
+            "const e = \"rift://scan-progress\";"
+        );
     }
 }

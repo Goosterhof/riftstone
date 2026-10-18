@@ -25,7 +25,6 @@ const {
   selected = false,
   active = false,
   veiled = false,
-  rootLabel = "",
 } = defineProps<{
   hit: SearchResult;
   tokens: string[];
@@ -33,7 +32,6 @@ const {
   selected?: boolean;
   active?: boolean;
   veiled?: boolean;
-  rootLabel?: string;
 }>();
 
 const emit = defineEmits<{
@@ -110,7 +108,6 @@ const reasonFirst = computed(() => pathLine.value !== null && hit.matched.every(
 const metaLine = computed(() => {
   const bits: string[] = [];
   if (hit.version) bits.push(`v${hit.version.replace(/^v/i, "")}`);
-  if (rootLabel) bits.push(rootLabel);
   if (hit.author) bits.push(`by ${hit.author}`);
   return bits.join(" · ");
 });

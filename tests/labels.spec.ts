@@ -51,13 +51,15 @@ const inscriptionBody = (): string => textOf(document.querySelector(".rs-ins__bo
 const inscriptionButtons = (): string[] =>
   [...document.querySelectorAll(".rs-ins__actions .rs-btn__label")].map((l) => textOf(l).trim());
 
-/** The answer query the window sent last (the chips' label-free count query asks for more). */
+/** The answer query the window sent last. v0.3: both queries ask uncapped
+ *  (`limit: 0`), so the answer query is told apart by what the chips' count
+ *  query leaves out: it is the one that carries the labels. */
 function lastAnswerQuery(calls: [SearchQuery][]): SearchQuery {
   const query = calls
     .map(([q]) => q)
-    .filter((q) => q.limit === 0)
+    .filter((q) => q.limit === 0 && (q.filters.categories.length > 0 || q.filters.tags.length > 0))
     .at(-1);
-  if (!query) throw new Error("The window sent no answer query");
+  if (!query) throw new Error("The window sent no labelled answer query");
   return query;
 }
 
@@ -268,6 +270,7 @@ describe("when the labels hide every answer", () => {
   it("should hide the trouble cards while a label filter is on, and bring them back when it clears", async () => {
     await wakeWithChips();
     // §8.1.1: the trouble is folded at launch; open it so its cards are in view
+    await until(() => document.querySelector(".trouble-fold") !== null, "the trouble fold");
     button("Show ▸").click();
     await until(() => troubleNames().length === 3, "the trouble cards");
     expect(troubleNames()).toStrictEqual(["Corrupted Download", "Readme Only", "Old Road Armor Pack"]);

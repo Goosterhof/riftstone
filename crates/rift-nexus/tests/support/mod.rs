@@ -9,6 +9,13 @@
 //! the test when it is dropped, so every test that talks to it enforces the
 //! headers, including tests written later for request paths that do not exist
 //! yet.
+//!
+//! (v0.3) A second stand-in plays the CDN a download comes from: binary
+//! bodies ([`Reply::bytes`]), a `Content-Length` that lies or is left out, a
+//! body that trickles in or stalls halfway.
+
+// Each test file uses its own part of the stand-in.
+#![allow(dead_code)]
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -23,6 +30,7 @@ use rift_nexus::NexusClient;
 #[derive(Debug, Clone)]
 pub struct Recorded {
     pub method: String,
+    /// The request target: the path and, when there is one, `?` and the query.
     pub path: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
@@ -47,6 +55,73 @@ impl Recorded {
             .unwrap_or_default()
             .to_string()
     }
+
+    /// The path without its query.
+    pub fn route(&self) -> &str {
+        self.path
+            .split_once('?')
+            .map_or(&self.path, |(path, _)| path)
+    }
+
+    /// The query's pairs, decoded (`+` is a space, `%XX` a byte).
+    pub fn query_pairs(&self) -> Vec<(String, String)> {
+        self.path
+            .split_once('?')
+            .map(|(_, query)| form_pairs(query))
+            .unwrap_or_default()
+    }
+
+    /// An `application/x-www-form-urlencoded` body's pairs, decoded.
+    pub fn form(&self) -> Vec<(String, String)> {
+        form_pairs(&String::from_utf8_lossy(&self.body))
+    }
+}
+
+/// `a=b&c=d`, each side decoded the way a form is: `+` is a space.
+pub fn form_pairs(text: &str) -> Vec<(String, String)> {
+    fn decode(text: &str) -> String {
+        let bytes = text.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut at = 0;
+        while at < bytes.len() {
+            match bytes[at] {
+                b'+' => {
+                    out.push(b' ');
+                    at += 1;
+                }
+                b'%' if at + 3 <= bytes.len() => {
+                    let byte = u8::from_str_radix(&text[at + 1..at + 3], 16)
+                        .expect("a %XX escape in the request");
+                    out.push(byte);
+                    at += 3;
+                }
+                byte => {
+                    out.push(byte);
+                    at += 1;
+                }
+            }
+        }
+        String::from_utf8(out).expect("the request's text is UTF-8")
+    }
+    text.split('&')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| {
+            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+            (decode(name), decode(value))
+        })
+        .collect()
+}
+
+/// How a reply states its body's length.
+#[derive(Debug, Clone, Copy)]
+enum Length {
+    /// `Content-Length` is the body's own length.
+    Exact,
+    /// `Content-Length` says this, whatever the body is (a short body when it
+    /// says more: the connection closes early).
+    Declared(usize),
+    /// No `Content-Length`: the body ends when the connection closes.
+    Unstated,
 }
 
 /// What the server answers.
@@ -55,6 +130,11 @@ pub struct Reply {
     headers: Vec<(String, String)>,
     body: Vec<u8>,
     delay: Option<Duration>,
+    length: Length,
+    /// Write the body in pieces of this many bytes, pausing between them.
+    trickle: Option<(usize, Duration)>,
+    /// After this many bytes of the body, pause once.
+    stall: Option<(usize, Duration)>,
 }
 
 impl Reply {
@@ -73,7 +153,47 @@ impl Reply {
             headers: vec![("Content-Type".into(), "application/json".into())],
             body: body.as_bytes().to_vec(),
             delay: None,
+            length: Length::Exact,
+            trickle: None,
+            stall: None,
         }
+    }
+
+    /// v0.3: a binary body (an archive the CDN serves), status 200.
+    pub fn bytes(body: Vec<u8>) -> Self {
+        Reply {
+            status: 200,
+            headers: vec![("Content-Type".into(), "application/octet-stream".into())],
+            body,
+            delay: None,
+            length: Length::Exact,
+            trickle: None,
+            stall: None,
+        }
+    }
+
+    /// Claim `Content-Length: length` whatever the body holds.
+    pub fn declaring(mut self, length: usize) -> Self {
+        self.length = Length::Declared(length);
+        self
+    }
+
+    /// Send no `Content-Length`: the body ends when the connection closes.
+    pub fn unstated_length(mut self) -> Self {
+        self.length = Length::Unstated;
+        self
+    }
+
+    /// Write the body `piece` bytes at a time with `gap` between pieces.
+    pub fn trickle(mut self, piece: usize, gap: Duration) -> Self {
+        self.trickle = Some((piece.max(1), gap));
+        self
+    }
+
+    /// After `after` bytes of the body, go quiet for `pause`.
+    pub fn stall_after(mut self, after: usize, pause: Duration) -> Self {
+        self.stall = Some((after, pause));
+        self
     }
 
     pub fn status(code: u16) -> Self {
@@ -150,6 +270,11 @@ impl TestServer {
 
     pub fn graphql_url(&self) -> String {
         format!("http://{}/v2/graphql", self.addr)
+    }
+
+    /// An address on this server (v0.3: a CDN link).
+    pub fn url(&self, path: &str) -> String {
+        format!("http://{}{path}", self.addr)
     }
 
     pub fn v1_base(&self) -> String {
@@ -287,8 +412,14 @@ fn read_request(reader: &mut impl BufRead) -> Option<Recorded> {
 fn write_reply(mut stream: TcpStream, reply: &Reply) {
     let reason = match reply.status {
         200 => "OK",
+        201 => "Created",
+        302 => "Found",
+        307 => "Temporary Redirect",
         400 => "Bad Request",
         401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        410 => "Gone",
         429 => "Too Many Requests",
         500 => "Internal Server Error",
         _ => "Status",
@@ -297,11 +428,45 @@ fn write_reply(mut stream: TcpStream, reply: &Reply) {
     for (name, value) in &reply.headers {
         head.push_str(&format!("{name}: {value}\r\n"));
     }
-    head.push_str(&format!(
-        "Content-Length: {}\r\nConnection: close\r\n\r\n",
-        reply.body.len()
-    ));
-    let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(&reply.body);
+    match reply.length {
+        Length::Exact => head.push_str(&format!("Content-Length: {}\r\n", reply.body.len())),
+        Length::Declared(length) => head.push_str(&format!("Content-Length: {length}\r\n")),
+        Length::Unstated => {}
+    }
+    head.push_str("Connection: close\r\n\r\n");
+    if stream.write_all(head.as_bytes()).is_err() {
+        return;
+    }
     let _ = stream.flush();
+
+    // The body: whole, in pieces with pauses, or with one stall. A client
+    // that gave up closes the connection, and the next write fails: stop.
+    let length = reply.body.len();
+    let piece = reply.trickle.map_or(length.max(1), |(piece, _)| piece);
+    let mut written = 0;
+    let mut stalled = false;
+    while written < length {
+        if let Some((after, pause)) = reply.stall {
+            if !stalled && written >= after {
+                std::thread::sleep(pause);
+                stalled = true;
+            }
+        }
+        let mut end = (written + piece).min(length);
+        if let Some((after, _)) = reply.stall {
+            if !stalled && end > after {
+                end = after;
+            }
+        }
+        if stream.write_all(&reply.body[written..end]).is_err() {
+            return;
+        }
+        let _ = stream.flush();
+        written = end;
+        if let Some((_, gap)) = reply.trickle {
+            if written < length {
+                std::thread::sleep(gap);
+            }
+        }
+    }
 }

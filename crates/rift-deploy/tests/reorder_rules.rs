@@ -4,12 +4,10 @@
 
 mod common;
 
-use common::{assert_no_temporaries, fluffy_mod, Bench, TestMod};
+use common::{assert_no_temporaries, Bench, TestMod};
 use rift_core::{OptionId, RiftError};
 use rift_deploy::paks::ntfs_order_key;
-use rift_deploy::{
-    adopt_fluffy, recover, reorder_paks, FluffyLedger, Intent, IntentAction, IntentStep,
-};
+use rift_deploy::{recover, reorder_paks, Intent, IntentAction, IntentStep};
 
 fn pak_mod(name: &str, pak: &str) -> TestMod {
     TestMod::new(name).pak(pak, format!("KPKA {name}").as_bytes())
@@ -104,7 +102,7 @@ fn a_running_game_or_a_wrong_order_is_refused_and_nothing_moves() {
     let saved = bench.journal();
     let refused = |result: Result<(), RiftError>| matches!(result, Err(RiftError::Refused { .. }));
 
-    let running = bench.ctx_with(None, true);
+    let running = bench.ctx_with(true);
     assert!(refused(reorder_paks(
         &running,
         &mut journal,
@@ -155,61 +153,6 @@ fn a_stray_holding_a_target_name_blocks_the_reorder() {
     let err = reorder_paks(&bench.ctx(), &mut journal, &[b.id(), a.id()]).unwrap_err();
     assert!(err.to_string().contains("does not manage"), "{err}");
     assert_eq!(bench.snapshot(), before);
-}
-
-#[test]
-fn adopted_fluffy_paks_join_the_order_and_take_zrift_names() {
-    let bench = Bench::new();
-    bench.write("pak_mods/x0000-Older Armour.pak", b"KPKA older");
-    bench.write("pak_mods/x0001-Lantern Glow.pak", b"KPKA glow");
-    let ledger = FluffyLedger {
-        game_install_path: None,
-        mods: vec![
-            fluffy_mod(
-                "Lantern Glow-v2",
-                "Lantern Glow Recolor",
-                &["pak_mods/x0001-Lantern Glow.pak"],
-            ),
-            fluffy_mod(
-                "Older",
-                "Older Armour",
-                &["pak_mods/x0000-Older Armour.pak"],
-            ),
-        ],
-    };
-    let ctx = bench.ctx_with(Some(&ledger), false);
-    let mut journal = bench.journal();
-    adopt_fluffy(&ctx, &mut journal, &ledger, &|_| None).unwrap();
-    let older = OptionId("fluffy#Older".into());
-    let glow = OptionId("fluffy#Lantern Glow-v2".into());
-    assert_eq!(journal.pak_order, [older.clone(), glow.clone()]);
-
-    let newest = pak_mod("Vernworth Cloaks", "cloaks.pak");
-    newest.install_with(&ctx, &mut journal).unwrap();
-    assert!(
-        bench.exists("pak_mods/zrift-0002-cloaks.pak"),
-        "after the adopted pair"
-    );
-
-    reorder_paks(
-        &ctx,
-        &mut journal,
-        &[newest.id(), glow.clone(), older.clone()],
-    )
-    .unwrap();
-    assert_eq!(
-        bench.names_in("pak_mods"),
-        [
-            "zrift-0000-cloaks.pak",
-            "zrift-0001-Lantern Glow.pak",
-            "zrift-0002-Older Armour.pak"
-        ],
-        "Fluffy's x-prefix is stripped from the stem"
-    );
-    assert_eq!(
-        bench.read("pak_mods/zrift-0002-Older Armour.pak").unwrap(),
-        b"KPKA older"
-    );
 }
 
 /// Build the journal a crash in the middle of a reorder leaves behind.

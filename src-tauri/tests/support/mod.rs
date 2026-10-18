@@ -1,10 +1,13 @@
-//! The spine's test bench: a fake Dragon's Dogma 2 folder, a fake Fluffy Mod
-//! Manager with an invented library (zips built at run time), a fake
-//! Downloads folder, and a stand-in for Nexus Mods on a loopback port.
+//! The spine's test bench: a fake Dragon's Dogma 2 folder, the stone's one
+//! mods folder (`<install dir>/mods`) holding an invented library — two zips
+//! and a Nexus download, built at run time — and a stand-in for Nexus Mods on
+//! a loopback port.
 //!
-//! Nothing here reads or writes the real game, Fluffy, Downloads, app data or
-//! credential store: every path is inside one tempdir, discovery is fixed to
-//! it, and the key store lives in memory.
+//! Nothing here reads or writes the real game, the real mods folder, app data
+//! or credential store, and nothing starts a program or opens a window: every
+//! path is inside one tempdir, discovery is fixed to it, the key store lives
+//! in memory, Play goes to a recording launcher and the process list is a
+//! switch the test flips.
 
 #![allow(dead_code)] // each test binary uses its own share of the bench
 
@@ -21,6 +24,8 @@ use std::time::Duration;
 use riftstone_lib::events::RecordedEvents;
 use riftstone_lib::keys::MemoryKeyStore;
 use riftstone_lib::persist::DataDirs;
+use riftstone_lib::play::{GameCadence, RecordingLauncher, SwitchedGameWatch};
+use riftstone_lib::protocol::MemoryRegistry;
 use riftstone_lib::state::{AppState, Discovery, SpineConfig};
 
 pub const ERMINE_MESH: &str = "natives/stm/appsystem/cloak/ermine_cape.mesh.260421070";
@@ -33,9 +38,18 @@ pub const BANTER_UPLOADED_S: u64 = 1_791_987_780;
 pub struct Bench {
     pub dir: tempfile::TempDir,
     pub game: PathBuf,
-    pub fluffy: PathBuf,
+    /// The one library: the `mods` folder beside the stone's install.
     pub mods: PathBuf,
-    pub downloads: PathBuf,
+    /// The bench's desktop: what Play started, which folder was shown. A
+    /// launch makes [`Bench::game_watch`] say the game runs.
+    pub launcher: Arc<RecordingLauncher>,
+    /// The bench's process list: the game runs when the test says so.
+    pub game_watch: Arc<SwitchedGameWatch>,
+    /// The bench's registry for nxm:// links: empty until a test fills it.
+    pub registry: Arc<MemoryRegistry>,
+    /// The stone's own exe on the bench (never run): what the nxm handler
+    /// registers.
+    pub exe: PathBuf,
 }
 
 impl Bench {
@@ -43,10 +57,8 @@ impl Bench {
         let dir = tempfile::tempdir().expect("a tempdir");
         let root = dir.path();
         let game = root.join("Steam/steamapps/common/Dragons Dogma 2");
-        let fluffy = root.join("Modding/Fluffy");
-        let mods = fluffy.join("Games/DragonsDogma2/Mods");
-        let downloads = root.join("Downloads");
-        for folder in [&game.join("dlc"), &mods, &downloads] {
+        let mods = root.join("The Riftstone/mods");
+        for folder in [&game.join("dlc"), &mods] {
             fs::create_dir_all(folder).unwrap();
         }
 
@@ -56,21 +68,7 @@ impl Bench {
         fs::write(game.join("re_chunk_000.pak.patch_001.pak"), [0u8; 144]).unwrap();
         fs::write(game.join("dlc/re_dlc_stm_2581000.pak"), b"KPKA dlc").unwrap();
 
-        // Fluffy, with one install of its own already in the game folder.
-        fs::write(fluffy.join("Modmanager.exe"), b"").unwrap();
-        fs::create_dir_all(game.join(Path::new(WOOL_MESH).parent().unwrap())).unwrap();
-        fs::write(game.join(WOOL_MESH), b"wool hood as Fluffy left it").unwrap();
-        fs::write(
-            fluffy.join("Games/DragonsDogma2/installed.ini"),
-            format!(
-                "GameInstallService=Steam\r\nGameInstallPath={}\r\n[Wool Hood]\r\nModName=Wool Hood\r\ninstalltype=normal\r\nfile={}\r\n",
-                game.display(),
-                WOOL_MESH.replace('/', "\\")
-            ),
-        )
-        .unwrap();
-
-        // The library: a collection with a menu, a pak mod.
+        // The library: a collection with a menu, a pak mod, a Nexus download.
         write_zip(
             &mods.join("Vernworth Cloaks Collection.zip"),
             &[
@@ -115,23 +113,21 @@ impl Bench {
                 ("Lantern Glow/LanternGlow.pak", &pak),
             ],
         );
-
-        // Downloads: one Nexus download, one archive that is no mod at all.
         write_zip(
-            &downloads.join(BANTER_ZIP),
+            &mods.join(BANTER_ZIP),
             &[(&format!("Pawn Banter/{BANTER_LUA}"), b"-- pawns talk less")],
         );
-        write_zip(
-            &downloads.join("Holiday Photos.zip"),
-            &[("beach.jpg", &png(8, 8))],
-        );
 
+        let game_watch = Arc::new(SwitchedGameWatch::default());
+        let exe = root.join("The Riftstone/riftstone.exe");
         Bench {
             dir,
             game,
-            fluffy,
             mods,
-            downloads,
+            launcher: Arc::new(RecordingLauncher::starting(Arc::clone(&game_watch))),
+            game_watch,
+            registry: Arc::new(MemoryRegistry::default()),
+            exe,
         }
     }
 
@@ -141,14 +137,46 @@ impl Bench {
             dirs,
             discovery: Discovery::Fixed {
                 game_root: Some(self.game.clone()),
-                fluffy_root: Some(self.fluffy.clone()),
             },
-            downloads_dir: Some(self.downloads.clone()),
-            app_version: "0.1.0".into(),
+            library_dir: self.mods.clone(),
+            app_version: "0.3.0".into(),
             // Nothing listens there: no test reaches the real Nexus.
             nexus_endpoints: Some((dead_address(), dead_address())),
-            watch_roots: false,
+            watch_library: false,
+            launcher: self.launcher.clone(),
+            game_watch: self.game_watch.clone(),
+            // A brisk watcher, so the tests that run it wait milliseconds.
+            game_cadence: GameCadence {
+                every: Duration::from_millis(40),
+                after_launch: Duration::from_millis(10),
+                after_launch_for: Duration::from_secs(120),
+            },
+            protocols: self.registry.clone(),
+            exe: self.exe.clone(),
         }
+    }
+
+    /// The spine's configuration over this bench, its Nexus at `stand_in`.
+    pub fn config_at(&self, stand_in: &StandIn) -> SpineConfig {
+        let mut config = self.config(DataDirs::under(&self.data_home()));
+        config.nexus_endpoints = Some((stand_in.graphql_url(), stand_in.v1_base()));
+        config
+    }
+
+    /// Open the spine with a personal API key already in the credential
+    /// store (an invented one).
+    pub fn open_keyed(
+        &self,
+        config: SpineConfig,
+        key: &str,
+    ) -> (Arc<AppState>, Arc<RecordedEvents>) {
+        let events = Arc::new(RecordedEvents::default());
+        let state = AppState::open(
+            config,
+            events.clone(),
+            Box::new(MemoryKeyStore::holding(key)),
+        );
+        (state, events)
     }
 
     /// The app data home inside the bench.
@@ -156,13 +184,27 @@ impl Bench {
         self.dir.path().join("riftstone-data")
     }
 
-    /// Open the spine over this bench, first launch included (Fluffy found,
-    /// default roots made).
+    /// Open the spine over this bench (startup steps 1–3).
     pub fn open(&self, config: SpineConfig) -> (Arc<AppState>, Arc<RecordedEvents>) {
         let events = Arc::new(RecordedEvents::default());
         let state = AppState::open(config, events.clone(), Box::new(MemoryKeyStore::default()));
-        state.find_fluffy();
         (state, events)
+    }
+
+    /// Write the game's journal by hand, as an older Riftstone left it.
+    pub fn seed_journal(&self, dirs: &DataDirs, journal: &serde_json::Value) {
+        fs::create_dir_all(dirs.state_dir()).unwrap();
+        fs::write(
+            rift_deploy::journal_path(dirs.state_dir(), &self.game),
+            serde_json::to_vec_pretty(journal).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// The game's journal as it is on disk now, raw.
+    pub fn journal_on_disk(&self, dirs: &DataDirs) -> serde_json::Value {
+        let path = rift_deploy::journal_path(dirs.state_dir(), &self.game);
+        serde_json::from_slice(&fs::read(path).expect("the journal is on disk")).unwrap()
     }
 
     /// REFramework in the game folder: its DLL, its config with both switches
@@ -515,6 +557,151 @@ fn read_request(reader: &mut impl BufRead) -> Option<Seen> {
         headers,
         body: String::from_utf8_lossy(&body).into_owned(),
     })
+}
+
+/// Wait until `done` says so; panics with `what` after `limit`.
+pub fn wait_for(limit: Duration, what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + limit;
+    while !done() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "waited too long: {what}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A stand-in for Nexus's download servers (the CDN)
+// ---------------------------------------------------------------------------
+
+/// What the CDN stand-in sends: any bytes, optionally declaring another
+/// length than it sends (a body cut off) or none at all, optionally slowly.
+#[derive(Clone)]
+pub struct Delivery {
+    pub status: u16,
+    pub body: Vec<u8>,
+    /// The `Content-Length` to declare; `None` declares the body's own.
+    pub declared: Option<usize>,
+    /// Send `.0` bytes, then wait `.1`, until the body is out.
+    pub pace: Option<(usize, Duration)>,
+    /// Declare no length at all: the body ends when the connection closes.
+    pub no_length: bool,
+}
+
+impl Delivery {
+    pub fn bytes(body: &[u8]) -> Delivery {
+        Delivery {
+            status: 200,
+            body: body.to_vec(),
+            declared: None,
+            pace: None,
+            no_length: false,
+        }
+    }
+
+    /// The body with no `Content-Length`: the server states no size.
+    pub fn unsized_bytes(body: &[u8]) -> Delivery {
+        Delivery {
+            no_length: true,
+            ..Delivery::bytes(body)
+        }
+    }
+}
+
+pub struct Cdn {
+    addr: SocketAddr,
+    seen: Arc<Mutex<Vec<Seen>>>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Cdn {
+    pub fn start(delivery: impl Fn(&Seen) -> Delivery + Send + 'static) -> Cdn {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = {
+            let seen = Arc::clone(&seen);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    if stop.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let Ok(stream) = stream else { continue };
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                    let Ok(read_half) = stream.try_clone() else {
+                        continue;
+                    };
+                    let Some(request) = read_request(&mut BufReader::new(read_half)) else {
+                        continue;
+                    };
+                    seen.lock().unwrap().push(request.clone());
+                    deliver(stream, &delivery(&request));
+                }
+            })
+        };
+        Cdn {
+            addr,
+            seen,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    /// A download link on this stand-in, signed the way a CDN signs one.
+    pub fn link(&self, path: &str) -> String {
+        format!(
+            "http://{}{path}?md5=SIGNED-BY-THE-CDN&expires=1791987830",
+            self.addr
+        )
+    }
+
+    pub fn seen(&self) -> Vec<Seen> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+impl Drop for Cdn {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(self.addr);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn deliver(mut stream: TcpStream, delivery: &Delivery) {
+    let declared = delivery.declared.unwrap_or(delivery.body.len());
+    let length = if delivery.no_length {
+        String::new()
+    } else {
+        format!("Content-Length: {declared}\r\n")
+    };
+    let head = format!(
+        "HTTP/1.1 {} Delivery\r\nContent-Type: application/octet-stream\r\n{length}Connection: close\r\n\r\n",
+        delivery.status
+    );
+    if stream.write_all(head.as_bytes()).is_err() {
+        return;
+    }
+    match delivery.pace {
+        None => {
+            let _ = stream.write_all(&delivery.body);
+        }
+        Some((step, pause)) => {
+            for piece in delivery.body.chunks(step.max(1)) {
+                if stream.write_all(piece).is_err() || stream.flush().is_err() {
+                    return;
+                }
+                std::thread::sleep(pause);
+            }
+        }
+    }
+    let _ = stream.flush();
 }
 
 fn write_answer(mut stream: TcpStream, answer: &Answer) {

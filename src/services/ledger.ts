@@ -1,11 +1,14 @@
 // The honest sentences (v0.2): what a plan will do to each file, what an
-// uninstall, an adoption or a putting-back actually did, and how a cut-short
-// act was undone. Every count the spine returns is said out loud — a number
-// the window received and kept quiet about is a lie by omission. Pure: no Vue,
+// uninstall or a putting-back actually did, and how a cut-short act was
+// undone. Every count the spine returns is said out loud — a number the
+// window received and kept quiet about is a lie by omission. Pure: no Vue,
 // no backend, so the specs read the exact copy.
+// v0.3: the warnings Play carries (which never block), and what a download
+// into the mods folder came to.
 
 import type {
-  AdoptResultView,
+  DownloadView,
+  LaunchWarning,
   NexusLabels,
   ParkedFileView,
   ParkedRestoreReport,
@@ -89,32 +92,6 @@ export function returnHeading(removals: readonly { action: RemovalAction }[]): s
   return [`${plural(leaving, "file")} ${leaving === 1 ? "leaves" : "leave"} your game`, ...extra].join(" · ");
 }
 
-/** After the adoption: what came into the journal and what stayed Fluffy's. */
-export function adoptSummary(result: AdoptResultView): string {
-  const bits = [`Adopted ${plural(result.adopted, "install")}.`];
-  bits.push(
-    ...spoken([
-      [result.alreadyAdopted, (n) => `${plural(n, "install")} ${was(n)} already the stone's.`],
-      [result.missingFiles, (n) => `${plural(n, "file")} Fluffy listed ${was(n)} already gone.`],
-      [
-        result.refusedFiles,
-        (n) =>
-          `${plural(n, "file")} ${n === 1 ? "sits" : "sit"} outside the places the stone manages, so ${n === 1 ? "it stays" : "they stay"} Fluffy's to remove.`,
-      ],
-      [
-        result.sharedFiles,
-        (n) =>
-          n === 1
-            ? "1 file is also another mod's file, so the stone records it without taking ownership."
-            : `${plural(n, "file")} are also other mods' files, so the stone records them without taking ownership.`,
-      ],
-    ]),
-  );
-  if (result.unmatched.length) bits.push(`Adopted under their Fluffy names: ${result.unmatched.join(", ")}.`);
-  bits.push("Fluffy's own files were not changed.");
-  return bits.join(" ");
-}
-
 /** A parked file's second line: whose bytes, how big, since when. */
 export function parkedMeta(file: ParkedFileView): string {
   const size = file.size === null ? "gone from the backup store" : formatBytes(file.size);
@@ -131,14 +108,13 @@ export function parkedTicket(store: string, index: number): string {
 }
 
 /** The occupied line under a parked path, said before the press. */
-export const PARKED_OCCUPIED_LINE =
-  "something sits there now: putting back swaps it out, unless an install or Fluffy owns it";
+export const PARKED_OCCUPIED_LINE = "something sits there now: putting back swaps it out, unless an install owns it";
 
 /** What "Put back" will do, said before the press. */
 export function parkedPutBackTitle(file: ParkedFileView): string {
   if (file.size === null) return "The kept file is gone from the backup store: there is nothing to put back.";
   return file.occupied
-    ? `Something sits at ${file.gamePath} now: putting this back keeps that one aside in its turn, unless an install or Fluffy owns it — then the stone holds back and says who.`
+    ? `Something sits at ${file.gamePath} now: putting this back keeps that one aside in its turn, unless an install owns it — then the stone holds back and says which.`
     : `Puts the file back at ${file.gamePath}.`;
 }
 
@@ -237,6 +213,49 @@ export function adultnessOf(source: CardLabels | NexusLabels | null): Adultness 
 export function veils(mode: VeilMode, adultness: Adultness): boolean {
   if (mode === "all") return true;
   return mode === "adult" && adultness !== "notAdult";
+}
+
+// ---------------------------------------------------------------------------
+// v0.3 — Play
+// ---------------------------------------------------------------------------
+
+/** One warning Play carries (WINDOW-CONTRACT § v0.3 Play): never a blocker,
+ *  always the reason the player may not see a mod in the game. PlayStone's
+ *  inline confirm says each before the press (R16.14); no toast repeats them
+ *  after it, and the slab, not a toast, says the game is starting. */
+export function launchWarningLine(warning: LaunchWarning): string {
+  switch (warning.kind) {
+    // R16.14: each warning is the §9 sentence for the same condition, one per condition
+    case "reframeworkMissing":
+      return "REFramework isn't in your game folder, so script and loose-file mods won't load. PAK mods won't either: the Alternate PAK Folder lives in REFramework.";
+    case "pakFolderOff":
+      return "Your PAK mods won't load: REFramework's Alternate PAK Folder is off.";
+    case "looseLoaderOff":
+      return "Loose-file mods won't load: REFramework's Loose File Loader is off.";
+    case "buildChanged":
+      return `Dragon's Dogma 2 updated from build ${warning.recorded} to ${warning.now} since your mods were installed. Most still work; script mods and REFramework are the first to break.`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// v0.3 — downloads into the mods folder
+// ---------------------------------------------------------------------------
+
+/** A download's name as the player knows it: the file's Nexus name, else the mod's. */
+export function downloadName(d: Pick<DownloadView, "fileName" | "modName" | "modId" | "fileId">): string {
+  return d.fileName ?? d.modName ?? `Nexus mod ${d.modId}, file ${d.fileId}`;
+}
+
+/** What a download came to once it landed (§9 Download landed / already had):
+ *  the mod by its name, never the archive's file name. A file that is no
+ *  archive (a raw .pak, an .exe: no package) lands too, but the scan never
+ *  lists it, so it is never sent to the Rift. */
+export function landedLine(d: DownloadView): string {
+  if (d.alreadyHad) return "The same file was already in your mods folder. The stone wrote nothing new.";
+  const name = d.modName ?? downloadName(d);
+  if (d.packageId === null)
+    return `${name} is in your mods folder, but it is no archive, so the Rift does not list it.`;
+  return `${name} is in your mods folder. Install it from the Rift.`;
 }
 
 function sentenceCase(text: string): string {

@@ -2,12 +2,14 @@
 // the lookbook for the selected card's package. I: plan the install of the
 // selected card (never installs blind). Esc: close the innermost thing.
 // Inside the answers list the page handles ↑/↓, Enter and Space itself.
+// v0.3: with the library tree on screen (the Rift idle), I and L read the
+// tree's focused row, never a stale answer index from an earlier search.
 
 import { onBeforeUnmount, onMounted } from "vue";
-import type { SearchResult } from "@/types/rift";
 import { useNavigation, type Page } from "./useNavigation";
 import { useSearch } from "./useSearch";
 import { useWorld } from "./useWorld";
+import { useLibrary } from "./useLibrary";
 
 const ROOMS: Partial<Record<string, Page>> = { "1": "rift", "2": "world", "3": "nexus", "4": "preflight" };
 
@@ -24,13 +26,31 @@ function focusSearch(): void {
   }
 }
 
+/** What the keyboard is on: an option (null for a package or bundle row),
+ *  its package, and whether it is menu-only. */
+interface KeyTarget {
+  optionId: string | null;
+  packageId: string;
+  menuOnly: boolean;
+}
+
+/** The tree's focused row while the tree is on screen, else the open option's. */
+function treeTarget(): KeyTarget | null {
+  const row = useLibrary().focusedRow.value;
+  if (row) return { optionId: row.optionId, packageId: row.packageId, menuOnly: row.node?.menuOnly ?? false };
+  const detail = useWorld().detail.value;
+  return detail ? { optionId: detail.option.id, packageId: detail.package.id, menuOnly: detail.option.menuOnly } : null;
+}
+
 /** The card the keyboard is on: the active answer, else the open option. */
-function currentHit(): SearchResult | null {
+function currentTarget(): KeyTarget | null {
   const search = useSearch();
+  if (search.idle.value) return treeTarget();
   const active = search.results.value.at(search.activeIndex.value);
-  if (search.activeIndex.value >= 0 && active) return active;
   const selected = useWorld().selectedId.value;
-  return search.results.value.find((h) => h.optionId === selected) ?? null;
+  const hit =
+    search.activeIndex.value >= 0 && active ? active : search.results.value.find((h) => h.optionId === selected);
+  return hit ? { optionId: hit.optionId, packageId: hit.packageId, menuOnly: hit.menuOnly } : null;
 }
 
 function toggleLookbook(): boolean {
@@ -40,7 +60,7 @@ function toggleLookbook(): boolean {
     nav.backToResults();
     return true;
   }
-  const packageId = currentHit()?.packageId ?? useWorld().detail.value?.package.id ?? nav.packageId.value;
+  const packageId = currentTarget()?.packageId ?? useWorld().detail.value?.package.id ?? nav.packageId.value;
   if (!packageId) return false;
   nav.openLookbook(packageId);
   return true;
@@ -48,8 +68,8 @@ function toggleLookbook(): boolean {
 
 function planInstall(): boolean {
   const nav = useNavigation();
-  const hit = currentHit();
-  if (nav.page.value !== "rift" || !hit || hit.menuOnly) return false;
+  const hit = currentTarget();
+  if (nav.page.value !== "rift" || !hit?.optionId || hit.menuOnly) return false;
   void useWorld().beginInstall(hit.optionId);
   return true;
 }
@@ -65,13 +85,17 @@ function worldIsOverlay(): boolean {
   );
 }
 
+/** Esc closes the innermost thing ON SCREEN. Your World's pane is drawn on THE
+ *  RIFT only: elsewhere its selection is not a thing on screen, so Esc leaves
+ *  it alone and goes to the page's own Esc (a mod's files returns, R16.21). */
 function escape(): boolean {
   const nav = useNavigation();
   const world = useWorld();
+  const inRift = nav.page.value === "rift";
   if (nav.lightbox.value) nav.closeLightbox();
   else if (worldIsOverlay()) world.close();
-  else if (nav.page.value === "rift" && nav.riftMode.value !== "results") nav.backToResults();
-  else if (world.selectedId.value) world.close();
+  else if (inRift && nav.riftMode.value !== "results") nav.backToResults();
+  else if (inRift && world.selectedId.value) world.close();
   else return false;
   return true;
 }

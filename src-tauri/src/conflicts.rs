@@ -1,11 +1,11 @@
 //! Conflicts: who overrides whom in the game folder right now, and whom an
 //! option would override if it were installed.
 //!
-//! The layers handed to `rift_catalog::conflicts::detect` are Fluffy's
-//! un-adopted installs (oldest, in ledger order) and then the journal's
-//! installs in install order, so a later install wins a path. Among paks the
-//! order REFramework really loads `pak_mods/` in decides (its file-name order,
-//! as `read_game_state` reports it).
+//! The layers handed to `rift_catalog::conflicts::detect` are the journal's
+//! installs (the Riftstone's own and adopted ones alike) in install order, so
+//! a later install wins a path. Among paks the order REFramework really loads
+//! `pak_mods/` in decides (its file-name order, as `read_game_state` reports
+//! it). Files no install claims are strays: they take no part.
 //!
 //! A pak's hashes come from its head and table of contents only — never the
 //! payload — and are remembered by file name + size + modification time. A pak
@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use rift_catalog::{Conflict, Layer};
 use rift_core::{lower_key, DeployTarget, ModOption, OptionId, PackageId, PackageSource};
-use rift_deploy::{DeployKind, FluffyLedger, FluffyMod, GameState, Journal, PakOwner};
+use rift_deploy::{DeployKind, GameState, Journal, PakOwner};
 use rift_pak::{PakError, PakReadError, PathHash};
 
 use crate::dto::{ConflictKey, ConflictView, LayerRef, PathHashView};
@@ -181,14 +181,6 @@ impl PakHashCache {
     }
 }
 
-/// The id a Fluffy install answers to in a conflict: the library option it
-/// matched, else a stand-in under its Fluffy section.
-pub fn fluffy_layer_id(section: &str, matched: Option<&OptionId>) -> OptionId {
-    matched
-        .cloned()
-        .unwrap_or_else(|| OptionId(format!("fluffy#{section}")))
-}
-
 /// Layers ready for `detect`, with what the views need on top.
 #[derive(Debug, Default)]
 pub struct Layers {
@@ -228,20 +220,17 @@ fn hashes_of<'a>(paks: impl Iterator<Item = Option<Arc<PakHashes>>> + 'a) -> (Ve
     (hashes, unconfirmed)
 }
 
-/// What is in the game now, as layers: Fluffy's un-adopted installs, then
-/// the journal's installs in install order.
+/// What is in the game now, as layers: the journal's installs in install
+/// order.
 pub fn game_layers(
     game_root: &Path,
     journal: &Journal,
     state: &GameState,
-    ledger: Option<&FluffyLedger>,
-    fluffy_matches: &HashMap<String, OptionId>,
     cache: &PakHashCache,
 ) -> Layers {
     // REFramework's real load position of each pak in pak_mods/ (1-based).
     let mut position: HashMap<String, u32> = HashMap::new();
-    let mut fluffy_position: HashMap<String, u32> = HashMap::new();
-    let mut riftstone_position: HashMap<OptionId, u32> = HashMap::new();
+    let mut install_position: HashMap<OptionId, u32> = HashMap::new();
     for pak in &state.paks {
         let Some(index) = pak.load_index else {
             continue;
@@ -250,33 +239,13 @@ pub fn game_layers(
             .unwrap_or(u32::MAX - 1)
             .saturating_add(1);
         position.insert(lower_key(&pak.game_path), at);
-        match &pak.owner {
-            PakOwner::Riftstone { option_id, .. } => {
-                let slot = riftstone_position.entry(option_id.clone()).or_default();
-                *slot = (*slot).max(at);
-            }
-            PakOwner::Fluffy { section, .. } => {
-                let slot = fluffy_position.entry(lower_key(section)).or_default();
-                *slot = (*slot).max(at);
-            }
-            PakOwner::Unowned => {}
+        if let PakOwner::Riftstone { option_id, .. } = &pak.owner {
+            let slot = install_position.entry(option_id.clone()).or_default();
+            *slot = (*slot).max(at);
         }
     }
 
     let mut layers = Layers::default();
-    if let Some(ledger) = ledger {
-        let adopted = journal.adopted_sections();
-        for fluffy_mod in ledger.unadopted(&adopted) {
-            let (layer, unconfirmed) = fluffy_layer(
-                game_root,
-                fluffy_mod,
-                fluffy_matches,
-                &fluffy_position,
-                cache,
-            );
-            layers.push(layer, unconfirmed);
-        }
-    }
     for install in &journal.installs {
         let paths: Vec<String> = install
             .files
@@ -289,7 +258,7 @@ pub fn game_layers(
                 .pak_files()
                 .map(|f| cache.on_disk(game_root, &f.game_path)),
         );
-        let pak_order = riftstone_position
+        let pak_order = install_position
             .get(&install.option_id)
             .copied()
             .or_else(|| {
@@ -311,45 +280,6 @@ pub fn game_layers(
         );
     }
     layers
-}
-
-fn fluffy_layer(
-    game_root: &Path,
-    fluffy_mod: &FluffyMod,
-    fluffy_matches: &HashMap<String, OptionId>,
-    positions: &HashMap<String, u32>,
-    cache: &PakHashCache,
-) -> (Layer, bool) {
-    let is_pak = |file: &str| {
-        let lower = lower_key(file);
-        lower.starts_with("pak_mods/") && lower.ends_with(".pak")
-    };
-    let (pak_hashes, unconfirmed) = hashes_of(
-        fluffy_mod
-            .files
-            .iter()
-            .filter(|f| is_pak(f))
-            .map(|f| cache.on_disk(game_root, f)),
-    );
-    let layer = Layer {
-        option_id: fluffy_layer_id(
-            &fluffy_mod.section,
-            fluffy_matches.get(&lower_key(&fluffy_mod.section)),
-        ),
-        name: fluffy_mod.name.clone(),
-        paths: fluffy_mod
-            .files
-            .iter()
-            .filter(|f| !is_pak(f))
-            .cloned()
-            .collect(),
-        pak_hashes,
-        pak_order: positions
-            .get(&lower_key(&fluffy_mod.section))
-            .copied()
-            .unwrap_or(0),
-    };
-    (layer, unconfirmed)
 }
 
 /// Add an option that is not installed as the newest layer: its loose,

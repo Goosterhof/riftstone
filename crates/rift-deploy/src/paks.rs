@@ -4,9 +4,10 @@
 //! (see [`rift_core::dd2::PAK_MODS_DIR`]), so the name IS the load order. The
 //! Riftstone writes `zrift-NNNN-<stem>.pak`: [`rift_core::dd2::PAK_PREFIX`],
 //! a four-digit number, and the original file's stem with any earlier
-//! priority prefix (`x0003-` from Fluffy, `zrift-0002-` from a previous
-//! Riftstone install) stripped. The extension is always a lowercase `.pak` —
-//! REFramework's extension check is case-sensitive.
+//! priority prefix stripped: the numbered `x0003-` another tool gave a pak,
+//! or the `zrift-0002-` of a previous Riftstone install. The extension is
+//! always a lowercase `.pak` — REFramework's extension check is
+//! case-sensitive.
 //!
 //! The number of a NEW pak sits above every `zrift-` pak already in
 //! `pak_mods/` or the journal (and is at least the pak order's length), so a
@@ -115,6 +116,9 @@ pub fn unique_stem(stem: String, used: &mut HashSet<String>) -> String {
     }
 }
 
+/// One priority prefix off the front of a pak stem: the Riftstone's own
+/// `zrift-NNNN-`, or the numbered `xNNNN-` (either case) another tool gives
+/// the paks it installs. `None` when the stem starts with neither.
 fn strip_priority_prefix(stem: &str) -> Option<&str> {
     let bytes = stem.as_bytes();
     let p = PAK_PREFIX.len();
@@ -212,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn ntfs_order_puts_ours_after_fluffys() {
+    fn ntfs_order_puts_ours_after_numbered_prefixes() {
         let mut names = [
             "zrift-0001-b.pak",
             "x0001-z.pak",

@@ -8,15 +8,18 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use reqwest::blocking::{Client, RequestBuilder, Response};
-use reqwest::header::{HeaderMap, ACCEPT, RETRY_AFTER};
-use reqwest::StatusCode;
+use reqwest::header::{HeaderMap, ACCEPT, CONTENT_TYPE, RETRY_AFTER};
+use reqwest::{Method, StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::error::NexusError;
+use crate::download::Downloader;
+use crate::error::{EndorseRefusal, NexusError};
 use crate::hash::is_md5;
+use crate::nxm::NxmGrant;
 use crate::types::{
-    Md5Hit, ModCandidate, ModFilesReport, NexusAccount, NexusFile, NexusMod, V1FileList,
+    BrowsePage, BrowseQuery, DownloadCheck, DownloadMirror, EndorseStatus, Md5Hit, ModCandidate,
+    ModFilesReport, NexusAccount, NexusFile, NexusFileDetail, NexusMod, V1FileList,
 };
 use crate::wire::{self, NameMatch};
 use crate::{
@@ -356,7 +359,9 @@ impl NexusClient {
     }
 
     /// Check the personal API key (v1 `users/validate.json`, which does not
-    /// count against the hourly quota).
+    /// count against the hourly quota): the account's name, id, and whether
+    /// it is premium or a supporter. Never the key the answer echoes, never
+    /// the e-mail.
     pub fn validate_key(&self) -> Result<NexusAccount, NexusError> {
         let raw: wire::V1Validate = self.v1_get("users/validate.json", false)?;
         raw.into_account().ok_or_else(|| {
@@ -365,12 +370,225 @@ impl NexusClient {
     }
 
     /// v1 `files.json` for one mod: its files plus the author's explicit
-    /// `old_file_id → new_file_id` chain — the fallback when group ids mislead.
+    /// `old_file_id → new_file_id` chain — the fallback when group ids mislead —
+    /// and (v0.3) each file's archive name ([`V1FileList::file_name`]).
     /// Needs the API key; refused locally while the v1 quota is spent.
     pub fn files_v1(&self, mod_id: u64) -> Result<V1FileList, NexusError> {
         let path = format!("games/{GAME_DOMAIN}/mods/{mod_id}/files.json");
         let raw: wire::V1Files = self.v1_get(&path, true)?;
         Ok(raw.into_list())
+    }
+
+    // -- v0.3: the key's extras (v1, metered) ------------------------------
+
+    /// Where one file can be downloaded from (v1 `download_link.json`),
+    /// Nexus's preferred mirror first. Premium accounts ask without a grant;
+    /// a free account passes the `key` and `expires` of the site's Mod
+    /// Manager Download link ([`NxmGrant`]), which travel as the query and
+    /// are never logged. Only `https` mirrors are kept (`http` only towards a
+    /// loopback test server); none left is [`NexusError::BadResponse`].
+    ///
+    /// Refusals: 403 → [`NexusError::PremiumRequired`] (no grant, not
+    /// premium), 410 → [`NexusError::LinkExpired`], 400 →
+    /// [`NexusError::LinkRefused`] (the grant is not for this account or
+    /// file), 404 → [`NexusError::FileGone`], 401 → [`NexusError::KeyRejected`].
+    /// Refused locally while the v1 quota is spent.
+    pub fn download_links(
+        &self,
+        mod_id: u64,
+        file_id: u64,
+        grant: Option<&NxmGrant>,
+    ) -> Result<Vec<DownloadMirror>, NexusError> {
+        let path = format!("games/{GAME_DOMAIN}/mods/{mod_id}/files/{file_id}/download_link.json");
+        let expires = grant.map(|grant| grant.expires_s.to_string());
+        let query: Vec<(&str, &str)> = match (grant, expires.as_deref()) {
+            (Some(grant), Some(expires)) => vec![("key", grant.key.as_str()), ("expires", expires)],
+            _ => Vec::new(),
+        };
+        let answer = self.v1_request(Method::GET, &path, &query, None, true)?;
+        match answer.status.as_u16() {
+            200..=299 => wire::read_download_links(&answer.body),
+            400 => Err(NexusError::LinkRefused),
+            401 => Err(NexusError::KeyRejected),
+            403 => Err(NexusError::PremiumRequired),
+            404 => Err(NexusError::FileGone),
+            410 => Err(NexusError::LinkExpired),
+            code => Err(NexusError::Http(code)),
+        }
+    }
+
+    /// The Dragon's Dogma 2 mods this account tracks (v1
+    /// `user/tracked_mods.json`), in Nexus's order, each once. Other games'
+    /// tracked mods are left out.
+    pub fn tracked_mods(&self) -> Result<Vec<u64>, NexusError> {
+        let body = self.v1_get_body("user/tracked_mods.json", true)?;
+        wire::read_tracked_mods(&body)
+    }
+
+    /// Track a mod (v1 POST `user/tracked_mods.json?domain_name=dragonsdogma2`,
+    /// form `mod_id`). Already tracked (200) and newly tracked (201) both
+    /// succeed. A mod Nexus does not know is [`NexusError::FileGone`].
+    pub fn track(&self, mod_id: u64) -> Result<(), NexusError> {
+        let answer = self.tracking(Method::POST, mod_id)?;
+        match answer.status.as_u16() {
+            200..=299 => Ok(()),
+            401 => Err(NexusError::KeyRejected),
+            404 => Err(NexusError::FileGone),
+            code => Err(NexusError::Http(code)),
+        }
+    }
+
+    /// Stop tracking a mod (v1 DELETE, the same address and form as
+    /// [`NexusClient::track`]). A mod that was not tracked (Nexus answers 404)
+    /// succeeds too: it is untracked either way.
+    pub fn untrack(&self, mod_id: u64) -> Result<(), NexusError> {
+        let answer = self.tracking(Method::DELETE, mod_id)?;
+        match answer.status.as_u16() {
+            200..=299 | 404 => Ok(()),
+            401 => Err(NexusError::KeyRejected),
+            code => Err(NexusError::Http(code)),
+        }
+    }
+
+    /// This account's decided endorsements of Dragon's Dogma 2 mods (v1
+    /// `user/endorsements.json`). A mod it has not decided on is absent; a
+    /// mod listed twice keeps its latest decision.
+    pub fn endorsements(&self) -> Result<Vec<(u64, EndorseStatus)>, NexusError> {
+        let body = self.v1_get_body("user/endorsements.json", true)?;
+        wire::read_endorsements(&body)
+    }
+
+    /// Endorse a mod (v1 POST `games/dragonsdogma2/mods/<id>/endorse.json`,
+    /// form `Version`: the version the player holds). Nexus's refusals come
+    /// back as [`NexusError::EndorseRefused`]: never downloaded from Nexus,
+    /// too soon after the download, one's own mod.
+    pub fn endorse(&self, mod_id: u64, version: &str) -> Result<(), NexusError> {
+        self.endorsement(mod_id, version, "endorse")
+    }
+
+    /// Abstain from endorsing a mod (v1 `abstain.json`; as
+    /// [`NexusClient::endorse`]).
+    pub fn abstain(&self, mod_id: u64, version: &str) -> Result<(), NexusError> {
+        self.endorsement(mod_id, version, "abstain")
+    }
+
+    // -- v0.3: reading and browsing (v2, anonymous) ------------------------
+
+    /// One mod's files with each one's description and patch notes
+    /// (`modFiles` with `description` and `changelogText`), oldest upload
+    /// first. Anonymous: the key never goes along. A mod Nexus does not know
+    /// answers no files, and so does an id Nexus cannot hold (nothing is
+    /// sent). An answer that carries any GraphQL error is refused whole
+    /// ([`NexusError::BadResponse`]): a list that failed never reads as "no
+    /// files".
+    pub fn mod_file_details(&self, mod_id: u64) -> Result<Vec<NexusFileDetail>, NexusError> {
+        if !(1..=LARGEST_MOD_ID).contains(&mod_id) {
+            log::warn!("skipping mod id {mod_id}: Nexus mod ids run from 1 to {LARGEST_MOD_ID}");
+            return Ok(Vec::new());
+        }
+        let data: wire::ModFileDetailsData = self
+            .graphql(&wire::mod_file_details_body(mod_id))?
+            .into_data()?;
+        wire::read_file_details(data)
+    }
+
+    /// One page of Dragon's Dogma 2's mods ([`crate::BROWSE_PAGE_SIZE`] at
+    /// `query.offset`), sorted by `query.sort`, descending. Anonymous.
+    ///
+    /// One POST of `mods(filter: { gameDomainName EQUALS dragonsdogma2 [,
+    /// nameStemmed MATCHES $text] }, sort, offset, count)`. The text (whitespace
+    /// collapsed, at most 200 characters) travels only as the `$text`
+    /// variable; blank text browses the whole game and declares no variable.
+    /// `Relevance` without text sorts by endorsements. The filters are never
+    /// joined by a top-level `op: OR`. `total` comes from `totalCount`; the
+    /// page holds however many usable mods came (another game's node, a node
+    /// without a name or with an id outside 1..=`i32::MAX` is skipped; a
+    /// repeated id counts once). An answer that carries any GraphQL error is
+    /// refused whole.
+    pub fn browse(&self, query: &BrowseQuery) -> Result<BrowsePage, NexusError> {
+        let text = wire::browse_text(&query.text);
+        let offset = query.offset.min(wire::LARGEST_BROWSE_OFFSET);
+        let sort_key = query.sort.key(!text.is_empty());
+        let data: wire::FindData = self
+            .graphql(&wire::browse_body(&text, sort_key, offset))?
+            .into_data()?;
+        Ok(wire::read_browse_page(data, offset))
+    }
+
+    /// The MD5 half of v0.3's verifying step for a download: does Nexus know
+    /// the archive with this MD5 (from [`crate::Downloaded::md5`]) as exactly
+    /// this mod's file? One anonymous `fileHashes` lookup. A download is
+    /// verified whole by [`verify_download`](Self::verify_download), which
+    /// also asks whether a size vouched.
+    ///
+    /// - A hit for `(mod_id, file_id)` → [`DownloadCheck::Confirmed`].
+    /// - No Dragon's Dogma 2 hit at all → [`DownloadCheck::Unknown`]: Nexus
+    ///   has not hashed the file yet, and only a stated size can vouch for it.
+    /// - Hits for other files only → [`NexusError::NotTheFile`].
+    ///
+    /// A hash that is not 32 hexadecimal digits is refused
+    /// ([`NexusError::BadResponse`]) before anything is sent: it would read
+    /// as "unknown" and wave the archive through.
+    pub fn confirm_download(
+        &self,
+        md5: &str,
+        mod_id: u64,
+        file_id: u64,
+    ) -> Result<DownloadCheck, NexusError> {
+        let md5 = md5.trim().to_ascii_lowercase();
+        if !is_md5(&md5) {
+            return Err(NexusError::BadResponse(
+                "the archive's MD5 is not 32 hexadecimal digits".to_string(),
+            ));
+        }
+        let hits = self.files_by_md5(&[md5])?;
+        if hits.is_empty() {
+            Ok(DownloadCheck::Unknown)
+        } else if hits
+            .iter()
+            .any(|hit| hit.mod_id == mod_id && hit.file_id == file_id)
+        {
+            Ok(DownloadCheck::Confirmed)
+        } else {
+            Err(NexusError::NotTheFile)
+        }
+    }
+
+    /// v0.3's whole verifying step for an archive [`Downloader::download_to`]
+    /// brought in: [`confirm_download`](Self::confirm_download) on its MD5,
+    /// and a hash Nexus does not know yet ([`DownloadCheck::Unknown`]) is
+    /// taken only when a stated size vouched for the byte count
+    /// ([`Downloaded::size_vouched`](crate::Downloaded::size_vouched)).
+    ///
+    /// - Nexus names this file for the MD5 → [`DownloadCheck::Confirmed`],
+    ///   with or without a size.
+    /// - Nexus knows the MD5 for no file, and a size vouched →
+    ///   [`DownloadCheck::Unknown`].
+    /// - Nexus knows the MD5 for no file, and no size was stated →
+    ///   [`NexusError::BadResponse`]: nothing vouches for the archive, and
+    ///   the caller lets it go.
+    /// - Nexus names other files only → [`NexusError::NotTheFile`].
+    pub fn verify_download(
+        &self,
+        downloaded: &crate::Downloaded,
+        mod_id: u64,
+        file_id: u64,
+    ) -> Result<DownloadCheck, NexusError> {
+        let check = self.confirm_download(&downloaded.md5, mod_id, file_id)?;
+        if check == DownloadCheck::Unknown && !downloaded.size_vouched {
+            return Err(NexusError::BadResponse(
+                "neither Nexus Mods nor the download server stated the file's size, and Nexus \
+                 Mods does not know the archive's MD5 yet, so nothing vouched for the download"
+                    .to_string(),
+            ));
+        }
+        Ok(check)
+    }
+
+    /// A [`Downloader`] announcing this client's version. It shares nothing
+    /// with this client: not the key, not the connection pool.
+    pub fn downloader(&self) -> Downloader {
+        Downloader::new(&self.app_version)
     }
 
     // -- plumbing ----------------------------------------------------------
@@ -392,10 +610,13 @@ impl NexusClient {
         if !answer.status.is_success() {
             if answer.status.is_client_error() {
                 if let Some(message) = wire::first_error_message(&answer.body) {
-                    return Err(NexusError::BadResponse(format!(
-                        "HTTP {}: {message}",
-                        answer.status.as_u16()
-                    )));
+                    // 401 and 403 are not spelled: from anonymous v2 they
+                    // never mean the key, and only a rejected key says so.
+                    let status = match answer.status.as_u16() {
+                        401 | 403 => "not allowed".to_string(),
+                        code => format!("HTTP {code}"),
+                    };
+                    return Err(NexusError::BadResponse(format!("{status}: {message}")));
                 }
             }
             return Err(NexusError::Http(answer.status.as_u16()));
@@ -403,32 +624,121 @@ impl NexusClient {
         wire::GraphQlAnswer::parse(&answer.body)
     }
 
-    fn v1_get<T: DeserializeOwned>(&self, path: &str, metered: bool) -> Result<T, NexusError> {
+    /// The key a v1 call sends: [`NexusError::NoApiKey`] without one,
+    /// [`NexusError::KeyRejected`] for one that can never be valid.
+    fn v1_key(&self) -> Result<&str, NexusError> {
         let key = self.api_key.as_deref().ok_or(NexusError::NoApiKey)?;
         if !key.bytes().all(|byte| byte.is_ascii_graphic()) {
             // A pasted key with spaces or line breaks inside can never be valid.
             return Err(NexusError::KeyRejected);
         }
+        Ok(key)
+    }
+
+    /// Refuse a metered call locally while v1's quota is spent and its
+    /// hourly reset is still ahead.
+    fn quota_gate(&self) -> Result<(), NexusError> {
+        let quota_wait = self
+            .throttle()
+            .quota
+            .as_ref()
+            .and_then(|quota| quota.wait_s(now_ms()));
+        match quota_wait {
+            Some(wait) => Err(NexusError::RateLimited {
+                retry_after_s: Some(wait),
+            }),
+            None => Ok(()),
+        }
+    }
+
+    /// One v1 request with the key, the quota gate for metered calls and
+    /// the identifying headers; `query` appended to the address (it may hold
+    /// an nxm grant's key, so the address is never logged), `form` sent as
+    /// an `application/x-www-form-urlencoded` body. The answer, for the
+    /// caller to judge.
+    fn v1_request(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, &str)],
+        form: Option<&[(&str, &str)]>,
+        metered: bool,
+    ) -> Result<Answer, NexusError> {
+        let key = self.v1_key()?;
         if metered {
-            let quota_wait = self
-                .throttle()
-                .quota
-                .as_ref()
-                .and_then(|quota| quota.wait_s(now_ms()));
-            if let Some(wait) = quota_wait {
-                return Err(NexusError::RateLimited {
-                    retry_after_s: Some(wait),
-                });
-            }
+            self.quota_gate()?;
         }
         let http = self.http()?;
-        let url = format!("{}/{path}", self.v1_base);
-        let answer = self.send(Api::V1, http.get(url).header("apikey", key))?;
+        let mut url = Url::parse(&format!("{}/{path}", self.v1_base)).map_err(|err| {
+            NexusError::Offline(format!(
+                "the request was not sent: the v1 address could not be read ({err})"
+            ))
+        })?;
+        if !query.is_empty() {
+            url.query_pairs_mut().extend_pairs(query);
+        }
+        let mut request = http.request(method, url).header("apikey", key);
+        if let Some(form) = form {
+            request = request
+                .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(wire::form_body(form));
+        }
+        self.send(Api::V1, request)
+    }
+
+    /// A v1 GET's body: 2xx, else 401 → [`NexusError::KeyRejected`] and any
+    /// other status → [`NexusError::Http`].
+    fn v1_get_body(&self, path: &str, metered: bool) -> Result<Vec<u8>, NexusError> {
+        let answer = self.v1_request(Method::GET, path, &[], None, metered)?;
         match answer.status.as_u16() {
-            200..=299 => serde_json::from_slice(&answer.body).map_err(|err| {
-                NexusError::BadResponse(format!("the v1 answer had an unexpected shape: {err}"))
-            }),
+            200..=299 => Ok(answer.body),
             401 => Err(NexusError::KeyRejected),
+            code => Err(NexusError::Http(code)),
+        }
+    }
+
+    fn v1_get<T: DeserializeOwned>(&self, path: &str, metered: bool) -> Result<T, NexusError> {
+        let body = self.v1_get_body(path, metered)?;
+        serde_json::from_slice(&body).map_err(|err| {
+            NexusError::BadResponse(format!("the v1 answer had an unexpected shape: {err}"))
+        })
+    }
+
+    /// POST or DELETE `user/tracked_mods.json?domain_name=dragonsdogma2`
+    /// with the form `mod_id`.
+    fn tracking(&self, method: Method, mod_id: u64) -> Result<Answer, NexusError> {
+        let mod_id = mod_id.to_string();
+        self.v1_request(
+            method,
+            "user/tracked_mods.json",
+            &[("domain_name", GAME_DOMAIN)],
+            Some(&[("mod_id", mod_id.as_str())]),
+            true,
+        )
+    }
+
+    /// POST `games/dragonsdogma2/mods/<id>/<verb>.json` with the form
+    /// `Version`. A rejected key is that; then any refusal code Nexus names
+    /// (whatever the status) is [`NexusError::EndorseRefused`]; then 2xx is
+    /// done and 404 is a mod Nexus does not know.
+    fn endorsement(&self, mod_id: u64, version: &str, verb: &str) -> Result<(), NexusError> {
+        let path = format!("games/{GAME_DOMAIN}/mods/{mod_id}/{verb}.json");
+        let answer = self.v1_request(
+            Method::POST,
+            &path,
+            &[],
+            Some(&[("Version", version.trim())]),
+            true,
+        )?;
+        if answer.status == StatusCode::UNAUTHORIZED {
+            return Err(NexusError::KeyRejected);
+        }
+        if let Some(refusal) = EndorseRefusal::from_answer(&String::from_utf8_lossy(&answer.body)) {
+            return Err(NexusError::EndorseRefused(refusal));
+        }
+        match answer.status.as_u16() {
+            200..=299 => Ok(()),
+            404 => Err(NexusError::FileGone),
             code => Err(NexusError::Http(code)),
         }
     }
@@ -511,14 +821,14 @@ fn build_http(app_version: &str, direct: bool) -> Result<Client, String> {
     })
 }
 
-fn user_agent(app_version: &str) -> String {
+pub(crate) fn user_agent(app_version: &str) -> String {
     format!(
         "{APP_NAME}/{app_version} (Dragon's Dogma 2 mod manager; {})",
         std::env::consts::OS
     )
 }
 
-fn clean_version(raw: &str) -> String {
+pub(crate) fn clean_version(raw: &str) -> String {
     let cleaned: String = raw
         .trim()
         .chars()
@@ -533,10 +843,12 @@ fn clean_version(raw: &str) -> String {
 }
 
 fn is_loopback(url: &str) -> bool {
-    let Ok(parsed) = reqwest::Url::parse(url) else {
-        return false;
-    };
-    let Some(host) = parsed.host_str() else {
+    Url::parse(url).is_ok_and(|parsed| is_loopback_url(&parsed))
+}
+
+/// Does this URL name the machine itself (`localhost`, `127.0.0.0/8`, `::1`)?
+pub(crate) fn is_loopback_url(url: &Url) -> bool {
+    let Some(host) = url.host_str() else {
         return false;
     };
     let host = host.trim_start_matches('[').trim_end_matches(']');
@@ -563,7 +875,7 @@ fn askable_mod_ids(mod_ids: &[u64]) -> Vec<u64> {
 }
 
 /// `Retry-After` is either delay-seconds or an HTTP-date.
-fn parse_retry_after(value: &str) -> Option<u64> {
+pub(crate) fn parse_retry_after(value: &str) -> Option<u64> {
     let value = value.trim();
     if let Ok(seconds) = value.parse::<u64>() {
         return Some(seconds);
@@ -578,7 +890,9 @@ fn read_capped(response: Response) -> Result<Vec<u8>, NexusError> {
     response
         .take(MAX_BODY_BYTES + 1)
         .read_to_end(&mut body)
-        .map_err(|err| NexusError::Offline(format!("the answer broke off: {err}")))?;
+        .map_err(|err| {
+            NexusError::Offline(format!("the answer broke off: {}", root_cause(&err)))
+        })?;
     if body.len() as u64 > MAX_BODY_BYTES {
         return Err(NexusError::BadResponse(format!(
             "the answer was larger than {} MB",
@@ -588,7 +902,11 @@ fn read_capped(response: Response) -> Result<Vec<u8>, NexusError> {
     Ok(body)
 }
 
-fn transport_error(err: reqwest::Error) -> NexusError {
+/// A request that got no answer. reqwest attaches the request's URL to its
+/// error, and a URL may carry a secret (an nxm grant's key in a v1 query, a
+/// signed download link), so it is stripped before anything reads the error.
+pub(crate) fn transport_error(err: reqwest::Error) -> NexusError {
+    let err = err.without_url();
     if err.is_timeout() {
         NexusError::Offline("no answer arrived in time".to_string())
     } else if err.is_connect() {
@@ -603,7 +921,7 @@ fn transport_error(err: reqwest::Error) -> NexusError {
 
 /// The innermost error's text — "Connection refused (os error 111)" rather
 /// than "error sending request for url (…)".
-fn root_cause(err: &(dyn std::error::Error + 'static)) -> String {
+pub(crate) fn root_cause(err: &(dyn std::error::Error + 'static)) -> String {
     let mut current = err;
     while let Some(next) = current.source() {
         current = next;

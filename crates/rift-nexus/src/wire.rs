@@ -13,9 +13,13 @@ use serde_json::{json, Value};
 
 use crate::error::NexusError;
 use crate::types::{
-    FileCategory, FileUpdate, Md5Hit, ModCandidate, NexusAccount, NexusFile, NexusMod, V1FileList,
+    BrowsePage, DownloadMirror, EndorseStatus, FileCategory, FileUpdate, Md5Hit, ModCandidate,
+    NexusAccount, NexusFile, NexusFileDetail, NexusMod, V1FileList,
 };
-use crate::{CANDIDATES_PER_FIND, GAME_DOMAIN, GAME_ID, MODS_PER_REQUEST};
+use crate::{
+    BROWSE_PAGE_SIZE, CANDIDATES_PER_FIND, FILE_DESCRIPTION_CHARS, GAME_DOMAIN, GAME_ID,
+    MODS_PER_REQUEST,
+};
 
 /// Batched mod lookup. Unknown ids are left out of `nodes`; order is not kept.
 /// Since v0.2 each node also brings the mod's labels: `category: String!`,
@@ -314,37 +318,122 @@ pub(crate) fn find_body(terms: &str, mode: NameMatch) -> Value {
     json!({ "query": find_query(mode), "variables": { "terms": terms } })
 }
 
+/// The answer of a find or a browse: one `mods` page.
 #[derive(Debug, Deserialize)]
 pub(crate) struct FindData {
     mods: FindPage,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct FindPage {
+    /// Every match Nexus counts, across pages. Kept raw, read leniently.
+    #[serde(default)]
+    total_count: Option<Value>,
     /// Kept raw: one node in a shape this build does not expect is skipped,
     /// it does not sink the others.
     #[serde(default)]
     nodes: Vec<Value>,
 }
 
-/// The candidates of one find answer, in Nexus's order (relevance): a node
-/// without a usable mod id or a name, or from another game, is skipped; a
-/// repeated mod id counts once; at most [`CANDIDATES_PER_FIND`].
-pub(crate) fn read_candidates(data: FindData) -> Vec<ModCandidate> {
+/// The candidates of one `mods` page, in Nexus's order: a node without a
+/// usable mod id or a name, or from another game, is skipped; a repeated mod
+/// id counts once.
+fn page_candidates(nodes: Vec<Value>) -> impl Iterator<Item = ModCandidate> {
     let mut seen = HashSet::new();
-    data.mods
-        .nodes
+    nodes
         .into_iter()
         .filter_map(|node| match serde_json::from_value::<WireCandidate>(node) {
             Ok(wire) => wire.into_candidate(),
             Err(err) => {
-                log::debug!("skipping a find result in an unexpected shape: {err}");
+                log::debug!("skipping a mods result in an unexpected shape: {err}");
                 None
             }
         })
-        .filter(|candidate| seen.insert(candidate.mod_id))
+        .filter(move |candidate| seen.insert(candidate.mod_id))
+}
+
+/// The candidates of one find answer, in Nexus's order (relevance), at most
+/// [`CANDIDATES_PER_FIND`] (see [`page_candidates`] for what is skipped).
+pub(crate) fn read_candidates(data: FindData) -> Vec<ModCandidate> {
+    page_candidates(data.mods.nodes)
         .take(CANDIDATES_PER_FIND)
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// mods: browsing (v0.3)
+// ---------------------------------------------------------------------------
+
+/// The longest browse text that goes to Nexus, in characters.
+pub(crate) const BROWSE_TEXT_CHARS: usize = 200;
+/// The furthest a page may start: `offset` is a GraphQL `Int` (32-bit), and
+/// the page's own mods must fit after it.
+pub(crate) const LARGEST_BROWSE_OFFSET: u64 = i32::MAX as u64 - BROWSE_PAGE_SIZE as u64;
+
+/// The browse text as it goes out: whitespace collapsed, at most
+/// [`BROWSE_TEXT_CHARS`] characters (cut on a character boundary).
+pub(crate) fn browse_text(text: &str) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed
+        .chars()
+        .take(BROWSE_TEXT_CHARS)
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+}
+
+/// The browse query text: Dragon's Dogma 2's mods, `sort` descending, one
+/// page of [`BROWSE_PAGE_SIZE`] from `offset`. With text, the filter also
+/// wants every word in the mod's name (`nameStemmed MATCHES`), and the words
+/// travel ONLY as the `$text` variable; without text the query declares no
+/// variable at all (GraphQL refuses an unused one). The filters combine as
+/// the filter object's default AND: never a top-level `op: OR`, which would
+/// let mods of other games in. `sort_key` and the integers are this crate's
+/// own words, never anything typed.
+pub(crate) fn browse_query(sort_key: &str, with_text: bool, offset: u64) -> String {
+    let (variables, name_filter) = if with_text {
+        (
+            "($text: String!)",
+            ", nameStemmed: [{ value: $text, op: MATCHES }]",
+        )
+    } else {
+        ("", "")
+    };
+    format!(
+        "query RiftstoneBrowseMods{variables} {{ mods(filter: {{ \
+         gameDomainName: [{{ value: \"{GAME_DOMAIN}\", op: EQUALS }}]{name_filter} }}, \
+         sort: [{{ {sort_key}: {{ direction: DESC }} }}], offset: {offset}, \
+         count: {BROWSE_PAGE_SIZE}) {{ totalCount nodes {{ {FIND_FIELDS} }} }} }}"
+    )
+}
+
+/// The browse POST body: the text (already [`browse_text`]-ed) as the only
+/// variable, or no variables at all.
+pub(crate) fn browse_body(text: &str, sort_key: &str, offset: u64) -> Value {
+    let query = browse_query(sort_key, !text.is_empty(), offset);
+    if text.is_empty() {
+        json!({ "query": query })
+    } else {
+        json!({ "query": query, "variables": { "text": text } })
+    }
+}
+
+/// One browse answer as a page: `total` from `totalCount` (absent: what this
+/// page shows, so the window offers no further page), every usable node.
+pub(crate) fn read_browse_page(data: FindData, offset: u64) -> BrowsePage {
+    let mods: Vec<ModCandidate> = page_candidates(data.mods.nodes).collect();
+    let total = data
+        .mods
+        .total_count
+        .as_ref()
+        .and_then(lenient_u64)
+        .unwrap_or(offset + mods.len() as u64);
+    BrowsePage {
+        total,
+        offset,
+        mods,
+    }
 }
 
 /// The ids a link can be made from: Nexus's GraphQL `Int` is 32-bit.
@@ -421,12 +510,18 @@ fn text(value: Option<&Value>) -> Option<String> {
 /// Whitespace collapsed to single spaces, cut at [`SUMMARY_CHARS`]
 /// characters (never inside one); blank is none.
 fn summary_text(value: &Value) -> Option<String> {
+    collapsed_text(value, SUMMARY_CHARS)
+}
+
+/// A string with its whitespace collapsed to single spaces, cut at
+/// `max_chars` characters (never inside one); blank (or not a string) is none.
+fn collapsed_text(value: &Value, max_chars: usize) -> Option<String> {
     let collapsed = value
         .as_str()?
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    let cut: String = collapsed.chars().take(SUMMARY_CHARS).collect();
+    let cut: String = collapsed.chars().take(max_chars).collect();
     let cut = cut.trim_end();
     (!cut.is_empty()).then(|| cut.to_string())
 }
@@ -467,9 +562,30 @@ pub(crate) struct WireModFile {
     date: Option<Value>,
     primary: Option<Value>,
     size_in_bytes: Option<Value>,
+    /// v0.3, [`mod_file_details_body`] only: kept raw, read leniently.
+    #[serde(default)]
+    description: Option<Value>,
+    /// v0.3, [`mod_file_details_body`] only: `[String!]!`, kept raw.
+    #[serde(default)]
+    changelog_text: Option<Value>,
 }
 
 impl WireModFile {
+    /// The file with its description and patch notes (v0.3), or `None`
+    /// without a file id.
+    pub(crate) fn into_detail(mut self) -> Option<NexusFileDetail> {
+        let description = self
+            .description
+            .take()
+            .and_then(|value| collapsed_text(&value, FILE_DESCRIPTION_CHARS));
+        let changelog = changelog_lines(self.changelog_text.take());
+        Some(NexusFileDetail {
+            file: self.into_file()?,
+            description,
+            changelog,
+        })
+    }
+
     pub(crate) fn into_file(self) -> Option<NexusFile> {
         let file_id = self.file_id.as_ref().and_then(lenient_u64)?;
         Some(NexusFile {
@@ -590,6 +706,78 @@ pub(crate) fn read_mod_files(
 }
 
 // ---------------------------------------------------------------------------
+// modFiles with what the player reads (v0.3)
+// ---------------------------------------------------------------------------
+
+/// The `ModFile` fields a mod's file list for reading selects: the update
+/// rules' facts plus the description and the patch notes.
+pub(crate) const FILE_DETAIL_FIELDS: &str =
+    "fileId groupId sqid name version category date primary sizeInBytes description changelogText";
+
+/// One mod's files with their descriptions and patch notes. The id is an
+/// integer formatted by Rust — nothing typed reaches the text.
+pub(crate) fn mod_file_details_body(mod_id: u64) -> Value {
+    json!({ "query": format!(
+        "query RiftstoneModFileDetails {{ modFiles(modId: {mod_id}, gameId: {GAME_ID}) \
+         {{ {FILE_DETAIL_FIELDS} }} }}"
+    ) })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModFileDetailsData {
+    /// Kept raw: a node in a shape this build does not expect is skipped.
+    mod_files: Option<Vec<Value>>,
+}
+
+/// One mod's files for reading, oldest first. A node without a file id (or
+/// in a shape this build does not expect) is skipped; a null list is a
+/// refusal (`modFiles` is a non-null list, so null means it failed), never
+/// "no files". An unknown mod answers `[]`: no files.
+pub(crate) fn read_file_details(
+    data: ModFileDetailsData,
+) -> Result<Vec<NexusFileDetail>, NexusError> {
+    let nodes = data.mod_files.ok_or_else(|| {
+        NexusError::BadResponse("the answer held no file list for this mod".to_string())
+    })?;
+    let mut details: Vec<NexusFileDetail> = nodes
+        .into_iter()
+        .filter_map(|node| match serde_json::from_value::<WireModFile>(node) {
+            Ok(wire) => wire.into_detail(),
+            Err(err) => {
+                log::debug!("skipping a mod file in an unexpected shape: {err}");
+                None
+            }
+        })
+        .collect();
+    details.sort_by_key(|detail| (detail.file.uploaded_ms, detail.file.file_id));
+    Ok(details)
+}
+
+/// `changelogText: [String!]!` → its lines, each trimmed, blank ones
+/// dropped. A single string is read as one entry per line; anything else
+/// is no notes.
+fn changelog_lines(value: Option<Value>) -> Vec<String> {
+    let entries: Vec<String> = match value {
+        Some(Value::Array(entries)) => entries
+            .into_iter()
+            .filter_map(|entry| match entry {
+                Value::String(text) => Some(text),
+                _ => None,
+            })
+            .collect(),
+        Some(Value::String(text)) => text.lines().map(str::to_string).collect(),
+        _ => Vec::new(),
+    };
+    entries
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // fileHashes
 // ---------------------------------------------------------------------------
 
@@ -694,22 +882,41 @@ impl WireFileHash {
 // v1 REST
 // ---------------------------------------------------------------------------
 
-/// `GET /v1/users/validate.json`. The answer echoes the key back; it is never
-/// read into memory beyond serde's skip.
+/// `GET /v1/users/validate.json`. The answer echoes the key back and names
+/// the account's e-mail; neither is read into memory beyond serde's skip.
+/// The flags are read leniently (a boolean, 0/1 or `"true"`), and each has
+/// an older spelling with a `?` that still counts.
 #[derive(Debug, Deserialize)]
 pub(crate) struct V1Validate {
+    user_id: Option<Value>,
     name: Option<String>,
-    is_premium: Option<bool>,
+    is_premium: Option<Value>,
     #[serde(rename = "is_premium?")]
-    is_premium_legacy: Option<bool>,
+    is_premium_legacy: Option<Value>,
+    is_supporter: Option<Value>,
+    #[serde(rename = "is_supporter?")]
+    is_supporter_legacy: Option<Value>,
 }
 
 impl V1Validate {
     pub(crate) fn into_account(self) -> Option<NexusAccount> {
         let name = non_empty(self.name)?;
+        let flag = |value: Option<Value>, legacy: Option<Value>| {
+            value
+                .filter(|value| !value.is_null())
+                .or(legacy)
+                .as_ref()
+                .is_some_and(lenient_bool)
+        };
         Some(NexusAccount {
             name,
-            is_premium: self.is_premium.or(self.is_premium_legacy).unwrap_or(false),
+            user_id: self
+                .user_id
+                .as_ref()
+                .and_then(lenient_u64)
+                .filter(|id| *id > 0),
+            is_premium: flag(self.is_premium, self.is_premium_legacy),
+            is_supporter: flag(self.is_supporter, self.is_supporter_legacy),
         })
     }
 }
@@ -726,6 +933,8 @@ pub(crate) struct V1Files {
 #[derive(Debug, Deserialize)]
 struct V1File {
     file_id: Option<Value>,
+    /// v0.3: the archive's name as uploaded (`Lantern Glow-2207-1-2-1700000000.zip`).
+    file_name: Option<String>,
     name: Option<String>,
     version: Option<String>,
     category_id: Option<Value>,
@@ -744,6 +953,7 @@ struct V1FileUpdate {
 
 impl V1Files {
     pub(crate) fn into_list(self) -> V1FileList {
+        let mut file_names = BTreeMap::new();
         let mut files: Vec<NexusFile> = self
             .files
             .into_iter()
@@ -756,8 +966,12 @@ impl V1Files {
                         .and_then(lenient_u64)
                         .map_or(FileCategory::Unknown, FileCategory::from_v1_id),
                 };
+                let file_id = file.file_id.as_ref().and_then(lenient_u64)?;
+                if let Some(archive) = non_empty(file.file_name) {
+                    file_names.insert(file_id, archive);
+                }
                 Some(NexusFile {
-                    file_id: file.file_id.as_ref().and_then(lenient_u64)?,
+                    file_id,
                     group_id: None,
                     sqid: None,
                     name: file.name.unwrap_or_default().trim().to_string(),
@@ -785,8 +999,157 @@ impl V1Files {
                 })
             })
             .collect();
-        V1FileList { files, updates }
+        V1FileList {
+            files,
+            updates,
+            file_names,
+        }
     }
+}
+
+// ---------------------------------------------------------------------------
+// v1 REST, v0.3: download links, tracked mods, endorsements
+// ---------------------------------------------------------------------------
+
+/// A v1 answer body as JSON, or the refusal that says it was not.
+fn v1_json(body: &[u8], what: &str) -> Result<Value, NexusError> {
+    serde_json::from_slice(body)
+        .map_err(|err| NexusError::BadResponse(format!("the {what} answer is not JSON: {err}")))
+}
+
+/// A v1 answer that must be a list.
+fn v1_list(body: &[u8], what: &str) -> Result<Vec<Value>, NexusError> {
+    match v1_json(body, what)? {
+        Value::Array(items) => Ok(items),
+        _ => Err(NexusError::BadResponse(format!(
+            "the {what} answer is not a list"
+        ))),
+    }
+}
+
+/// `download_link.json`: `[{ "name", "short_name", "URI" }]`, Nexus's
+/// preferred mirror first. A mirror without a link, or whose link is not
+/// `https` (`http` only towards a loopback test server), is dropped; the
+/// links are never logged. None left is a refusal: there is nothing to
+/// download from.
+pub(crate) fn read_download_links(body: &[u8]) -> Result<Vec<DownloadMirror>, NexusError> {
+    #[derive(Deserialize)]
+    struct WireMirror {
+        #[serde(rename = "URI", alias = "uri")]
+        uri: Option<String>,
+        name: Option<String>,
+        short_name: Option<String>,
+    }
+    let offered = v1_list(body, "download link")?;
+    let count = offered.len();
+    let mirrors: Vec<DownloadMirror> = offered
+        .into_iter()
+        .filter_map(|item| serde_json::from_value::<WireMirror>(item).ok())
+        .filter_map(|mirror| {
+            let uri = mirror.uri.map(|uri| uri.trim().to_string())?;
+            crate::download::usable_link(&uri)?;
+            let name = non_empty(mirror.name).unwrap_or_else(|| "Nexus Mods".to_string());
+            Some(DownloadMirror {
+                short_name: non_empty(mirror.short_name).unwrap_or_else(|| name.clone()),
+                name,
+                uri,
+            })
+        })
+        .collect();
+    if mirrors.len() < count {
+        log::warn!(
+            "dropped {} of {count} download mirrors: no https link",
+            count - mirrors.len()
+        );
+    }
+    if mirrors.is_empty() {
+        return Err(NexusError::BadResponse(
+            "Nexus offered no https download link for this file".to_string(),
+        ));
+    }
+    Ok(mirrors)
+}
+
+/// The mod id of one v1 list entry, when it is a Dragon's Dogma 2 mod a
+/// link can be made from (`domain_name` compared case-insensitively).
+fn dd2_mod_id(item: &Value) -> Option<u64> {
+    let domain = item.get("domain_name").and_then(Value::as_str)?;
+    if !domain.trim().eq_ignore_ascii_case(GAME_DOMAIN) {
+        return None;
+    }
+    item.get("mod_id")
+        .and_then(lenient_u64)
+        .filter(|id| LINKABLE_MOD_IDS.contains(id))
+}
+
+/// `user/tracked_mods.json`: `[{ "mod_id", "domain_name" }]` → the Dragon's
+/// Dogma 2 mod ids, in Nexus's order, each once.
+pub(crate) fn read_tracked_mods(body: &[u8]) -> Result<Vec<u64>, NexusError> {
+    let mut seen = HashSet::new();
+    Ok(v1_list(body, "tracked mods")?
+        .iter()
+        .filter_map(dd2_mod_id)
+        .filter(|id| seen.insert(*id))
+        .collect())
+}
+
+/// `user/endorsements.json`: `[{ "mod_id", "domain_name", "date", "version",
+/// "status" }]` → each Dragon's Dogma 2 mod this account decided on, in
+/// Nexus's order. `Undecided` (and any status this build does not know) is
+/// no entry. A mod listed twice keeps its latest decision: the later `date`,
+/// else the later entry.
+pub(crate) fn read_endorsements(body: &[u8]) -> Result<Vec<(u64, EndorseStatus)>, NexusError> {
+    let mut decided: Vec<(u64, EndorseStatus, u64)> = Vec::new();
+    for item in v1_list(body, "endorsements")? {
+        let Some(mod_id) = dd2_mod_id(&item) else {
+            continue;
+        };
+        let Some(status) = item
+            .get("status")
+            .and_then(Value::as_str)
+            .and_then(EndorseStatus::from_nexus)
+        else {
+            continue;
+        };
+        let date = item.get("date").and_then(lenient_time_ms).unwrap_or(0);
+        match decided.iter_mut().find(|(id, _, _)| *id == mod_id) {
+            Some(entry) if date >= entry.2 => *entry = (mod_id, status, date),
+            Some(_) => {}
+            None => decided.push((mod_id, status, date)),
+        }
+    }
+    Ok(decided
+        .into_iter()
+        .map(|(mod_id, status, _)| (mod_id, status))
+        .collect())
+}
+
+/// An `application/x-www-form-urlencoded` body: letters, digits and `*-._`
+/// as they are, a space as `+`, every other byte as `%XX`.
+pub(crate) fn form_body(pairs: &[(&str, &str)]) -> String {
+    fn encode(text: &str, out: &mut String) {
+        for byte in text.bytes() {
+            match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'*' | b'-' | b'.' | b'_' => {
+                    out.push(char::from(byte));
+                }
+                b' ' => out.push('+'),
+                _ => {
+                    let _ = write!(out, "%{byte:02X}");
+                }
+            }
+        }
+    }
+    let mut body = String::new();
+    for (index, (name, value)) in pairs.iter().enumerate() {
+        if index > 0 {
+            body.push('&');
+        }
+        encode(name, &mut body);
+        body.push('=');
+        encode(value, &mut body);
+    }
+    body
 }
 
 // ---------------------------------------------------------------------------
@@ -1429,6 +1792,351 @@ mod tests {
         let empty: FindData =
             serde_json::from_value(json!({ "mods": { "totalCount": 0, "nodes": [] } })).unwrap();
         assert!(read_candidates(empty).is_empty());
+    }
+
+    // -- v0.3: the key's extras ------------------------------------------------
+
+    #[test]
+    fn the_account_reads_its_id_and_both_flags_in_either_spelling() {
+        let read = |answer: Value| {
+            serde_json::from_value::<V1Validate>(answer)
+                .unwrap()
+                .into_account()
+                .unwrap()
+        };
+        let current = read(json!({
+            "user_id": 4242, "key": "do-not-keep", "name": "Arisen of Vernworth",
+            "is_premium": true, "is_supporter": true, "email": "arisen@example.invalid"
+        }));
+        assert_eq!(
+            current,
+            NexusAccount {
+                name: "Arisen of Vernworth".into(),
+                user_id: Some(4242),
+                is_premium: true,
+                is_supporter: true,
+            }
+        );
+        let legacy = read(json!({
+            "user_id": "4242", "name": "Arisen of Vernworth",
+            "is_premium?": false, "is_supporter?": 1
+        }));
+        assert_eq!(legacy.user_id, Some(4242), "a numeric string counts");
+        assert!(!legacy.is_premium && legacy.is_supporter, "0/1 counts too");
+        // The current spelling wins; a null falls back to the older one.
+        let both = read(json!({
+            "name": "Arisen of Vernworth", "is_premium": null, "is_premium?": true,
+            "is_supporter": false, "is_supporter?": true, "user_id": 0
+        }));
+        assert!(both.is_premium && !both.is_supporter);
+        assert_eq!(both.user_id, None, "no account has id 0");
+        let shown = format!(
+            "{:?}",
+            read(json!({ "name": "Arisen of Vernworth", "key": "do-not-keep" }))
+        );
+        assert!(!shown.contains("do-not-keep"), "{shown}");
+    }
+
+    #[test]
+    fn files_json_names_each_files_archive() {
+        let files: V1Files = serde_json::from_value(json!({
+            "files": [
+                { "file_id": 9001, "file_name": " Lantern Glow Recolor-2207-2-1-1700000000.zip ", "name": "Lantern" },
+                { "file_id": 9002, "file_name": "", "name": "Lantern" },
+                { "file_id": 9003, "name": "Lantern" },
+                { "file_name": "orphan.zip" }
+            ],
+            "file_updates": []
+        }))
+        .unwrap();
+        let list = files.into_list();
+        assert_eq!(
+            list.file_name(9001),
+            Some("Lantern Glow Recolor-2207-2-1-1700000000.zip")
+        );
+        assert_eq!(list.file_name(9002), None, "a blank name is no name");
+        assert_eq!(list.file_name(9003), None);
+        assert_eq!(list.file_names.len(), 1);
+    }
+
+    #[test]
+    fn download_links_keep_nexus_order_and_only_https() {
+        let mirrors = read_download_links(
+            br#"[
+                {"name":"Nexus CDN","short_name":"Nexus CDN","URI":"https://cdn.example.invalid/2207/9001/a.zip?sig=1"},
+                {"name":"Plain","short_name":"Plain","URI":"http://cdn.example.invalid/2207/9001/a.zip"},
+                {"name":"Odd","short_name":"Odd","URI":"ftp://cdn.example.invalid/a.zip"},
+                {"name":"Empty","short_name":"Empty"},
+                {"name":"Amsterdam","URI":"https://ams.example.invalid/2207/9001/a.zip"},
+                {"uri":"http://127.0.0.1:9/a.zip"},
+                "not a mirror"
+            ]"#,
+        )
+        .unwrap();
+        let names: Vec<(&str, &str)> = mirrors
+            .iter()
+            .map(|m| (m.name.as_str(), m.short_name.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("Nexus CDN", "Nexus CDN"),
+                ("Amsterdam", "Amsterdam"),
+                ("Nexus Mods", "Nexus Mods")
+            ],
+            "preferred first; plain http, other schemes and blanks dropped; loopback kept"
+        );
+        assert_eq!(mirrors[2].uri, "http://127.0.0.1:9/a.zip");
+        for body in [
+            &b"[]"[..],
+            br#"[{"URI":"http://cdn.example.invalid/a.zip"}]"#,
+        ] {
+            let reason = bad_response(read_download_links(body));
+            assert!(reason.contains("no https download link"), "{reason}");
+            assert!(
+                !reason.contains("example.invalid"),
+                "the link stays out: {reason}"
+            );
+        }
+        assert!(bad_response(read_download_links(
+            br#"{"URI":"https://a.example.invalid/x"}"#
+        ))
+        .contains("not a list"));
+        assert!(bad_response(read_download_links(b"<html>")).contains("not JSON"));
+    }
+
+    #[test]
+    fn tracked_mods_are_this_games_each_once() {
+        let ids = read_tracked_mods(
+            br#"[
+                {"mod_id":2207,"domain_name":"dragonsdogma2"},
+                {"mod_id":4242,"domain_name":"skyrimspecialedition"},
+                {"mod_id":"5150","domain_name":"DragonsDogma2"},
+                {"mod_id":2207,"domain_name":"dragonsdogma2"},
+                {"mod_id":0,"domain_name":"dragonsdogma2"},
+                {"domain_name":"dragonsdogma2"},
+                {"mod_id":6006}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(ids, vec![2207, 5150]);
+        assert!(read_tracked_mods(b"[]").unwrap().is_empty());
+        assert!(bad_response(read_tracked_mods(br#"{"message":"odd"}"#)).contains("not a list"));
+    }
+
+    #[test]
+    fn endorsements_keep_decisions_and_the_latest_one_wins() {
+        let decided = read_endorsements(
+            br#"[
+                {"mod_id":2207,"domain_name":"dragonsdogma2","date":1700000000,"version":"1","status":"Endorsed"},
+                {"mod_id":5150,"domain_name":"dragonsdogma2","date":1700000000,"version":"2","status":"Abstained"},
+                {"mod_id":6006,"domain_name":"dragonsdogma2","date":1700000000,"version":"1","status":"Undecided"},
+                {"mod_id":4242,"domain_name":"skyrimspecialedition","date":1700000000,"version":"1","status":"Endorsed"},
+                {"mod_id":2207,"domain_name":"dragonsdogma2","date":1600000000,"version":"0","status":"Abstained"},
+                {"mod_id":5150,"domain_name":"dragonsdogma2","date":1800000000,"version":"3","status":"ENDORSED"}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            decided,
+            vec![
+                (2207, EndorseStatus::Endorsed),
+                (5150, EndorseStatus::Endorsed)
+            ],
+            "undecided and other games are no entry; an older decision does not overwrite a newer one"
+        );
+    }
+
+    #[test]
+    fn form_bodies_are_url_encoded() {
+        assert_eq!(form_body(&[("mod_id", "2207")]), "mod_id=2207");
+        assert_eq!(
+            form_body(&[("Version", "1.2 beta+ünï/&=")]),
+            "Version=1.2+beta%2B%C3%BCn%C3%AF%2F%26%3D"
+        );
+        assert_eq!(form_body(&[("a", "1"), ("b", "*-._~")]), "a=1&b=*-._%7E");
+        assert_eq!(form_body(&[]), "");
+    }
+
+    // -- v0.3: reading and browsing --------------------------------------------
+
+    #[test]
+    fn the_file_details_query_asks_for_the_notes_of_one_mod() {
+        let body = mod_file_details_body(2207);
+        let query = body["query"].as_str().unwrap();
+        assert!(
+            query.contains("modFiles(modId: 2207, gameId: 6234) {"),
+            "{query}"
+        );
+        assert!(query.contains(FILE_DETAIL_FIELDS), "{query}");
+        assert!(FILE_DETAIL_FIELDS.contains("description changelogText"));
+        assert_eq!(query.matches('{').count(), query.matches('}').count());
+        assert!(body.get("variables").is_none());
+    }
+
+    #[test]
+    fn file_details_read_the_live_shapes() {
+        let data: ModFileDetailsData = serde_json::from_value(json!({ "modFiles": [
+            { "fileId": 9002, "groupId": 31, "sqid": "Rk4vLmN2Q", "name": "Lantern Glow Recolor",
+              "version": "2.1", "category": "MAIN", "date": 1_700_000_100, "primary": 1,
+              "sizeInBytes": "2048", "description": "  Warmer\n\nlanterns   for the city.  ",
+              "changelogText": ["  Ember tint.", "", "   ", "Fixed the Vernworth gate glow. "] },
+            { "fileId": 9001, "groupId": 31, "name": "Lantern Glow Recolor", "version": "2.0",
+              "category": "ARCHIVED", "date": 1_700_000_000, "primary": 0, "sizeInBytes": null,
+              "description": null, "changelogText": [] },
+            { "name": "no id" },
+            "not a file"
+        ] }))
+        .unwrap();
+        let details = read_file_details(data).unwrap();
+        assert_eq!(
+            details.iter().map(|d| d.file.file_id).collect::<Vec<_>>(),
+            vec![9001, 9002],
+            "oldest first; nodes without an id skipped"
+        );
+        let newest = &details[1];
+        assert_eq!(newest.file.size_bytes, Some(2048));
+        assert_eq!(newest.file.group_id, Some(31));
+        assert_eq!(newest.file.category, FileCategory::Main);
+        assert!(newest.file.primary);
+        assert_eq!(newest.file.uploaded_ms, 1_700_000_100_000);
+        assert_eq!(
+            newest.description.as_deref(),
+            Some("Warmer lanterns for the city.")
+        );
+        assert_eq!(
+            newest.changelog,
+            vec!["Ember tint.", "Fixed the Vernworth gate glow."]
+        );
+        let oldest = &details[0];
+        assert_eq!(
+            (oldest.description.as_deref(), oldest.changelog.len()),
+            (None, 0)
+        );
+        assert_eq!(oldest.file.category, FileCategory::Archived);
+
+        let unknown: ModFileDetailsData =
+            serde_json::from_value(json!({ "modFiles": [] })).unwrap();
+        assert!(
+            read_file_details(unknown).unwrap().is_empty(),
+            "an unknown mod has no files"
+        );
+        let failed: ModFileDetailsData =
+            serde_json::from_value(json!({ "modFiles": null })).unwrap();
+        assert!(bad_response(read_file_details(failed)).contains("no file list"));
+    }
+
+    #[test]
+    fn a_long_description_is_cut_at_four_hundred_characters() {
+        let long = "Ember lanterns glow. ".repeat(40); // 840 characters
+        let wire: WireModFile =
+            serde_json::from_value(json!({ "fileId": 1, "description": long })).unwrap();
+        let description = wire.into_detail().unwrap().description.unwrap();
+        assert!(description.chars().count() <= FILE_DESCRIPTION_CHARS);
+        assert!(description.chars().count() >= FILE_DESCRIPTION_CHARS - 1);
+        assert!(long.starts_with(&description));
+    }
+
+    #[test]
+    fn changelog_text_reads_a_list_or_a_block_and_nothing_else() {
+        assert_eq!(
+            changelog_lines(Some(json!(["a", " b ", "", 3, null]))),
+            vec!["a", "b"]
+        );
+        assert_eq!(
+            changelog_lines(Some(json!("first line\r\n\nsecond line"))),
+            vec!["first line", "second line"]
+        );
+        assert!(changelog_lines(Some(json!({ "a": 1 }))).is_empty());
+        assert!(changelog_lines(None).is_empty());
+    }
+
+    #[test]
+    fn the_browse_query_carries_text_only_as_a_variable_and_never_or() {
+        for (sort, text, offset) in [
+            ("endorsements", "", 0),
+            ("downloads", "lantern glow", 40),
+            ("updatedAt", "", 20),
+            (
+                "relevance",
+                "x\" } ] }) { __schema { types { name } } } #",
+                0,
+            ),
+        ] {
+            let body = browse_body(text, sort, offset);
+            let query = body["query"].as_str().unwrap();
+            assert!(
+                query.contains(r#"gameDomainName: [{ value: "dragonsdogma2", op: EQUALS }]"#),
+                "{query}"
+            );
+            assert!(
+                query.contains(&format!("sort: [{{ {sort}: {{ direction: DESC }} }}]")),
+                "{query}"
+            );
+            assert!(
+                query.contains(&format!("offset: {offset}, count: 20)")),
+                "{query}"
+            );
+            assert!(query.contains("totalCount nodes {"), "{query}");
+            assert!(!query.contains("OR"), "never a top-level OR: {query}");
+            assert_eq!(query.matches('{').count(), query.matches('}').count());
+            if text.is_empty() {
+                assert!(
+                    query.starts_with("query RiftstoneBrowseMods { mods("),
+                    "{query}"
+                );
+                assert!(
+                    !query.contains("$text") && !query.contains("nameStemmed"),
+                    "{query}"
+                );
+                assert!(body.get("variables").is_none());
+            } else {
+                assert!(
+                    query.starts_with("query RiftstoneBrowseMods($text: String!) { mods("),
+                    "{query}"
+                );
+                assert!(
+                    query.contains("nameStemmed: [{ value: $text, op: MATCHES }]"),
+                    "{query}"
+                );
+                assert!(!query.contains(text), "the text is no query text: {query}");
+                assert_eq!(body["variables"], json!({ "text": text }));
+            }
+        }
+    }
+
+    #[test]
+    fn browse_text_is_collapsed_and_capped() {
+        assert_eq!(browse_text("  lantern \n\t glow  "), "lantern glow");
+        assert_eq!(browse_text("   "), "");
+        let long = "\u{e9}".repeat(BROWSE_TEXT_CHARS + 50);
+        assert_eq!(browse_text(&long).chars().count(), BROWSE_TEXT_CHARS);
+    }
+
+    #[test]
+    fn a_browse_page_counts_from_total_count_and_keeps_every_usable_node() {
+        let node = |id: u64| json!({ "modId": id, "name": format!("Lantern Glow {id}") });
+        let mut nodes: Vec<Value> = (1..=20).map(node).collect();
+        nodes.push(node(3));
+        nodes.push(json!({ "modId": 77, "name": "Elsewhere", "game": { "domainName": "skyrimspecialedition" } }));
+        let data: FindData =
+            serde_json::from_value(json!({ "mods": { "totalCount": "1234", "nodes": nodes } }))
+                .unwrap();
+        let page = read_browse_page(data, 40);
+        assert_eq!(page.total, 1234, "a BigInt string counts");
+        assert_eq!(page.offset, 40);
+        assert_eq!(
+            page.mods.iter().map(|m| m.mod_id).collect::<Vec<_>>(),
+            (1..=20).collect::<Vec<_>>(),
+            "no cap of five here; a repeat and another game's node left out"
+        );
+        let silent: FindData =
+            serde_json::from_value(json!({ "mods": { "nodes": [node(9)] } })).unwrap();
+        assert_eq!(
+            read_browse_page(silent, 60).total,
+            61,
+            "no totalCount: no further page"
+        );
     }
 
     #[test]

@@ -15,8 +15,8 @@ use rift_core::{
     Package, PackageFormat, PackageId, PackageSource, PayloadFile, PayloadKinds, RiftError,
 };
 use rift_deploy::{
-    install, uninstall, DeployContext, FluffyLedger, FluffyMod, GameInstall, GameSource,
-    InstallReport, Journal, RefStatus, UninstallReport,
+    install, uninstall, Below, DeployContext, DeployKind, DeployedFile, GameInstall, GameSource,
+    InstallReport, InstalledOption, Journal, Origin, RefStatus, UninstallReport,
 };
 
 pub struct Bench {
@@ -65,19 +65,15 @@ impl Bench {
     }
 
     pub fn ctx(&self) -> DeployContext<'_> {
-        self.ctx_with(None, false)
+        self.ctx_with(false)
     }
 
-    pub fn ctx_with<'a>(
-        &'a self,
-        fluffy: Option<&'a FluffyLedger>,
-        running: bool,
-    ) -> DeployContext<'a> {
+    /// The context with the game running (`true`) or not.
+    pub fn ctx_with(&self, running: bool) -> DeployContext<'_> {
         DeployContext {
             game: &self.game,
             state_dir: self.state_dir.path(),
             ref_status: &self.reframework,
-            fluffy,
             game_running: running,
         }
     }
@@ -247,7 +243,7 @@ impl PackageSource for FakeSource {
         for (n, item) in items.iter().enumerate() {
             if self.fail_at == Some(n + 1) {
                 return Err(RiftError::corrupt(
-                    "/library/fake.zip",
+                    "/mods/fake.zip",
                     format!("{} is damaged", item.entry),
                 ));
             }
@@ -343,8 +339,7 @@ impl TestMod {
         let id = PackageId::for_archive(&file_name, 4096);
         let package = Package {
             id: id.clone(),
-            root_id: "custom-bench".into(),
-            path: PathBuf::from(format!("/library/{file_name}")),
+            path: PathBuf::from(format!("/mods/{file_name}")),
             file_name,
             display_name: name.into(),
             format: PackageFormat::Zip,
@@ -467,11 +462,44 @@ impl TestMod {
     }
 }
 
-pub fn fluffy_mod(section: &str, name: &str, files: &[&str]) -> FluffyMod {
-    FluffyMod {
-        section: section.into(),
+/// An install the journal took over from files already in the game, built by
+/// hand the way an older build's journal recorded one: no package, no entries,
+/// no fingerprints (the size alone speaks for each file), each file's `below`
+/// as given. Its seq is the journal's next; the caller pushes it and saves.
+pub fn adopted(
+    journal: &mut Journal,
+    option_id: &str,
+    name: &str,
+    label: &str,
+    files: &[(&str, DeployKind, u64, Below)],
+) -> InstalledOption {
+    let seq = journal.next_seq;
+    journal.next_seq += 1;
+    InstalledOption {
+        seq,
+        option_id: OptionId(option_id.into()),
         name: name.into(),
-        files: files.iter().map(|f| f.to_string()).collect(),
+        package_file: String::new(),
+        package_path: PathBuf::new(),
+        package_size: 0,
+        option_root: OptionId(option_id.into()).root().to_string(),
+        version: None,
+        installed_at: "2026-10-01T08:00:00Z".into(),
+        game_build: Some("25290080".into()),
+        origin: Origin::Adopted {
+            label: label.into(),
+        },
+        files: files
+            .iter()
+            .map(|(game_path, kind, size, below)| DeployedFile {
+                game_path: (*game_path).into(),
+                kind: *kind,
+                size: *size,
+                entry: None,
+                below: below.clone(),
+                fingerprint: None,
+            })
+            .collect(),
     }
 }
 

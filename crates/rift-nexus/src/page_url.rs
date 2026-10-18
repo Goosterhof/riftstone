@@ -70,6 +70,13 @@ pub fn file_page_url(mod_id: u64, file_id: u64) -> String {
     format!("{}?tab=files&file_id={file_id}", mod_page_url(mod_id))
 }
 
+/// One file's page with its Mod Manager Download button (`&nmm=1`), where a
+/// free account's download starts (v0.3): the button hands an `nxm://` link
+/// back to the stone.
+pub fn mod_manager_page_url(mod_id: u64, file_id: u64) -> String {
+    format!("{}&nmm=1", file_page_url(mod_id, file_id))
+}
+
 /// `mods/<id>[/files/<file id>][/anything]`
 fn mods_path(segments: &[String]) -> Option<(u64, Option<u64>)> {
     if segments.first().map(String::as_str) != Some("mods") {
@@ -177,6 +184,14 @@ mod tests {
         assert_eq!(
             parse_mod_url(&file_page_url(4242, 77)),
             Some((4242, Some(77)))
+        );
+        assert_eq!(
+            mod_manager_page_url(2207, 9001),
+            "https://www.nexusmods.com/dragonsdogma2/mods/2207?tab=files&file_id=9001&nmm=1"
+        );
+        assert_eq!(
+            parse_mod_url(&mod_manager_page_url(2207, 9001)),
+            Some((2207, Some(9001)))
         );
     }
 }

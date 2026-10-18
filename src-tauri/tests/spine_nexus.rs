@@ -584,9 +584,9 @@ fn a_check_labels_the_library_and_search_filters_by_the_labels() {
 }
 
 /// Labels are kept like verdicts: a check that runs while a linked package
-/// is out of the library (its root removed, or unreadable at launch, or the
-/// first scan of a launch still running with no catalog cache) does not ask
-/// about its mod, and must not forget what an earlier check heard of it.
+/// is out of the mods folder (moved away for a while, or the first scan of a
+/// launch still running with no catalog cache) does not ask about its mod,
+/// and must not forget what an earlier check heard of it.
 #[test]
 fn labels_outlive_a_check_made_while_their_package_was_out_of_the_library() {
     let stand_in = StandIn::start(|request| {
@@ -635,13 +635,15 @@ fn labels_outlive_a_check_made_while_their_package_was_out_of_the_library() {
     assert_eq!(labeled.unlabeled_packages, 2, "the cloaks and the lantern");
     assert_eq!(verdict(&state), Some(UpdateStateView::Current));
 
-    // Its root goes out of the library, and a check runs meanwhile: the
-    // shelf holds no linked package, so this check asks Nexus about nothing.
-    library::remove_root_impl(&state, "downloads").unwrap();
+    // It goes out of the mods folder, and a check runs meanwhile: the shelf
+    // holds no linked package, so this check asks Nexus about nothing.
+    let away = bench.dir.path().join(support::BANTER_ZIP);
+    std::fs::rename(bench.mods.join(support::BANTER_ZIP), &away).unwrap();
+    assert!(state.scan_blocking());
     nexus::check_updates_impl(&state).unwrap();
-    // The root comes back and is scanned again.
-    library::add_root_impl(&state, &bench.downloads.to_string_lossy()).unwrap();
-    state.wait_until_scanned();
+    // It comes back and is scanned again.
+    std::fs::rename(&away, bench.mods.join(support::BANTER_ZIP)).unwrap();
+    assert!(state.scan_blocking());
     assert_eq!(
         nexus::get_labels_impl(&state),
         labeled,
@@ -1058,7 +1060,7 @@ fn a_find_says_when_it_could_not_search_or_could_not_hear() {
     // -- a search that failed is an error, never "nothing found" -------------
     let lantern = package_id(&state, "Lantern Glow Recolor.zip");
     match nexus::find_on_nexus_impl(&state, &lantern) {
-        Err(rift_core::RiftError::Nexus { detail }) => {
+        Err(rift_core::RiftError::Nexus { detail, .. }) => {
             assert!(detail.contains("Search backend unavailable"), "{detail}")
         }
         other => panic!("expected a Nexus error, got {other:?}"),
@@ -1068,8 +1070,8 @@ fn a_find_says_when_it_could_not_search_or_could_not_hear() {
     // -- slowed down: the rate limit speaks, and the next find waits ---------
     let banter = package_id(&state, support::BANTER_ZIP);
     match nexus::find_on_nexus_impl(&state, &banter) {
-        Err(rift_core::RiftError::Nexus { detail }) => {
-            assert!(detail.starts_with("rate limit"), "{detail}")
+        Err(rift_core::RiftError::Nexus { reason, .. }) => {
+            assert_eq!(reason, Some(rift_core::NexusReason::RateLimited))
         }
         other => panic!("expected the rate limit, got {other:?}"),
     }

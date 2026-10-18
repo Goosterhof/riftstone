@@ -1,6 +1,6 @@
 [package]
 name = "rift-nexus"
-description = "The Riftstone's line to Nexus Mods: link packages to mod pages, look up files by MD5, check for updates."
+description = "The Riftstone's line to Nexus Mods: link packages to mod pages, look up files by MD5, check for updates, browse, track, endorse and download."
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

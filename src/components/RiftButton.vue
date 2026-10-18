@@ -4,11 +4,18 @@
 // Busy is aria-disabled, not disabled: a keyboard press must not drop the
 // focus to <body> while the stone works (§6.3, the ring is never removed),
 // so a busy button keeps its focus and swallows further presses.
+// Refused is the same for a press the stone holds back (R16.21's keyless
+// Download, as Play refused, R16.13): aria-disabled, still in the tab order,
+// the click swallowed, and its reason linked by aria-describedby, so a
+// keyboard reaches the button and hears why. Disabled takes it out of reach.
+import { useId } from "vue";
+
 const {
   variant = "secondary",
   size = "md",
   busy = false,
   disabled = false,
+  refused = false,
   reason = null,
   type = "button",
 } = defineProps<{
@@ -16,14 +23,18 @@ const {
   size?: "md" | "sm";
   busy?: boolean;
   disabled?: boolean;
+  /** Held back but reachable: aria-disabled, focusable, `reason` its description. */
+  refused?: boolean;
   reason?: string | null;
   type?: "button" | "submit";
 }>();
 
 const emit = defineEmits<{ click: [event: MouseEvent] }>();
 
+const reasonId = useId();
+
 function press(event: MouseEvent): void {
-  if (busy) {
+  if (busy || refused) {
     event.preventDefault();
     return;
   }
@@ -35,15 +46,18 @@ function press(event: MouseEvent): void {
   <button
     :type="type"
     class="rs-btn"
-    :class="[`rs-btn--${variant}`, `rs-btn--${size}`, { 'is-busy': busy }]"
+    :class="[`rs-btn--${variant}`, `rs-btn--${size}`, { 'is-busy': busy, 'is-refused': refused && !busy }]"
     :disabled="disabled"
-    :aria-disabled="busy && !disabled ? 'true' : undefined"
+    :aria-disabled="(busy || refused) && !disabled ? 'true' : undefined"
     :aria-busy="busy ? 'true' : undefined"
-    :title="disabled && reason ? reason : undefined"
+    :aria-describedby="refused && reason ? reasonId : undefined"
+    :title="(disabled || refused) && reason ? reason : undefined"
     @click="press"
   >
     <span class="rs-btn__label"><slot /></span>
     <span v-if="busy" class="rs-btn__busy" aria-hidden="true">···</span>
+    <!-- the reason, out of the name (hidden) and in the description (referenced) -->
+    <span v-if="refused && reason" :id="reasonId" hidden>{{ reason }}</span>
   </button>
 </template>
 
@@ -71,13 +85,14 @@ function press(event: MouseEvent): void {
   height: 28px;
   padding: 0 var(--rs-space-3);
 }
-.rs-btn:hover:not(:disabled, .is-busy) {
+.rs-btn:hover:not(:disabled, .is-busy, .is-refused) {
   background: var(--rs-misthi);
 }
-.rs-btn:active:not(:disabled, .is-busy) {
+.rs-btn:active:not(:disabled, .is-busy, .is-refused) {
   transform: translateY(1px);
 }
-.rs-btn:disabled {
+.rs-btn:disabled,
+.rs-btn.is-refused {
   opacity: 0.45;
   cursor: not-allowed;
 }
@@ -85,7 +100,7 @@ function press(event: MouseEvent): void {
   background: var(--rs-riftdeep);
   border-color: var(--rs-rift);
 }
-.rs-btn--primary:hover:not(:disabled, .is-busy) {
+.rs-btn--primary:hover:not(:disabled, .is-busy, .is-refused) {
   background: #256673;
 }
 .rs-btn--world {
@@ -94,14 +109,14 @@ function press(event: MouseEvent): void {
   color: var(--rs-ongold);
   font-weight: 700;
 }
-.rs-btn--world:hover:not(:disabled, .is-busy) {
+.rs-btn--world:hover:not(:disabled, .is-busy, .is-refused) {
   background: #f1d088;
 }
 .rs-btn--danger {
   border-color: var(--rs-ember);
   color: var(--rs-ember);
 }
-.rs-btn--danger:hover:not(:disabled, .is-busy) {
+.rs-btn--danger:hover:not(:disabled, .is-busy, .is-refused) {
   background: rgba(255, 123, 102, 0.1);
 }
 /* Busy: keep the width, hide the label, show the 3-dot in the same colour. */

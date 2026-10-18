@@ -1,9 +1,11 @@
 //! What the spine remembers between launches, and where.
 //!
-//! The app data dir holds four JSON files the spine owns — `settings.json`,
-//! `roots.json`, `catalog-cache.json`, `nexus.json` — beside the files
-//! rift-deploy owns there (`journal-<hex>.json`, one per game folder, and the
-//! `backups/` store). Thumbnails live in `thumbs/` under the app cache dir.
+//! The app data dir holds the JSON files the spine owns — `settings.json`,
+//! `catalog-cache.json`, `nexus.json`, and (v0.3, only while the player has
+//! the nxm handler on) `nxm-handler.json` — beside the files rift-deploy owns
+//! there (`journal-<hex>.json`, one per game folder, and the `backups/`
+//! store). Thumbnails live in `thumbs/` under the app cache dir. v0.2's
+//! `roots.json` may still sit there: v0.3 never reads, writes or deletes it.
 //!
 //! `RIFTSTONE_DATA_HOME` replaces both dirs (data = the folder itself, cache =
 //! `<folder>/cache`): the tests and the WSL bench never touch the real app
@@ -12,13 +14,15 @@
 //! Every write is a temp file beside the target, flushed to disk, renamed over
 //! it — a crash leaves the old file or the new one, never half of either. A
 //! file that cannot be parsed is set aside as `<name>.damaged` (never deleted)
-//! and the spine starts that part fresh. A file that exists but cannot be
+//! and the spine starts that part fresh — except `nxm-handler.json`, which
+//! stays exactly where it is ([`inspect_json`]): the nxm handler refuses to
+//! give the links back rather than guess. A file that exists but cannot be
 //! READ (permissions, another program's lock, a disk error) is a different
 //! case: it may still hold the player's own choices, so that part starts from
 //! defaults in memory and the file is HELD — never written over for the rest
 //! of the session ([`SavedFile`]); the overview says so.
 //!
-//! The player's files (`settings.json`, `roots.json`, `nexus.json`) are saved
+//! The player's files (`settings.json`, `nexus.json`) are saved
 //! through [`SavedFile::save`], one save at a time, each writing the newest
 //! state — so no lock on that state is ever held across a disk write.
 
@@ -31,12 +35,16 @@ use std::sync::{Mutex, PoisonError};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use rift_core::{LibraryRoot, RiftError};
+use rift_core::RiftError;
 
 use crate::dto::{Settings, VeilMode};
 
 /// Env override for the app data + cache dirs (tests, the WSL bench).
 pub const DATA_HOME_ENV: &str = "RIFTSTONE_DATA_HOME";
+
+/// The app's identifier (`tauri.conf.json`): the name of its folders under
+/// `%APPDATA%` and `%LOCALAPPDATA%`.
+pub const APP_IDENTIFIER: &str = "nl.zmuuzn.riftstone";
 
 /// The two folders the spine writes into.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +71,35 @@ impl DataDirs {
             .map(|value| DataDirs::under(Path::new(&value)))
     }
 
+    /// The folders the installed stone uses on Windows, found without Tauri
+    /// (the uninstaller's `--give-back-nxm` runs no app): `%APPDATA%` and
+    /// `%LOCALAPPDATA%`, each with [`APP_IDENTIFIER`] — where Tauri's
+    /// `app_data_dir` and `app_cache_dir` put them. `None` elsewhere, or
+    /// when Windows names no such folder.
+    pub fn installed() -> Option<DataDirs> {
+        if !cfg!(windows) {
+            return None;
+        }
+        DataDirs::installed_under(
+            std::env::var_os("APPDATA"),
+            std::env::var_os("LOCALAPPDATA"),
+        )
+    }
+
+    /// [`DataDirs::installed`] from the two folders Windows names.
+    pub fn installed_under(
+        roaming: Option<std::ffi::OsString>,
+        local: Option<std::ffi::OsString>,
+    ) -> Option<DataDirs> {
+        let roaming = roaming.filter(|dir| !dir.is_empty())?;
+        let data = PathBuf::from(roaming).join(APP_IDENTIFIER);
+        let cache = local.filter(|dir| !dir.is_empty()).map_or_else(
+            || data.join("cache"),
+            |dir| PathBuf::from(dir).join(APP_IDENTIFIER),
+        );
+        Some(DataDirs { data, cache })
+    }
+
     /// Where the journal and its `backups/` live (rift-deploy's `state_dir`).
     pub fn state_dir(&self) -> &Path {
         &self.data
@@ -70,10 +107,6 @@ impl DataDirs {
 
     pub fn settings_file(&self) -> PathBuf {
         self.data.join("settings.json")
-    }
-
-    pub fn roots_file(&self) -> PathBuf {
-        self.data.join("roots.json")
     }
 
     pub fn catalog_cache_file(&self) -> PathBuf {
@@ -84,8 +117,21 @@ impl DataDirs {
         self.data.join("nexus.json")
     }
 
+    /// v0.3: the nxm handler's memory — the command the stone replaced in
+    /// the registry when the player turned its handler on.
+    pub fn nxm_handler_file(&self) -> PathBuf {
+        self.data.join("nxm-handler.json")
+    }
+
     pub fn thumbs_dir(&self) -> PathBuf {
         self.cache.join("thumbs")
+    }
+
+    /// v0.3: where the relink's content check unpacks the entries it
+    /// fingerprints, one scan at a time. Emptied after every scan and at
+    /// every launch; nothing else is ever written there.
+    pub fn relink_scratch(&self) -> PathBuf {
+        self.cache.join("relink-check")
     }
 }
 
@@ -174,31 +220,10 @@ impl StoredSettings {
     }
 }
 
-/// `roots.json`. Its absence is what makes a launch the first one (the
-/// default roots are created then, and only then).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StoredRoots {
-    pub schema: u32,
-    pub roots: Vec<LibraryRoot>,
-}
-
-impl StoredRoots {
-    pub const SCHEMA: u32 = 1;
-
-    pub fn new(roots: Vec<LibraryRoot>) -> StoredRoots {
-        StoredRoots {
-            schema: StoredRoots::SCHEMA,
-            roots,
-        }
-    }
-}
-
 /// What reading one of the spine's files found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Loaded<T> {
-    /// There is no such file. (A missing `roots.json` is what makes a launch
-    /// the first one.)
+    /// There is no such file.
     Absent,
     Found(T),
     /// It could not be parsed. It was set aside as `<name>.damaged` (never
@@ -227,20 +252,29 @@ impl<T> Loaded<T> {
     }
 }
 
-/// Read a JSON file, telling apart a file that is not there, one that cannot
-/// be read, and one that cannot be parsed (set aside as `<name>.damaged` first,
-/// so nothing the player had is lost silently).
-pub fn load_json<T: DeserializeOwned>(path: &Path) -> Loaded<T> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Loaded::Absent,
+/// The file's bytes; `Err(Loaded::Absent)` or `Err(Loaded::Unreadable)` when
+/// there are none to read.
+fn read_bytes<T>(path: &Path) -> Result<Vec<u8>, Loaded<T>> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(bytes),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err(Loaded::Absent),
         Err(err) => {
             log::warn!(
                 "could not read {}: {err}; that part starts from its defaults and the file is left as it is",
                 path.display()
             );
-            return Loaded::Unreadable(err.to_string());
+            Err(Loaded::Unreadable(err.to_string()))
         }
+    }
+}
+
+/// Read a JSON file, telling apart a file that is not there, one that cannot
+/// be read, and one that cannot be parsed (set aside as `<name>.damaged` first,
+/// so nothing the player had is lost silently).
+pub fn load_json<T: DeserializeOwned>(path: &Path) -> Loaded<T> {
+    let bytes = match read_bytes(path) {
+        Ok(bytes) => bytes,
+        Err(loaded) => return loaded,
     };
     match serde_json::from_slice(&bytes) {
         Ok(value) => Loaded::Found(value),
@@ -263,6 +297,27 @@ pub fn load_json<T: DeserializeOwned>(path: &Path) -> Loaded<T> {
 /// parseable file is `None`.
 pub fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
     load_json(path).found()
+}
+
+/// [`load_json`] for a file that must stay exactly where it is: one that
+/// cannot be parsed is [`Loaded::Damaged`] and is NOT set aside. For a
+/// record the stone refuses to act on rather than lose (the nxm handler's
+/// memory of what it replaced in the registry, [`DataDirs::nxm_handler_file`]).
+pub fn inspect_json<T: DeserializeOwned>(path: &Path) -> Loaded<T> {
+    let bytes = match read_bytes(path) {
+        Ok(bytes) => bytes,
+        Err(loaded) => return loaded,
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(value) => Loaded::Found(value),
+        Err(err) => {
+            log::warn!(
+                "{} is damaged ({err}); it is left where it is",
+                path.display()
+            );
+            Loaded::Damaged
+        }
+    }
 }
 
 /// One of the player's files, saved one save at a time.
@@ -402,10 +457,6 @@ mod tests {
             PathBuf::from("/bench/riftstone/settings.json")
         );
         assert_eq!(
-            dirs.roots_file(),
-            PathBuf::from("/bench/riftstone/roots.json")
-        );
-        assert_eq!(
             dirs.catalog_cache_file(),
             PathBuf::from("/bench/riftstone/catalog-cache.json")
         );
@@ -413,7 +464,36 @@ mod tests {
             dirs.nexus_file(),
             PathBuf::from("/bench/riftstone/nexus.json")
         );
+        assert_eq!(
+            dirs.nxm_handler_file(),
+            PathBuf::from("/bench/riftstone/nxm-handler.json")
+        );
         assert_eq!(dirs.state_dir(), Path::new("/bench/riftstone"));
+    }
+
+    #[test]
+    fn the_installed_folders_are_the_ones_tauri_names() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(
+            conf["identifier"], APP_IDENTIFIER,
+            "the folders follow the app's identifier"
+        );
+        let dirs = DataDirs::installed_under(
+            Some(r"C:\Users\Arisen\AppData\Roaming".into()),
+            Some(r"C:\Users\Arisen\AppData\Local".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            dirs.data,
+            Path::new(r"C:\Users\Arisen\AppData\Roaming").join(APP_IDENTIFIER)
+        );
+        assert_eq!(
+            dirs.cache,
+            Path::new(r"C:\Users\Arisen\AppData\Local").join(APP_IDENTIFIER)
+        );
+        assert_eq!(DataDirs::installed_under(None, Some("x".into())), None);
+        assert_eq!(DataDirs::installed_under(Some("".into()), None), None);
     }
 
     #[test]
@@ -457,19 +537,19 @@ mod tests {
             Loaded::Absent
         );
         // A folder where the file should be: there, but not readable as a file.
-        let blocked = dir.path().join("roots.json");
+        let blocked = dir.path().join("settings.json");
         fs::create_dir_all(&blocked).unwrap();
-        let loaded = load_json::<StoredRoots>(&blocked);
+        let loaded = load_json::<StoredSettings>(&blocked);
         assert!(
             matches!(&loaded, Loaded::Unreadable(why) if !why.is_empty()),
             "{loaded:?}"
         );
         assert!(blocked.is_dir(), "an unreadable file is never moved aside");
-        assert!(!dir.path().join("roots.json.damaged").exists());
+        assert!(!dir.path().join("settings.json.damaged").exists());
         let torn = dir.path().join("nexus.json");
         fs::write(&torn, b"{ torn").unwrap();
         assert_eq!(load_json::<StoredSettings>(&torn), Loaded::Damaged);
-        let good = dir.path().join("settings.json");
+        let good = dir.path().join("good-settings.json");
         write_json(&good, &StoredSettings::default(), true).unwrap();
         assert_eq!(
             load_json::<StoredSettings>(&good),
@@ -478,19 +558,45 @@ mod tests {
     }
 
     #[test]
+    fn an_inspected_file_is_told_apart_and_never_set_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            inspect_json::<StoredSettings>(&dir.path().join("missing.json")),
+            Loaded::Absent
+        );
+        let torn = dir.path().join("nxm-handler.json");
+        fs::write(&torn, b"{ torn").unwrap();
+        assert_eq!(inspect_json::<StoredSettings>(&torn), Loaded::Damaged);
+        assert_eq!(fs::read(&torn).unwrap(), b"{ torn", "left where it is");
+        assert!(!dir.path().join("nxm-handler.json.damaged").exists());
+        let blocked = dir.path().join("blocked.json");
+        fs::create_dir_all(&blocked).unwrap();
+        assert!(matches!(
+            inspect_json::<StoredSettings>(&blocked),
+            Loaded::Unreadable(why) if !why.is_empty()
+        ));
+        let good = dir.path().join("good.json");
+        write_json(&good, &StoredSettings::default(), true).unwrap();
+        assert_eq!(
+            inspect_json::<StoredSettings>(&good),
+            Loaded::Found(StoredSettings::default())
+        );
+    }
+
+    #[test]
     fn a_held_file_is_never_written_and_saves_write_the_newest_state() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("roots.json");
-        fs::write(&path, b"the player's own roots").unwrap();
+        let path = dir.path().join("nexus.json");
+        fs::write(&path, b"the player's own links").unwrap();
         let held = SavedFile::new(path.clone(), Some("permission denied".into()));
         assert_eq!(held.held(), Some("permission denied"));
         let mut asked = false;
         held.save(true, || {
             asked = true;
-            StoredRoots::new(Vec::new())
+            StoredSettings::default()
         });
         assert!(!asked, "a held file does not even ask for the value");
-        assert_eq!(fs::read(&path).unwrap(), b"the player's own roots");
+        assert_eq!(fs::read(&path).unwrap(), b"the player's own links");
 
         // Two threads change the state and save; whatever order the saves run
         // in, the file ends with the newest state.

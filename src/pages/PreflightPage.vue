@@ -1,25 +1,28 @@
 <script setup lang="ts">
 // §8.6 — PREFLIGHT, warm: your game. A checklist: one row per check, each a
-// status glyph + word + the measured value + its recovery action. Then the
-// library roots, the Nexus key and the two settings the user owns.
+// status glyph + word + the measured value + its recovery action. v0.3: the
+// mods folder beside the stone is one of the page's own rows (the spine's
+// `mods` check is drawn into it). Then the Nexus key and the two settings the
+// user owns.
 import { computed } from "vue";
 import type { Check, VeilMode } from "@/types/rift";
 import { useStone } from "@/composables/useStone";
 import { useSettings } from "@/composables/useSettings";
-import { useNavigation } from "@/composables/useNavigation";
+import { useFarWorld } from "@/composables/useFarWorld";
 import { usePreflight, REFRAMEWORK_URL } from "@/composables/usePreflight";
+import { plural } from "@/services/format";
 import RiftButton from "@/components/RiftButton.vue";
 import RiftInscription from "@/components/RiftInscription.vue";
 
 const stone = useStone();
-const nav = useNavigation();
+/** The NEXUS KEY row's Add / Replace: the window's one key door (THE FAR WORLD's ACCOUNT form, its field focused). */
+const { openKeyForm } = useFarWorld();
 const preflight = usePreflight();
 const { settings, setVeil, setAutoCheck } = useSettings();
 
 const o = computed(() => stone.overview.value);
 const game = computed(() => o.value?.game ?? null);
 const ref_ = computed(() => o.value?.reframework ?? null);
-const fluffy = computed(() => o.value?.fluffy ?? null);
 
 type Level = "ok" | "warn" | "error" | "info";
 const GLYPH: Record<Level, { glyph: string; word: string }> = {
@@ -29,7 +32,7 @@ const GLYPH: Record<Level, { glyph: string; word: string }> = {
   info: { glyph: "·", word: "NOTE" },
 };
 
-const OWN_CHECKS = new Set(["game", "build", "reframework", "pakdir", "loose", "fluffy"]);
+const OWN_CHECKS = new Set(["game", "build", "reframework", "pakdir", "loose", "mods"]);
 const spineChecks = computed<Check[]>(() => (o.value?.checks ?? []).filter((c) => !OWN_CHECKS.has(c.id)));
 
 const switchLevel = (on: boolean | null | undefined): Level => (on ? "ok" : "warn");
@@ -52,6 +55,20 @@ const veilLine = computed(
 );
 
 const buildLevel = computed<Level>(() => (game.value?.buildChanged ? "warn" : "ok"));
+
+/** v0.3: the Mods folder row. The spine's `mods` check speaks when there is
+ *  something to say (empty, unlistable, gone, never made); otherwise the row
+ *  counts. Open mods folder is drawn while the folder is there, and whenever
+ *  the check's own action asks for it (a folder that went: the press makes it
+ *  again), and then it is the row's Primary: the check's way on leads. Scan is
+ *  the Primary otherwise (R16.25); a scan never makes a missing folder. */
+const modsLevel = computed<Level>(() => stone.modsCheck.value?.level ?? "ok");
+const openDrawn = computed(() => (o.value?.mods.exists ?? false) || stone.modsWantOpen.value);
+const modsLine = computed(() => {
+  const check = stone.modsCheck.value;
+  if (check) return check.title;
+  return plural(o.value?.library.packages ?? 0, "package");
+});
 </script>
 
 <template>
@@ -72,8 +89,11 @@ const buildLevel = computed<Level>(() => (game.value?.buildChanged ? "warn" : "o
       <RiftButton @click="stone.refreshOverview()">I installed it, check again</RiftButton>
     </RiftInscription>
 
+    <!-- data-check: each row's check id (WINDOW-CONTRACT § Check ids). Play's
+         "Fix it" opens this page on the first warned row by it (R16.14) and
+         puts the keyboard on the row's button, else on the row (tabindex -1). -->
     <ol class="pre__list">
-      <li class="pre__row" :class="`is-${game ? 'ok' : 'error'}`">
+      <li class="pre__row" data-check="game" tabindex="-1" :class="`is-${game ? 'ok' : 'error'}`">
         <span class="pre__glyph">{{ GLYPH[game ? "ok" : "error"].glyph }}</span>
         <span class="pre__word rs-mono">{{ GLYPH[game ? "ok" : "error"].word }}</span>
         <span class="pre__what">Game install</span>
@@ -82,7 +102,7 @@ const buildLevel = computed<Level>(() => (game.value?.buildChanged ? "warn" : "o
           >Change…</RiftButton
         >
       </li>
-      <li v-if="game" class="pre__row" :class="`is-${buildLevel}`">
+      <li v-if="game" class="pre__row" data-check="build" tabindex="-1" :class="`is-${buildLevel}`">
         <span class="pre__glyph">{{ GLYPH[buildLevel].glyph }}</span>
         <span class="pre__word rs-mono">{{ GLYPH[buildLevel].word }}</span>
         <span class="pre__what">Steam build</span>
@@ -96,7 +116,13 @@ const buildLevel = computed<Level>(() => (game.value?.buildChanged ? "warn" : "o
           >I've tested it</RiftButton
         >
       </li>
-      <li v-if="ref_" class="pre__row" :class="`is-${ref_.installed ? 'ok' : 'error'}`">
+      <li
+        v-if="ref_"
+        class="pre__row"
+        data-check="reframework"
+        tabindex="-1"
+        :class="`is-${ref_.installed ? 'ok' : 'error'}`"
+      >
         <span class="pre__glyph">{{ GLYPH[ref_.installed ? "ok" : "error"].glyph }}</span>
         <span class="pre__word rs-mono">{{ GLYPH[ref_.installed ? "ok" : "error"].word }}</span>
         <span class="pre__what">REFramework</span>
@@ -107,7 +133,13 @@ const buildLevel = computed<Level>(() => (game.value?.buildChanged ? "warn" : "o
         }}</span>
         <RiftButton v-if="!ref_.installed" size="sm" @click="preflight.openUrl(REFRAMEWORK_URL)">Get it</RiftButton>
       </li>
-      <li v-if="ref_?.installed" class="pre__row" :class="`is-${switchLevel(ref_.pakDirectory)}`">
+      <li
+        v-if="ref_?.installed"
+        class="pre__row"
+        data-check="pakdir"
+        tabindex="-1"
+        :class="`is-${switchLevel(ref_.pakDirectory)}`"
+      >
         <span class="pre__glyph">{{ GLYPH[switchLevel(ref_.pakDirectory)].glyph }}</span>
         <span class="pre__word rs-mono">{{ switchWord(ref_.pakDirectory) }}</span>
         <span class="pre__what">Alternate PAK Folder</span>
@@ -124,7 +156,13 @@ const buildLevel = computed<Level>(() => (game.value?.buildChanged ? "warn" : "o
           >Turn it on</RiftButton
         >
       </li>
-      <li v-if="ref_?.installed" class="pre__row" :class="`is-${switchLevel(ref_.looseFileLoader)}`">
+      <li
+        v-if="ref_?.installed"
+        class="pre__row"
+        data-check="loose"
+        tabindex="-1"
+        :class="`is-${switchLevel(ref_.looseFileLoader)}`"
+      >
         <span class="pre__glyph">{{ GLYPH[switchLevel(ref_.looseFileLoader)].glyph }}</span>
         <span class="pre__word rs-mono">{{ switchWord(ref_.looseFileLoader) }}</span>
         <span class="pre__what">Loose File Loader</span>
@@ -149,18 +187,46 @@ const buildLevel = computed<Level>(() => (game.value?.buildChanged ? "warn" : "o
         <span class="pre__what">Faulty files</span>
         <span class="pre__val rs-mono">REFramework flagged {{ ref_.faultyFiles.join(", ") }}</span>
       </li>
-      <li class="pre__row" :class="`is-${fluffy ? (fluffy.unadoptedCount ? 'info' : 'ok') : 'info'}`">
-        <span class="pre__glyph">{{ fluffy ? "✓" : "·" }}</span>
-        <span class="pre__word rs-mono">{{ fluffy ? "FOUND" : "NONE" }}</span>
-        <span class="pre__what">Fluffy Mod Manager</span>
-        <span class="pre__val rs-mono">{{
-          fluffy
-            ? `${fluffy.root} · ${fluffy.installedCount} installed, ${fluffy.unadoptedCount} not adopted`
-            : "not on this PC"
-        }}</span>
-        <RiftButton v-if="fluffy?.unadoptedCount" size="sm" @click="nav.go('world')">Adopt installs</RiftButton>
+      <li v-if="o" class="pre__row pre__row--mods" data-check="mods" tabindex="-1" :class="`is-${modsLevel}`">
+        <span class="pre__glyph">{{ GLYPH[modsLevel].glyph }}</span>
+        <span class="pre__word rs-mono">{{ GLYPH[modsLevel].word }}</span>
+        <span class="pre__what">Mods folder</span>
+        <!-- R16.25: the path ellipsized from the LEFT (the folder's own name stays
+             in view, the whole path in title), the count faint, the check's
+             detail on a line of its own -->
+        <span class="pre__val pre__val--mods">
+          <span class="pre__path rs-mono" :title="o.mods.path"
+            ><bdi>{{ o.mods.path }}</bdi></span
+          >
+          <span class="pre__count" :class="{ 'is-ember': modsLevel === 'error' }">{{ modsLine }}</span>
+          <span v-if="stone.modsCheck.value?.detail" class="pre__detail">{{ stone.modsCheck.value.detail }}</span>
+        </span>
+        <span class="pre__acts">
+          <RiftButton
+            v-if="openDrawn"
+            size="sm"
+            :variant="stone.modsWantOpen.value ? 'primary' : 'secondary'"
+            :busy="preflight.busy.value === 'mods'"
+            @click="preflight.openModsFolder()"
+            >Open mods folder</RiftButton
+          >
+          <RiftButton
+            size="sm"
+            :variant="stone.modsWantOpen.value ? 'secondary' : 'primary'"
+            :busy="stone.scanning.value"
+            @click="preflight.rescan()"
+            >{{ o.mods.exists ? "Scan" : "Scan again" }}</RiftButton
+          >
+        </span>
       </li>
-      <li v-for="c in spineChecks" :key="c.id" class="pre__row" :class="`is-${c.level}`">
+      <li
+        v-for="c in spineChecks"
+        :key="c.id"
+        class="pre__row"
+        :data-check="c.id"
+        tabindex="-1"
+        :class="`is-${c.level}`"
+      >
         <span class="pre__glyph">{{ GLYPH[c.level].glyph }}</span>
         <span class="pre__word rs-mono">{{ GLYPH[c.level].word }}</span>
         <span class="pre__what">{{ c.title }}</span>
@@ -170,29 +236,6 @@ const buildLevel = computed<Level>(() => (game.value?.buildChanged ? "warn" : "o
         }}</RiftButton>
       </li>
     </ol>
-
-    <section class="pre__sec">
-      <header class="pre__sechead">
-        <h2 class="pre__h rs-inscription">LIBRARY ROOTS</h2>
-        <RiftButton size="sm" variant="primary" @click="preflight.addRoot()">Add folder…</RiftButton>
-        <RiftButton size="sm" :busy="stone.scanning.value" @click="preflight.rescan()">Scan</RiftButton>
-      </header>
-      <ul class="pre__list">
-        <li v-for="r in o?.roots ?? []" :key="r.id" class="pre__row is-plain">
-          <span class="pre__what">{{ r.label }}</span>
-          <span class="pre__val rs-mono"
-            >{{ r.path }}<template v-if="r.dd2ShapedOnly"> · only DD2-shaped archives</template></span
-          >
-          <RiftButton
-            size="sm"
-            variant="danger"
-            :busy="preflight.busy.value === `root:${r.id}`"
-            @click="preflight.removeRoot(r.id)"
-            >Remove</RiftButton
-          >
-        </li>
-      </ul>
-    </section>
 
     <section class="pre__sec">
       <header class="pre__sechead">
@@ -206,7 +249,7 @@ const buildLevel = computed<Level>(() => (game.value?.buildChanged ? "warn" : "o
               ? "•••••••••••• (stored in Windows Credential Manager)"
               : "none — update checks run without one"
           }}</span>
-          <RiftButton size="sm" @click="nav.go('nexus')">{{ o?.nexus.hasApiKey ? "Replace" : "Add" }}</RiftButton>
+          <RiftButton size="sm" @click="openKeyForm()">{{ o?.nexus.hasApiKey ? "Replace" : "Add" }}</RiftButton>
         </li>
       </ul>
     </section>
@@ -329,6 +372,47 @@ const buildLevel = computed<Level>(() => (game.value?.buildChanged ? "warn" : "o
   min-width: 0;
   color: var(--rs-muted);
   overflow-wrap: anywhere;
+}
+.pre__val--mods {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--rs-space-3);
+}
+.pre__path {
+  display: block;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--rs-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+  overflow-wrap: normal;
+}
+.pre__count {
+  flex: none;
+  color: var(--rs-faint);
+}
+.pre__count.is-ember {
+  flex: 1 1 100%;
+  color: var(--rs-ember);
+}
+.pre__val--mods .pre__detail {
+  flex: 1 1 100%;
+}
+/* v0.3 — the Mods folder row: the path, its count or the check's title, and
+   the check's detail on a line of its own; two buttons share the last column. */
+.pre__detail {
+  display: block;
+  margin-top: 2px;
+}
+.pre__acts {
+  display: flex;
+  gap: var(--rs-space-2);
 }
 .pre__sec {
   margin-top: var(--rs-space-6);

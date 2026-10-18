@@ -1,4 +1,5 @@
-//! Fluffy's `modinfo.ini` — parsed leniently, the way Fluffy reads it.
+//! A mod's `modinfo.ini` — the packaging format Dragon's Dogma 2 mods ship
+//! their names, menus and previews in — parsed leniently.
 //!
 //! **Decoding.** A UTF-8 BOM means UTF-8; a UTF-16 LE/BE BOM means UTF-16.
 //! Without a BOM: bytes holding NULs are UTF-16 without a BOM (ASCII text in
@@ -207,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_every_key_fluffy_knows() {
+    fn reads_every_key_the_format_knows() {
         let text = "name=Ermine Cape - White\r\n\
                     description=A white ermine cape for the Arisen.\r\n\
                     author=Vernworth Tailors\r\n\

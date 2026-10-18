@@ -4,11 +4,17 @@
 // line shows where it lands. Keyboard: focus a row, Alt+↑/↓ moves it, Home/End
 // sends it to the ends; every move is announced. The prefix column is the real
 // file prefix; nothing touches disk until Apply order.
+// v0.3: every row has an uninstall door (−), so a pak install whose package
+// left the mods folder, or an adopted one that never had a package, still
+// leaves your game: THE RETURN plans it from the journal, which knows every
+// file. Such a row says so ("no package"), and an adopted one says "adopted".
 import { computed, nextTick, ref } from "vue";
 import type { InstalledRow, PakLoadState } from "@/types/rift";
 import { useInstalled } from "@/composables/useInstalled";
 import { pakPrefix, plural } from "@/services/format";
+import { ADOPTED_TITLE, PACKAGE_GONE_LINE, missingPackageTitle } from "@/services/voice";
 import KindBadge from "./KindBadge.vue";
+import RiftButton from "./RiftButton.vue";
 
 const installed = useInstalled();
 const listEl = ref<HTMLElement | null>(null);
@@ -63,6 +69,8 @@ async function refocus(id: string): Promise<void> {
 const ALT_STEPS: Partial<Record<string, number>> = { ArrowUp: -1, ArrowDown: 1 };
 
 function onKey(event: KeyboardEvent, id: string): void {
+  // the row's own keys: a key pressed on its door is the door's
+  if (event.target !== event.currentTarget) return;
   const step = ALT_STEPS[event.key];
   if (event.altKey && step !== undefined) installed.moveBy(id, step);
   else if (event.key === "Home") installed.moveTo(id, 0);
@@ -148,13 +156,28 @@ function onPointerUp(): void {
         <span v-else-if="tally.get(row.optionId)?.lost" class="lrow__fight is-lost"
           >⚔ overridden ×{{ tally.get(row.optionId)?.lost }}</span
         >
-        <span
-          v-for="pak in row.paks"
-          :key="pak.fileName"
-          class="lrow__proof rs-mono"
-          :class="PROOF[pak.load.kind].tone"
-          :title="proofTitle(pak.load)"
-          >{{ PROOF[pak.load.kind].glyph }} {{ proofText(pak.load) }}</span
+        <span class="lrow__proofs">
+          <span
+            v-for="pak in row.paks"
+            :key="pak.fileName"
+            class="lrow__proof rs-mono"
+            :class="PROOF[pak.load.kind].tone"
+            :title="proofTitle(pak.load)"
+            >{{ PROOF[pak.load.kind].glyph }} {{ proofText(pak.load) }}</span
+          >
+          <!-- R16.26: provenance, not state: words and a title, no chip, no colour -->
+          <span v-if="row.origin === 'adopted'" class="lrow__mark rs-mono" :title="ADOPTED_TITLE">adopted</span>
+          <span v-if="row.packageMissing" class="lrow__mark lrow__gone" :title="missingPackageTitle(row)">{{
+            PACKAGE_GONE_LINE
+          }}</span>
+        </span>
+        <RiftButton
+          class="lrow__door"
+          size="sm"
+          variant="danger"
+          :aria-label="`Uninstall ${row.name}`"
+          @click="installed.planReturn(row.optionId)"
+          >−</RiftButton
         >
       </li>
     </ol>
@@ -175,10 +198,10 @@ function onPointerUp(): void {
 .lrow {
   position: relative;
   display: grid;
-  grid-template-columns: 22px 18px 11ch minmax(0, 1fr) auto auto;
+  grid-template-columns: 22px 18px 11ch minmax(0, 1fr) auto auto auto;
   grid-template-areas:
-    "grip pos prefix name kind files"
-    "grip . . proof proof fight";
+    "grip pos prefix name kind files door"
+    "grip . . proof proof fight door";
   align-items: center;
   column-gap: var(--rs-space-2);
   min-height: 40px;
@@ -255,9 +278,34 @@ function onPointerUp(): void {
 .lrow__fight.is-lost {
   color: var(--rs-ember);
 }
-.lrow__proof {
+.lrow__proofs {
   grid-area: proof;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px var(--rs-space-2);
+  min-width: 0;
+}
+.lrow__proof,
+.lrow__mark {
   font-size: var(--rs-text-xs);
+}
+.lrow__mark {
+  color: var(--rs-faint);
+}
+.lrow__door {
+  grid-area: door;
+  align-self: center;
+}
+/* R16.26: the door is 28 × 28, the loose rows' door */
+.lrow__door.rs-btn {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+}
+.lrow__gone {
+  font: 400 var(--rs-text-sm) var(--rs-font-sans);
 }
 .is-world {
   color: var(--rs-world);

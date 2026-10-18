@@ -3,18 +3,18 @@
 // least one recovery — in every context the window can be in.
 
 import { describe, expect, it } from "vitest";
-import type { ProblemKind, RiftError } from "@/types/rift";
+import type { NexusReason, ProblemKind, RiftError } from "@/types/rift";
 import { RiftFailure, asRiftFailure } from "@/services/rift";
 import { MOCK_PACKAGES } from "@/services/mock/library";
 import {
   TROUBLE_KINDS,
+  VOICE_CONTEXTS,
   failureDetails,
   leadProblem,
   missingPackageTitle,
   troubleLine,
   voice,
   voicedLine,
-  type VoiceContext,
 } from "@/services/voice";
 
 const KINDS: RiftError["kind"][] = [
@@ -31,24 +31,12 @@ const KINDS: RiftError["kind"][] = [
   "io",
 ];
 
-const CONTEXTS: VoiceContext[] = [
-  "install",
-  "uninstall",
-  "scan",
-  "package",
-  "search",
-  "reorder",
-  "adopt",
-  "switch",
-  "roots",
-  "game",
-  "nexusCheck",
-  "nexusKey",
-  "nexusLink",
-  "settings",
-];
+/** Every context the window can be in: a new one is voiced in every kind before it ships. */
+const CONTEXTS = VOICE_CONTEXTS;
 
 const fail = (kind: RiftError["kind"], detail: Record<string, string> = {}) => new RiftFailure({ kind, detail });
+/** A v0.3 far-world failure: the spine's sentence beside its reason code. */
+const coded = (reason: NexusReason, detail = "Nexus said no.") => fail("nexus", { detail, reason });
 
 describe("voice()", () => {
   describe("every kind in every context", () => {
@@ -121,14 +109,115 @@ describe("voice()", () => {
       expect(voiced.voice).toMatch(/^Nexus has rationed the stone for now/);
     });
 
-    it("should read anything else as out of reach, and keep the offline promise", () => {
+    it("should read an outage in the words as out of reach, and keep the offline promise", () => {
       const voiced = voice(fail("nexus", { detail: "connection refused" }), "nexusCheck");
       expect(voiced.inscription).toBe("THE FAR WORLD IS OUT OF REACH");
       expect(voiced.empathy).toContain("Everything else works offline.");
     });
 
+    it("should say Nexus answered when a failure carries no reason and its words name no outage", () => {
+      // the spine's two reasonless sentences: no mirror offered (downloads.rs), and a
+      // 401/403 on a key that works (rift-nexus error.rs http_sentence). Nexus answered both.
+      for (const detail of [
+        "Nexus Mods offered no download link for this file. Try again later.",
+        "Nexus Mods would not serve this request. Try again in a few minutes; if it keeps happening, look at the account on the Nexus Mods site.",
+      ]) {
+        for (const context of ["download", "standings", "nexusAccount"] as const) {
+          const voiced = voice(fail("nexus", { detail }), context);
+          expect({ context, inscription: voiced.inscription, voice: voiced.voice }).toStrictEqual({
+            context,
+            inscription: null,
+            voice: "Nexus answered, but the stone could not read its answer.",
+          });
+          expect(voiced.empathy).not.toContain("works offline");
+        }
+      }
+      // the spine's own offline sentence, were it ever to come without its reason, is still an outage
+      expect(
+        voice(fail("nexus", { detail: "Nexus Mods could not be reached (timed out)." }), "download").inscription,
+      ).toBe("THE FAR WORLD IS OUT OF REACH");
+    });
+
     it("should read a bad link as a link problem while linking", () => {
       expect(voice(fail("nexus", { reason: "no mod id in it" }), "nexusLink").voice).toMatch(/^That link didn't lead/);
+    });
+  });
+
+  describe("the far world by its reason (v0.3)", () => {
+    const REASONS: NexusReason[] = [
+      "offline",
+      "rateLimited",
+      "noKey",
+      "keyRejected",
+      "premiumRequired",
+      "linkExpired",
+      "linkNotYours",
+      "linkRefused",
+      "fileGone",
+      "sizeMismatch",
+      "notTheFile",
+      "endorseNotDownloaded",
+      "endorseTooSoon",
+      "endorseOwnMod",
+    ];
+
+    it("should give every reason a voice of its own in every context but a find (which sends no key)", () => {
+      for (const context of CONTEXTS.filter((c) => c !== "nexusFind")) {
+        const voices = new Set(REASONS.map((reason) => voice(coded(reason), context).voice));
+        expect({ context, distinct: voices.size }).toStrictEqual({ context, distinct: REASONS.length });
+      }
+    });
+
+    it("should read the reason first, whatever words the sentence carries", () => {
+      // a sentence that would read as a rejected key says offline when the code says so
+      expect(voice(coded("offline", "HTTP 401 Unauthorized"), "download").inscription).toBe(
+        "THE FAR WORLD IS OUT OF REACH",
+      );
+      expect(voice(coded("keyRejected", "connection refused"), "standings").inscription).toBe("THE FAR WORLD REFUSES");
+      // and the code is never read out as if it were the sentence
+      expect(voice(fail("nexus", { reason: "rateLimited" }), "nexusCheck").voice).toBe(
+        "Nexus has rationed the stone for now: the hourly request quota is spent.",
+      );
+    });
+
+    it("should send a download's link troubles back to the file's page for a fresh link", () => {
+      for (const reason of ["premiumRequired", "linkExpired", "linkRefused"] as const) {
+        const voiced = voice(coded(reason), "download");
+        expect(voiced.recovery.map((r) => r.kind)).toStrictEqual(["openNexusPage"]);
+        expect(voiced.empathy).toMatch(/^Nothing was written to your mods folder\./);
+      }
+      expect(voice(coded("noKey"), "download").recovery.map((r) => r.label)).toStrictEqual(["Add key…"]);
+    });
+
+    it("should say an endorsement Nexus refused changed nothing on Nexus", () => {
+      for (const reason of ["endorseNotDownloaded", "endorseTooSoon", "endorseOwnMod"] as const) {
+        expect(voice(coded(reason), "standings").empathy).toMatch(/^Nothing changed on Nexus\./);
+      }
+    });
+
+    it("should keep a refused find the search's refusal, never a key's", () => {
+      const voiced = voice(coded("keyRejected"), "nexusFind");
+      expect(voiced.voice).toBe("Nexus turned the search away, so it could not be asked about this package.");
+    });
+  });
+
+  describe("Play (v0.3)", () => {
+    it("should hold Play back in the engine's own sentence and say nothing was started", () => {
+      const reason =
+        "Dragon's Dogma 2 is already running; switch to its window, or close it before you start it again.";
+      const voiced = voice(fail("refused", { reason }), "launch");
+      expect(voiced.inscription).toBe("THE WORLD IS AWAKE");
+      expect(voicedLine(voiced)).toBe(
+        "The stone held back: Dragon's Dogma 2 is already running; switch to its window, or close it before you start it again. Nothing was started, and your game folder is as it was.",
+      );
+    });
+
+    it("should voice a game that would not start as the world staying asleep", () => {
+      const voiced = voice(fail("io", { detail: "could not start DD2.exe: access is denied" }), "launch");
+      expect(voiced.inscription).toBe("THE WORLD STAYS ASLEEP");
+      expect(voiced.voice).toBe(
+        "The stone couldn't start Dragon's Dogma 2: could not start DD2.exe: access is denied.",
+      );
     });
   });
 
@@ -180,8 +269,10 @@ const SPINE_WHYS: [ProblemKind, string][] = [
   ],
   [
     "unreadable",
-    "it is password-protected. Unpack it with its password and put the unpacked folder in a library folder instead.",
+    "it is password-protected. Unpack it with its password and put the unpacked folder in the mods folder instead.",
   ],
+  // v0.3: a folder package holding archives of its own
+  ["filesSkipped", "it holds 3 archives of its own; put each archive directly in the mods folder."],
   ["unreadable", "it is damaged (the central directory is cut off). Download it again from its mod page."],
 ];
 
@@ -268,10 +359,12 @@ describe("troubleLine() — the §9 trouble cards", () => {
 });
 
 describe("missingPackageTitle() — an installed row without a package", () => {
-  it("should not call a Fluffy install that never matched a package one that left the library", () => {
-    expect(missingPackageTitle({ optionId: "fluffy#Ox Cart Express" })).toBe(
-      "Adopted from Fluffy: no package in your library matches it",
+  it("should word an adopted install apart from one whose package left, by its origin and never its id", () => {
+    expect(missingPackageTitle({ origin: "adopted" })).toBe(
+      "Adopted: no package in your mods folder matches it. Uninstall still works: the journal knows every file.",
     );
-    expect(missingPackageTitle({ optionId: "pkg-3f2a/Lantern Glow" })).toBe("The package is no longer in your library");
+    expect(missingPackageTitle({ origin: "riftstone" })).toBe(
+      "The package is no longer in your mods folder. Uninstall still works: the journal knows every file.",
+    );
   });
 });

@@ -3608,7 +3608,7 @@ dependencies = [
 
 [[package]]
 name = "rift-archive"
-version = "0.2.1"
+version = "0.3.1"
 dependencies = [
  "crc32fast",
  "log",
@@ -3622,7 +3622,7 @@ dependencies = [
 
 [[package]]
 name = "rift-catalog"
-version = "0.2.1"
+version = "0.3.1"
 dependencies = [
  "encoding_rs",
  "log",
@@ -3640,7 +3640,7 @@ dependencies = [
 
 [[package]]
 name = "rift-core"
-version = "0.2.1"
+version = "0.3.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3649,11 +3649,9 @@ dependencies = [
 
 [[package]]
 name = "rift-deploy"
-version = "0.2.1"
+version = "0.3.1"
 dependencies = [
  "chrono",
- "dirs",
- "encoding_rs",
  "log",
  "rift-archive",
  "rift-core",
@@ -3669,7 +3667,7 @@ dependencies = [
 
 [[package]]
 name = "rift-nexus"
-version = "0.2.1"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "log",
@@ -3684,7 +3682,7 @@ dependencies = [
 
 [[package]]
 name = "rift-pak"
-version = "0.2.1"
+version = "0.3.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3693,13 +3691,13 @@ dependencies = [
 
 [[package]]
 name = "riftstone"
-version = "0.2.1"
+version = "0.3.1"
 dependencies = [
  "base64 0.23.1",
  "chrono",
- "dirs",
  "image",
  "keyring",
+ "libc",
  "log",
  "notify",
  "rift-archive",
@@ -3715,8 +3713,11 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-log",
  "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
  "tempfile",
  "thiserror 2.0.21",
+ "windows-sys 0.61.2",
+ "winreg",
  "zip",
 ]
 
@@ -4692,6 +4693,22 @@ dependencies = [
  "thiserror 2.0.21",
  "url",
  "windows",
+ "zbus",
+]
+
+[[package]]
+name = "tauri-plugin-single-instance"
+version = "2.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee2c8fe2d6b75caed0153f91eda30ea1dea3bfb6710d5adb80456d2c035a569d"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "windows-sys 0.61.2",
  "zbus",
 ]
 

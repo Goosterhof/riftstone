@@ -11,7 +11,6 @@ const LABEL: Record<ChipState, string> = {
   update: "UPDATE",
   conflict: "CONFLICT",
   switchOff: "SWITCH OFF",
-  fluffy: "BY FLUFFY",
   menu: "MENU",
 };
 </script>
@@ -48,11 +47,6 @@ const LABEL: Record<ChipState, string> = {
 .rs-chip--notInstalled {
   border: 1px solid var(--rs-rift);
   color: var(--rs-rift);
-  padding: 1px 5px;
-}
-.rs-chip--fluffy {
-  border: 1px solid var(--rs-world);
-  color: var(--rs-world);
   padding: 1px 5px;
 }
 .rs-chip--menu {

@@ -76,7 +76,7 @@ export function buildFileTree(payload: PayloadFile[], root: string, tokens: stri
 }
 
 export const SKIP_REASON: Record<SkipReason, string> = {
-  modinfo: "Fluffy metadata",
+  modinfo: "mod description (modinfo.ini)",
   picture: "preview only",
   document: "documentation",
   unknownPlace: "not a place the game loads from",

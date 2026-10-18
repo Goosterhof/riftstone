@@ -1,23 +1,23 @@
-//! The library: search, one option, one package, a thumbnail, the roots.
+//! The library: search, one option, one package, a thumbnail, the library
+//! tree (v0.3), and the mods folder itself.
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
-use rift_core::{fnv1a64, lower_key, ModOption, OptionId, Package, PackageId, RiftError, RootKind};
+use rift_catalog::Nest;
+use rift_core::{lower_key, ModOption, OptionId, Package, PackageId, RiftError};
 
 use crate::commands::{blocking, not_found, Spine};
 use crate::conflicts;
 use crate::dto::{
     self, path_text, ArchiveEntry, ConflictView, InstallBadge, InstallOrigin, InstalledInfo,
-    LibraryRoot, OptionDetail, OptionRef, PackageDetail, PackageSummary, PayloadKinds, SearchQuery,
-    SearchResult, ThumbnailSize, TreeNode, TreeNodeKind,
+    LibraryPackage, LibraryView, ModsFolderView, OptionDetail, OptionRef, PackageDetail,
+    PackageSummary, PayloadKinds, SearchQuery, SearchResult, ThumbnailSize, TreeNode, TreeNodeKind,
 };
-use crate::events;
 use crate::nexus::NexusStore;
-use crate::state::{downloads_root, fluffy_root, lock, read, same_folder, write, AppState};
+use crate::state::{lock, AppState};
 use crate::thumbs;
-use crate::watch;
 
 /// How much of a description a search card shows.
 const SNIPPET_CHARS: usize = 180;
@@ -26,12 +26,13 @@ const SNIPPET_CHARS: usize = 180;
 // search
 // ---------------------------------------------------------------------------
 
+/// The window's search: `limit: 0` reaches the catalog as "no cap" — every
+/// match (v0.3).
 pub fn search_impl(state: &AppState, query: &SearchQuery) -> Vec<SearchResult> {
     let shelf = state.shelf();
     let snapshot = state.snapshot();
     let installs = state.journal_installs();
-    let is_installed =
-        |id: &OptionId| installs.contains_key(id) || snapshot.fluffy_installed.contains(id);
+    let is_installed = |id: &OptionId| installs.contains_key(id);
     let hits = shelf.search(&query.into(), &is_installed);
     let store = lock(&state.nexus);
     let mut badges: HashMap<&PackageId, Option<dto::UpdateBadge>> = HashMap::new();
@@ -53,7 +54,6 @@ pub fn search_impl(state: &AppState, query: &SearchQuery) -> Vec<SearchResult> {
                 bundle: option.bundle.clone(),
                 package_name: package.display_name.clone(),
                 package_format: package.format.into(),
-                root_id: package.root_id.clone(),
                 author: info.and_then(|i| i.author.clone()),
                 version: info.and_then(|i| i.version.clone()),
                 category: info.and_then(|i| i.category.clone()),
@@ -65,7 +65,7 @@ pub fn search_impl(state: &AppState, query: &SearchQuery) -> Vec<SearchResult> {
                 menu_only: option.menu_only,
                 matched: hit.matched.iter().map(dto::MatchedField::from).collect(),
                 file_matches: hit.file_matches.clone(),
-                installed: install_badge(&installs, &snapshot.fluffy_installed, &option.id),
+                installed: install_badge(&installs, &option.id),
                 update,
                 conflicted: snapshot.conflicted.contains(&option.id.0),
                 nexus_category: labels.and_then(|l| l.category.clone()),
@@ -76,24 +76,20 @@ pub fn search_impl(state: &AppState, query: &SearchQuery) -> Vec<SearchResult> {
         .collect()
 }
 
+/// The badge of an option the journal holds: the Riftstone's own install, or
+/// an adopted one.
 fn install_badge(
     installs: &HashMap<OptionId, (bool, String)>,
-    fluffy_installed: &HashSet<OptionId>,
     id: &OptionId,
 ) -> Option<InstallBadge> {
-    if let Some((adopted, installed_at)) = installs.get(id) {
-        return Some(InstallBadge {
-            origin: if *adopted {
-                InstallOrigin::Fluffy
-            } else {
-                InstallOrigin::Riftstone
-            },
-            installed_at: Some(installed_at.clone()),
-        });
-    }
-    fluffy_installed.contains(id).then_some(InstallBadge {
-        origin: InstallOrigin::FluffyUnadopted,
-        installed_at: None,
+    let (adopted, installed_at) = installs.get(id)?;
+    Some(InstallBadge {
+        origin: if *adopted {
+            InstallOrigin::Adopted
+        } else {
+            InstallOrigin::Riftstone
+        },
+        installed_at: Some(installed_at.clone()),
     })
 }
 
@@ -118,7 +114,6 @@ pub fn snippet(text: &str) -> Option<String> {
 pub fn package_summary(package: &Package, store: &NexusStore) -> PackageSummary {
     PackageSummary {
         id: package.id.0.clone(),
-        root_id: package.root_id.clone(),
         path: path_text(&package.path),
         file_name: package.file_name.clone(),
         display_name: package.display_name.clone(),
@@ -175,7 +170,6 @@ pub fn get_option_impl(state: &AppState, option_id: &str) -> Result<OptionDetail
         parent_name,
         children,
         installed,
-        fluffy_installed: snapshot.fluffy_installed.contains(&id),
         conflicts,
         update: store.link_for(package).map(|_| store.row(package)),
         // The labels search filters by: the index's, so the two never differ.
@@ -215,14 +209,7 @@ fn candidate_conflicts(
     let Some(game_state) = &snapshot.game_state else {
         return Vec::new();
     };
-    let mut layers = conflicts::game_layers(
-        game_root,
-        journal,
-        game_state,
-        snapshot.ledger.as_ref(),
-        &snapshot.fluffy_matches,
-        &state.paks,
-    );
+    let mut layers = conflicts::game_layers(game_root, journal, game_state, &state.paks);
     conflicts::add_candidate(&mut layers, option, |entry| {
         state.paks.in_archive(&package.id, entry, || {
             state
@@ -241,12 +228,16 @@ pub fn get_package_impl(state: &AppState, package_id: &str) -> Result<PackageDet
     let package = shelf
         .package(&PackageId(package_id.to_string()))
         .ok_or_else(|| not_found(package_id))?;
+    let snapshot = state.snapshot();
     let installs = state.journal_installs();
-    let installed: HashSet<&OptionId> = installs.keys().collect();
     let store = lock(&state.nexus);
     Ok(PackageDetail {
         package: package_summary(package, &store),
-        tree: package_tree(package, &installed),
+        tree: package_tree(
+            package,
+            &|id| installs.contains_key(id),
+            &snapshot.conflicted,
+        ),
         entries: shelf
             .entries(&package.id)
             .iter()
@@ -255,110 +246,157 @@ pub fn get_package_impl(state: &AppState, package_id: &str) -> Result<PackageDet
     })
 }
 
-/// The package's options as Fluffy's menus nest them: `addonfor` children
-/// under their parent, `NameAsBundle` siblings gathered under a bundle node.
-/// An option whose parent lives in another package is a top node here.
-pub fn package_tree(package: &Package, installed: &HashSet<&OptionId>) -> Vec<TreeNode> {
-    let own: HashSet<&OptionId> = package.options.iter().map(|o| &o.id).collect();
-    let mut children: HashMap<&OptionId, Vec<&ModOption>> = HashMap::new();
-    let mut top = Vec::new();
-    for option in &package.options {
-        match option.parent.as_ref().filter(|parent| own.contains(parent)) {
-            Some(parent) => children.entry(parent).or_default().push(option),
-            None => top.push(option),
-        }
-    }
-    let mut visited = HashSet::new();
-    tree_level(&top, &children, installed, &mut visited)
-}
-
-fn tree_level<'a>(
-    options: &[&'a ModOption],
-    children: &HashMap<&OptionId, Vec<&'a ModOption>>,
-    installed: &HashSet<&OptionId>,
-    visited: &mut HashSet<&'a OptionId>,
+/// The package's options as their menus nest them (rift-catalog
+/// `tree::nest`: `addonfor` children under their parent in the same package,
+/// `NameAsBundle` siblings gathered under a bundle node, an option whose
+/// parent lives elsewhere a top node here), each node told whether it is
+/// installed and whether it takes part in a conflict. A bundle node is
+/// installed or conflicted when any child is, menu-only when every child is,
+/// and counts its children's kinds.
+pub fn package_tree(
+    package: &Package,
+    is_installed: &dyn Fn(&OptionId) -> bool,
+    conflicted: &HashSet<String>,
 ) -> Vec<TreeNode> {
-    enum Slot<'a> {
-        Option(&'a ModOption),
-        Bundle(usize),
-    }
-    let mut slots: Vec<Slot> = Vec::new();
-    let mut bundles: Vec<(String, Vec<&ModOption>)> = Vec::new();
-    for option in options {
-        match &option.bundle {
-            Some(bundle) => match bundles
-                .iter()
-                .position(|(name, _)| lower_key(name) == lower_key(bundle))
-            {
-                Some(at) => bundles[at].1.push(option),
-                None => {
-                    slots.push(Slot::Bundle(bundles.len()));
-                    bundles.push((bundle.clone(), vec![option]));
-                }
-            },
-            None => slots.push(Slot::Option(option)),
-        }
-    }
-    let mut nodes = Vec::new();
-    for slot in slots {
-        match slot {
-            Slot::Option(option) => {
-                if let Some(node) = option_node(option, children, installed, visited) {
-                    nodes.push(node);
-                }
-            }
-            Slot::Bundle(at) => {
-                let (name, members) = &bundles[at];
-                let kids: Vec<TreeNode> = members
-                    .iter()
-                    .filter_map(|option| option_node(option, children, installed, visited))
-                    .collect();
-                let mut kinds = PayloadKinds::default();
-                for kid in &kids {
-                    kinds.pak += kid.kinds.pak;
-                    kinds.loose += kid.kinds.loose;
-                    kinds.reframework += kid.kinds.reframework;
-                    kinds.root += kid.kinds.root;
-                }
-                nodes.push(TreeNode {
-                    option_id: None,
-                    label: name.clone(),
-                    kind: TreeNodeKind::Bundle,
-                    menu_only: kids.iter().all(|k| k.menu_only),
-                    has_screenshot: kids.iter().any(|k| k.has_screenshot),
-                    installed: kids.iter().any(|k| k.installed),
-                    kinds,
-                    children: kids,
-                });
-            }
-        }
-    }
-    nodes
+    let options: HashMap<&OptionId, &ModOption> =
+        package.options.iter().map(|o| (&o.id, o)).collect();
+    rift_catalog::tree::nest(package)
+        .iter()
+        .filter_map(|node| tree_node(node, &options, is_installed, conflicted))
+        .collect()
 }
 
-fn option_node<'a>(
-    option: &'a ModOption,
-    children: &HashMap<&OptionId, Vec<&'a ModOption>>,
-    installed: &HashSet<&OptionId>,
-    visited: &mut HashSet<&'a OptionId>,
+fn tree_node(
+    node: &Nest,
+    options: &HashMap<&OptionId, &ModOption>,
+    is_installed: &dyn Fn(&OptionId) -> bool,
+    conflicted: &HashSet<String>,
 ) -> Option<TreeNode> {
-    if !visited.insert(&option.id) {
-        return None; // a loop the tree resolver let through: shown once
+    let kids = |children: &[Nest]| -> Vec<TreeNode> {
+        children
+            .iter()
+            .filter_map(|child| tree_node(child, options, is_installed, conflicted))
+            .collect()
+    };
+    match node {
+        Nest::Option { id, children } => {
+            let option = options.get(id)?;
+            Some(TreeNode {
+                option_id: Some(option.id.0.clone()),
+                label: option.name.clone(),
+                kind: TreeNodeKind::Option,
+                menu_only: option.menu_only,
+                has_screenshot: option.screenshot.is_some(),
+                installed: is_installed(&option.id),
+                conflicted: conflicted.contains(&option.id.0),
+                kinds: option.kinds.into(),
+                children: kids(children),
+            })
+        }
+        Nest::Bundle { label, children } => {
+            let children = kids(children);
+            let mut kinds = PayloadKinds::default();
+            for child in &children {
+                kinds.pak += child.kinds.pak;
+                kinds.loose += child.kinds.loose;
+                kinds.reframework += child.kinds.reframework;
+                kinds.root += child.kinds.root;
+            }
+            Some(TreeNode {
+                option_id: None,
+                label: label.clone(),
+                kind: TreeNodeKind::Bundle,
+                menu_only: children.iter().all(|child| child.menu_only),
+                has_screenshot: children.iter().any(|child| child.has_screenshot),
+                installed: children.iter().any(|child| child.installed),
+                conflicted: children.iter().any(|child| child.conflicted),
+                kinds,
+                children,
+            })
+        }
     }
-    let kids = children
-        .get(&option.id)
-        .map(|kids| tree_level(kids, children, installed, visited))
-        .unwrap_or_default();
-    Some(TreeNode {
-        option_id: Some(option.id.0.clone()),
-        label: option.name.clone(),
-        kind: TreeNodeKind::Option,
-        menu_only: option.menu_only,
-        has_screenshot: option.screenshot.is_some(),
-        installed: installed.contains(&option.id),
-        kinds: option.kinds.into(),
-        children: kids,
-    })
+}
+
+// ---------------------------------------------------------------------------
+// get_library (v0.3): the Rift's idle view
+// ---------------------------------------------------------------------------
+
+/// The mods folder as the window shows it.
+pub fn mods_folder_view(state: &AppState) -> ModsFolderView {
+    let folder = state.library_dir();
+    ModsFolderView {
+        path: path_text(folder),
+        exists: folder.is_dir(),
+    }
+}
+
+/// Every package of the mods folder with its option tree and no entry list:
+/// its counts, update badge, labels and problems, by display name
+/// (case-blind), then file name. Troubled packages are there too, carrying
+/// their problems; one that yielded no option has an empty tree.
+pub fn get_library_impl(state: &AppState) -> LibraryView {
+    let shelf = state.shelf();
+    let snapshot = state.snapshot();
+    let installs = state.journal_installs();
+    let is_installed = |id: &OptionId| installs.contains_key(id);
+    let store = lock(&state.nexus);
+    let mut packages: Vec<LibraryPackage> = shelf
+        .packages()
+        .iter()
+        .map(|package| {
+            let labels = shelf.labels(&package.id);
+            LibraryPackage {
+                package: package_summary(package, &store),
+                installable: package.options.iter().filter(|o| !o.menu_only).count(),
+                installed: package
+                    .options
+                    .iter()
+                    .filter(|o| is_installed(&o.id))
+                    .count(),
+                update: store.badge(package),
+                labels: labels.map(dto::NexusLabels::from),
+                adult: labels.is_some_and(|l| l.adult),
+                conflicted: package
+                    .options
+                    .iter()
+                    .any(|o| snapshot.conflicted.contains(&o.id.0)),
+                tree: package_tree(package, &is_installed, &snapshot.conflicted),
+            }
+        })
+        .collect();
+    packages.sort_by(|a, b| {
+        lower_key(&a.package.display_name)
+            .cmp(&lower_key(&b.package.display_name))
+            .then_with(|| lower_key(&a.package.file_name).cmp(&lower_key(&b.package.file_name)))
+            .then_with(|| a.package.file_name.cmp(&b.package.file_name))
+    });
+    LibraryView {
+        mods: mods_folder_view(state),
+        packages,
+    }
+}
+
+/// Open the mods folder in Explorer, Rust-side (the opener scope refuses
+/// folders from the webview). A folder that is missing is made first, then
+/// watched and read: a folder made again is a new folder, which the watcher
+/// of the one that went never sees, so the watcher is armed afresh and a
+/// scan follows. The same happens whenever nothing watches the folder: it
+/// was not there at launch, or a scan found it gone and let its watcher go
+/// (the player may have put it back by hand since).
+pub fn open_mods_folder_impl(state: &Arc<AppState>) -> Result<(), RiftError> {
+    let folder = state.library_dir().to_path_buf();
+    let made = !folder.is_dir();
+    std::fs::create_dir_all(&folder).map_err(|err| {
+        RiftError::io(
+            format!("could not make the mods folder {}", folder.display()),
+            err,
+        )
+    })?;
+    if made || state.library_unwatched() {
+        state.arm_watcher();
+        state.request_scan();
+    }
+    state.config.launcher.show_folder(&folder)
 }
 
 // ---------------------------------------------------------------------------
@@ -419,111 +457,6 @@ pub fn get_thumbnail_impl(
     }
 }
 
-// ---------------------------------------------------------------------------
-// roots
-// ---------------------------------------------------------------------------
-
-/// Add a folder to read mods from. Fluffy's Mods folder and Downloads come
-/// back as their built-in roots; any other folder is a custom root. Adding a
-/// folder that is already a root returns that root.
-pub fn add_root_impl(state: &Arc<AppState>, path: &str) -> Result<dto::LibraryRoot, RiftError> {
-    let folder = PathBuf::from(path.trim());
-    if path.trim().is_empty() || !folder.is_dir() {
-        return Err(RiftError::unreadable(
-            &folder,
-            "the folder does not exist or is not a folder",
-        ));
-    }
-    // A root holding the stone's own folders would rescan itself after every
-    // scan (each one writes the cache there); one holding the game, or inside
-    // it, would list the very files the stone installs.
-    let dirs = &state.config.dirs;
-    if watch::within(&dirs.data, &folder) || watch::within(&dirs.cache, &folder) {
-        return Err(RiftError::refused(
-            "That folder holds the Riftstone's own data, so it can't also be a library folder. Choose the folder your mod downloads land in.",
-        ));
-    }
-    let game_root = read(&state.world).game.as_ref().map(|g| g.root.clone());
-    if game_root.is_some_and(|game| watch::within(&game, &folder) || watch::within(&folder, &game))
-    {
-        return Err(RiftError::refused(
-            "That folder holds the game itself, so it can't be a library folder: the stone would list the very files it installs there. Choose the folder your mod downloads land in.",
-        ));
-    }
-    let fluffy_mods = read(&state.world)
-        .fluffy
-        .as_ref()
-        .map(|f| f.mods_dir.clone());
-    let root = {
-        let mut roots = write(&state.roots);
-        if let Some(existing) = roots.iter().find(|r| same_folder(&r.path, &folder)) {
-            return Ok(LibraryRoot::from(existing));
-        }
-        let taken = |id: &str| roots.iter().any(|r| r.id == id);
-        let root =
-            if fluffy_mods.is_some_and(|mods| same_folder(&mods, &folder)) && !taken("fluffy") {
-                fluffy_root(&folder)
-            } else if state
-                .config
-                .downloads_dir
-                .as_ref()
-                .is_some_and(|dl| same_folder(dl, &folder))
-                && !taken("downloads")
-            {
-                downloads_root(&folder)
-            } else {
-                custom_root(&folder, &roots)
-            };
-        roots.push(root.clone());
-        root
-    };
-    state.save_roots();
-    state.arm_watcher();
-    state.start_scan();
-    Ok(LibraryRoot::from(&root))
-}
-
-fn custom_root(folder: &Path, roots: &[rift_core::LibraryRoot]) -> rift_core::LibraryRoot {
-    let key = lower_key(&folder.to_string_lossy().replace('\\', "/"));
-    let mut id = format!("custom-{:016x}", fnv1a64(key.as_bytes()));
-    let mut n = 2;
-    while roots.iter().any(|r| r.id == id) {
-        id = format!("custom-{:016x}-{n}", fnv1a64(key.as_bytes()));
-        n += 1;
-    }
-    let label = folder
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| folder.to_string_lossy().into_owned());
-    rift_core::LibraryRoot {
-        id,
-        path: folder.to_path_buf(),
-        label,
-        kind: RootKind::Custom,
-        dd2_shaped_only: false,
-    }
-}
-
-/// Stop reading a folder. Its packages leave the library at once (rebuilt
-/// from the catalog cache — nothing is opened); built-in roots come back only
-/// through `add_root`.
-pub fn remove_root_impl(state: &Arc<AppState>, root_id: &str) -> Result<(), RiftError> {
-    let removed = {
-        let mut roots = write(&state.roots);
-        let before = roots.len();
-        roots.retain(|r| r.id != root_id);
-        roots.len() != before
-    };
-    if removed {
-        state.save_roots();
-        state.reshelve_from_cache();
-        state.arm_watcher();
-        state.events.changed(events::LIBRARY_CHANGED);
-    }
-    Ok(())
-}
-
 // -- wrappers ----------------------------------------------------------------
 
 #[tauri::command]
@@ -554,19 +487,20 @@ pub async fn get_thumbnail(
 }
 
 #[tauri::command]
-pub async fn add_root(state: Spine<'_>, path: String) -> Result<dto::LibraryRoot, RiftError> {
-    blocking(&state, move |state| add_root_impl(state, &path)).await
+pub async fn get_library(state: Spine<'_>) -> Result<LibraryView, RiftError> {
+    blocking(&state, |state| Ok(get_library_impl(state))).await
 }
 
 #[tauri::command]
-pub async fn remove_root(state: Spine<'_>, root_id: String) -> Result<(), RiftError> {
-    blocking(&state, move |state| remove_root_impl(state, &root_id)).await
+pub async fn open_mods_folder(state: Spine<'_>) -> Result<(), RiftError> {
+    blocking(&state, open_mods_folder_impl).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rift_core::{PackageFormat, PayloadKinds as CoreKinds};
+    use std::path::PathBuf;
 
     fn option(
         package: &PackageId,
@@ -597,12 +531,14 @@ mod tests {
     }
 
     #[test]
-    fn the_tree_nests_addons_and_gathers_bundles() {
+    fn the_catalogs_nesting_is_decorated_for_the_window() {
         let id = PackageId("00000000000000aa".into());
+        let mut cloaks = option(&id, "Menu", "Cloaks", None, None);
+        cloaks.menu_only = true;
+        cloaks.kinds = CoreKinds::default();
         let package = Package {
             id: id.clone(),
-            root_id: "fluffy".into(),
-            path: PathBuf::from("/m/Cloaks.zip"),
+            path: PathBuf::from("/mods/Cloaks.zip"),
             file_name: "Cloaks.zip".into(),
             display_name: "Vernworth Cloaks Collection".into(),
             format: PackageFormat::Zip,
@@ -610,7 +546,7 @@ mod tests {
             modified_ms: 1,
             entry_count: 4,
             options: vec![
-                option(&id, "Menu", "Cloaks", None, None),
+                cloaks,
                 option(&id, "Menu/A", "Ermine Cape", Some("Menu"), Some("Capes")),
                 option(
                     &id,
@@ -625,11 +561,16 @@ mod tests {
             problems: vec![],
         };
         let installed_id = OptionId::new(&id, "Menu/B");
-        let installed = HashSet::from([&installed_id]);
-        let tree = package_tree(&package, &installed);
+        let conflicted = HashSet::from([OptionId::new(&id, "Menu/C").0]);
+        let tree = package_tree(&package, &|id| id == &installed_id, &conflicted);
         assert_eq!(tree.len(), 1);
         let menu = &tree[0];
         assert_eq!(menu.label, "Cloaks");
+        assert!(menu.menu_only);
+        assert!(
+            !menu.installed && !menu.conflicted,
+            "a node speaks for itself"
+        );
         assert_eq!(
             menu.children.len(),
             2,
@@ -638,10 +579,16 @@ mod tests {
         let bundle = &menu.children[0];
         assert_eq!(bundle.kind, TreeNodeKind::Bundle);
         assert_eq!(bundle.option_id, None);
+        assert_eq!(bundle.label, "Capes", "the first member's spelling");
         assert_eq!(bundle.children.len(), 2);
-        assert!(bundle.installed);
-        assert_eq!(bundle.kinds.loose, 2);
-        assert_eq!(menu.children[1].label, "Wool Hood");
+        assert!(bundle.installed, "any child installed");
+        assert!(!bundle.conflicted);
+        assert!(!bundle.menu_only);
+        assert_eq!(bundle.kinds.loose, 2, "the children's kinds, summed");
+        let hood = &menu.children[1];
+        assert_eq!(hood.label, "Wool Hood");
+        assert!(hood.conflicted);
+        assert_eq!(hood.option_id.as_deref(), Some("00000000000000aa#Menu/C"));
     }
 
     #[test]

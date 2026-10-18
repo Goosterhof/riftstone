@@ -10,14 +10,19 @@
 
 mod support;
 
+#[cfg(unix)]
 use std::fs;
 use std::sync::Arc;
+#[cfg(unix)]
 use std::time::Duration;
 
 use riftstone_lib::commands::{deploy, library};
 use riftstone_lib::dto::{SearchFilters, SearchQuery};
 use riftstone_lib::persist::DataDirs;
-use support::{option_named, pak, within, Bench, ERMINE_MESH};
+use support::{option_named, Bench};
+// The named-pipe test runs on unix only (mkfifo); its helpers come with it.
+#[cfg(unix)]
+use support::{pak, within, ERMINE_MESH};
 
 fn query(text: &str) -> SearchQuery {
     SearchQuery {

@@ -9,6 +9,7 @@ import { useNavigation } from "@/composables/useNavigation";
 import { useSearch } from "@/composables/useSearch";
 import { useWorld } from "@/composables/useWorld";
 import { useHotkeys } from "@/composables/useHotkeys";
+import { useLibrary } from "@/composables/useLibrary";
 import RiftstonePillar from "@/components/RiftstonePillar.vue";
 import WakeScreen from "@/components/WakeScreen.vue";
 import ToastShelf from "@/components/ToastShelf.vue";
@@ -26,14 +27,28 @@ const riftPage = ref<InstanceType<typeof RiftPage> | null>(null);
 
 useHotkeys();
 
+const library = useLibrary();
+
+/** ↓ from the well: into the library tree when the Rift is idle (§16.1),
+ *  else into the answers. */
 async function descend(): Promise<void> {
-  if (nav.page.value !== "rift" || !search.results.value.length) return;
+  if (nav.page.value !== "rift") return;
+  if (search.idle.value && nav.riftMode.value === "results") {
+    await riftPage.value?.focusTree();
+    return;
+  }
+  if (!search.results.value.length) return;
   await riftPage.value?.focusCard(Math.max(0, search.activeIndex.value));
 }
 
+/** Enter in the well opens the active answer. With the tree on screen there
+ *  is no answer to open: an empty well never opens an option nobody sees. */
 function submit(): void {
+  if (search.idle.value) return;
   const hit = search.results.value.at(Math.max(0, search.activeIndex.value));
-  if (hit && !hit.menuOnly) void world.open(hit.optionId);
+  if (!hit || hit.menuOnly) return;
+  if (library.reveal(hit.optionId)) library.focusedKey.value = hit.optionId;
+  void world.open(hit.optionId);
 }
 
 onMounted(() => void wakeRiftstone());

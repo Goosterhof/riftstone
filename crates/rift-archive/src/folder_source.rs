@@ -1,10 +1,10 @@
-//! Plain folders: a mod unpacked beside the library, or one that was never
+//! Plain folders: a mod unpacked into the mods folder, or one that was never
 //! packed. The walk follows no symlinks (on Windows, junctions count as
 //! links too) and stops 64 levels down; it lists files in name order so a
 //! folder reads the same on every bench.
 //!
 //! `read_entry` and `extract` read the files where they lie, and `extract`
-//! always copies — the library is read-only (RS-2).
+//! always copies — nothing in the mods folder is ever moved or changed (RS-2).
 
 use std::fs::File;
 use std::path::{Path, PathBuf};

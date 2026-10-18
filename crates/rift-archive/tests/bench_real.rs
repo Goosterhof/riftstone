@@ -1,10 +1,10 @@
-//! Bench suite: real packages from the investor's own library, READ-ONLY.
+//! Bench suite: real packages from the investor's own mods folder, READ-ONLY.
 //!
 //! Every test here is `#[ignore]`d and env-gated, so `cargo test` never
 //! touches real data. Run one deliberately:
 //!
 //! ```sh
-//! RIFT_BENCH_RAR="/mnt/c/<fluffy>/Games/DragonsDogma2/Mods/<a mod>.rar" \
+//! RIFT_BENCH_RAR='/mnt/c/<install dir>/mods/<a mod>.rar' \
 //!   cargo test -p rift-archive --test bench_real -- --ignored --nocapture
 //! ```
 //!

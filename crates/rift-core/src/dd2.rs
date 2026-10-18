@@ -21,9 +21,10 @@ pub const NEXUS_GAME_ID: u64 = 6234;
 pub const PAK_MODS_DIR: &str = "pak_mods";
 
 /// The prefix the Riftstone gives the paks it owns: `zrift-0007-<stem>.pak`.
-/// It sorts after Fluffy's `x0000-` prefix (NTFS compares upcased names:
-/// `X` < `Z`), so a pak the Riftstone installs loads after — and wins over —
-/// anything Fluffy left behind, the way "newest install wins" should behave.
+/// `z` sorts after the numbered prefixes other tools give paks (`x0000-` and
+/// kin; NTFS compares upcased names: `X` < `Z`), so a pak the Riftstone
+/// installs loads after — and wins over — anything already in `pak_mods/`, the
+/// way "newest install wins" should behave.
 pub const PAK_PREFIX: &str = "zrift-";
 
 /// REFramework hands out patch slots with no bounds check
@@ -115,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn our_pak_prefix_sorts_after_fluffys() {
+    fn our_pak_prefix_sorts_after_numbered_prefixes() {
         assert!("X0000-A.PAK" < "ZRIFT-0000-A.PAK");
         assert!(PAK_PREFIX.to_uppercase().as_str() > "X0000-");
     }

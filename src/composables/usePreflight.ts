@@ -1,5 +1,5 @@
-// PREFLIGHT's hands: the REFramework switches, the game folder, the library
-// roots, and the openers. Each action re-reads the overview through the
+// PREFLIGHT's hands: the REFramework switches, the game folder, the mods
+// folder, and the openers. Each action re-reads the overview through the
 // spine's events; failures speak through the voice module as toasts.
 
 import { ref } from "vue";
@@ -55,21 +55,13 @@ async function pickGameFolder(): Promise<void> {
   });
 }
 
-async function addRoot(): Promise<void> {
-  const backend = await rift();
-  const path = await backend.pickFolder("Add a folder where your mod downloads land");
-  if (!path) return;
-  await attempt("roots", "roots", async () => {
-    const root = await backend.addRoot(path);
-    await useStone().refreshOverview();
-    useToasts().push("rift", `${root.label} joined the library. The stone is reading it now.`);
-  });
-}
-
-async function removeRoot(rootId: string): Promise<void> {
-  await attempt(`root:${rootId}`, "roots", async () => {
+/** v0.3: the one library folder, opened in Explorer by the spine (the
+ *  webview's opener refuses folders); the spine makes it first when it is
+ *  missing, so the overview is read again after. */
+async function openModsFolder(): Promise<void> {
+  await attempt("mods", "modsFolder", async () => {
     const backend = await rift();
-    await backend.removeRoot(rootId);
+    await backend.openModsFolder();
     await useStone().refreshOverview();
   });
 }
@@ -91,7 +83,6 @@ async function rescan(): Promise<void> {
 /** Run a Check's action from the overview. */
 async function runCheck(action: CheckAction): Promise<void> {
   const handlers: Record<CheckAction["kind"], () => Promise<void> | void> = {
-    adoptFluffy: () => useNavigation().go("world"),
     enableSwitch: () => (action.kind === "enableSwitch" ? turnOn(action.switch) : undefined),
     pickGameFolder: () => pickGameFolder(),
     openUrl: () => (action.kind === "openUrl" ? openUrl(action.url) : undefined),
@@ -100,10 +91,15 @@ async function runCheck(action: CheckAction): Promise<void> {
       useNavigation().go("world");
       useInstalled().summonParked();
     },
+    openModsFolder: () => openModsFolder(),
   };
   await handlers[action.kind]();
 }
 
 export function usePreflight() {
-  return { busy, turnOn, pickGameFolder, addRoot, removeRoot, openUrl, reveal, rescan, runCheck };
+  return { busy, turnOn, pickGameFolder, openModsFolder, openUrl, reveal, rescan, runCheck };
+}
+
+export function resetPreflight(): void {
+  busy.value = null;
 }

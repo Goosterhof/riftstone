@@ -36,9 +36,7 @@ function writeLine(w: PlannedWrite): Line {
   if (a.kind === "create") return { ...base, glyph: "+", verb: "new", tone: "new" };
   if (a.kind === "reinstall") return { ...base, glyph: "↺", verb: "replaces own older file", tone: "own" };
   if (a.kind === "overwriteRiftstone") return { ...base, glyph: "!", verb: `OVERWRITES ${a.optionName}`, tone: "over" };
-  if (a.kind === "overwriteFluffy")
-    return { ...base, glyph: "!", verb: `OVERWRITES ${a.section} (Fluffy)`, tone: "over" };
-  return { ...base, glyph: "!", verb: "OVERWRITES a file no manager owns (backed up first)", tone: "over" };
+  return { ...base, glyph: "!", verb: "OVERWRITES a file no install owns (backed up first)", tone: "over" };
 }
 
 function removalLine(r: PlannedRemoval): Line {
