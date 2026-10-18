@@ -3666,6 +3666,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rift-muster"
+version = "0.3.1"
+dependencies = [
+ "rift-pak",
+ "rift-save",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "rift-nexus"
 version = "0.3.1"
 dependencies = [
@@ -3684,8 +3696,23 @@ dependencies = [
 name = "rift-pak"
 version = "0.3.1"
 dependencies = [
+ "flate2",
+ "num-bigint",
  "serde",
  "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "zstd",
+]
+
+[[package]]
+name = "rift-save"
+version = "0.3.1"
+dependencies = [
+ "aes",
+ "flate2",
+ "num-bigint",
+ "rift-pak",
  "thiserror 2.0.21",
 ]
 

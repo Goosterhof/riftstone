@@ -1,0 +1,20 @@
+[package]
+name = "rift-save"
+description = "Reads Dragon's Dogma 2 save files read-only: the DSSS container, its Mandarin cipher and the self-describing class stream."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rift-pak.workspace = true
+thiserror.workspace = true
+aes.workspace = true
+num-bigint.workspace = true
+flate2.workspace = true
+
+[features]
+# Seals invented payloads into saves, so tests can build their fixtures at run
+# time. Only test builds switch it on (a dev-dependency feature): the stone
+# itself carries no way to write a save (RS-8).
+fixtures = []

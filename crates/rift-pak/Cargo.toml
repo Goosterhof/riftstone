@@ -1,6 +1,6 @@
 [package]
 name = "rift-pak"
-description = "Reads an RE Engine .pak table of contents and hashes game paths the way the engine does."
+description = "Reads an RE Engine .pak table of contents and hashes game paths the way the engine does; reads the game's own pak and its text files (v0.4)."
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -9,6 +9,17 @@ rust-version.workspace = true
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
+# The game's own pak (v0.4): the table key's RSA public operation, and the
+# entries' raw deflate and zstd.
+num-bigint.workspace = true
+flate2.workspace = true
+zstd.workspace = true
+
+[features]
+# Builds invented game paks and text files for tests, here and in the crates
+# that read through rift-pak (a dev-dependency feature only).
+fixtures = []
 
 [dev-dependencies]
 serde_json.workspace = true
+tempfile.workspace = true
