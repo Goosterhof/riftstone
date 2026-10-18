@@ -65,7 +65,7 @@ crates/rift-pak       RE Engine KPKA table of contents + the engine's murmur3 pa
 crates/rift-catalog   modinfo.ini, option discovery, the addon tree and its nesting, search, conflicts, the scan cache
 crates/rift-deploy    game/REFramework discovery, Play's plan, the journal (schema 2) and its relink, install/uninstall/reorder, preflight
 crates/rift-nexus     anonymous Nexus v2 GraphQL (updates, labels, Find, browse, a mod's files), v1 with the key (account, downloads, tracking, endorsing), the downloader, nxm links
-src-tauri/            the spine: state, persistence, commands, events, thumbnails, the mods-folder watcher, the game watcher, downloads, the nxm handler
+src-tauri/            the spine: state, persistence, commands, events, thumbnails, the mods-folder watcher, the game watcher, downloads, the nxm handler (and windows/hooks.nsh, the uninstaller's give-back)
 src/                  the window (Vue 3 + UnoCSS) — services/ is the only door to Tauri; services/mock/ runs it in a browser
 scripts/              privacy-sweep.py — the pre-push gate below
 ```
@@ -81,7 +81,7 @@ cargo test --workspace
 # Frontend
 npm run typecheck   # vue-tsc, strict
 npm run lint        # oxlint --type-aware (war-room canonical config; src/services/mock/** relaxed — dev tooling)
-npm test            # vitest (tests/noOldManager.spec.ts sweeps src/ and tests/ for the retired name)
+npm test            # vitest (the stands-alone spec, tests/standsAlone.spec.ts, reads src/, tests/, docs/, README, CLAUDE.md, scripts/ and every .rs file for the forbidden words, never spelling them)
 npm run format:check
 npm run build
 
@@ -90,9 +90,12 @@ python3 -I scripts/privacy-sweep.py --self-test
 ```
 
 `#[cfg(windows)]` code (the registry for Steam and the nxm handler, the process list, Play's
-`CreateProcessW`, and a few file-system checks) never compiles on the Linux bench: build, test and
-lint it natively on Windows before a release. v0.3's first native run is recorded in BUILD-SPEC
-§ v0.3 § The first native Windows run.
+`CreateProcessW`, a download's no-overwrite `MoveFileExW` landing, and a few file-system checks)
+never compiles on the Linux bench: build, test and lint it natively on Windows before a release.
+The NSIS uninstall hook (`src-tauri/windows/hooks.nsh`) is built only by `npm run tauri build`.
+v0.3's native runs (the tests on 2026-10-17 and again on 2026-10-18, with the installer's first
+build) and what is still owed on Windows are recorded in BUILD-SPEC § v0.3 § The first native
+Windows run and § The second native Windows run.
 
 Bench suites (`#[ignore]`, env-gated, READ-ONLY against the investor's real data) — see each
 crate's `tests/bench_real.rs` (rift-pak's is `tests/bench_reference_hashes.rs`). They never
@@ -127,7 +130,7 @@ The args file keeps this machine's real paths off the public tree, one option pe
 --downloads /mnt/c/Users/<you>/Downloads
 --private-path C:\<builds>\riftstone-releases
 --private-word <the Nexus account name>
---forbid <a retired word>
+--forbid <a word the repo must never carry>
 ```
 
 `--nexus` names the stone's `nexus.json`, where every link keeps its mod id, file id, group id
@@ -136,12 +139,18 @@ reads the `nexus.json` beside each `--journal`, so a missing line never drops th
 `--private-path` names any other folder of this machine's that must not appear, such as where
 builds land; the sweep reads it as a folder chain, with either slash. `--skip-name` names a
 library child that is not a package. `--forbid` holds words the repo must never carry again,
-printed as places, never as words: the args file is where the retired name lives, so the repo
-never has to spell it. A forbidden word is checked in the working tree and at the tip a push
+printed as places, never as words: the args file is where those words live, so the repo never
+has to spell them. A word of five letters or more matches anywhere, inside identifiers too; a
+shorter one matches only as a whole word, so a run of letters that embedded data holds by chance
+(the base64 fonts in `docs/design/audition.html`) is no hit. A forbidden word is checked in the working tree and at the tip a push
 publishes (every tracked file at HEAD whose text differs from the working tree, and HEAD's own
 message), so a clean-up that is not committed yet never passes for a clean push. The older
-history keeps what it kept (BUILD-SPEC § v0.3, ruling 1), so run the sweep before each push,
-with the commit you push checked out.
+history keeps what it kept (BUILD-SPEC § v0.3, ruling 1), and a commit between the last push
+and the tip is not read for them either: a word committed and taken out again before one push
+still goes out in that push's history. So run the sweep before each commit you will push, and
+once more before the push, with the commit you push checked out. The committed gate, the
+stands-alone spec (`tests/standsAlone.spec.ts`), guards the sources, specs, docs, scripts and
+Rust on every clone at each `npm test`, in the working tree only.
 
 **Pictures are the sweeps' blind spot.** Every gate here reads text, and a screenshot carries
 whatever the window drew. The sweep counts the pictures in the tree by folder on every run.
@@ -152,21 +161,26 @@ the window changes what they show, and looked at, one by one, before a push.
 tests and a real option name in BUILD-SPEC, both from before the scrub. Reworked 2026-10-17 for
 v0.3: install names now come from the stone's own journal, and the Nexus ids from its
 `nexus.json`. The tip check and the picture count followed that night, after a review found
-the retired name still committed at HEAD in three files while the sweep, reading only the
-uncommitted working tree, reported none, and the README's frames still showing it in their
-pixels.)*
+a forbidden word still committed at HEAD in three files while the sweep, reading only the
+uncommitted working tree, reported none, and the README's frames still showing one in their
+pixels. On 2026-10-18 the committed spec began reading the docs, the scripts and the Rust too.)*
 
 ## Running It
 
 ```sh
-npm run dev            # the window in a browser on the mock backend (?mock=empty|emptymods|nogame|scanning|refoff|patched|offline|fresh|firstrun|key|premium|rejected|quotalow|running|nxmother|nocreations, comma-separated)
+npm run dev            # the window in a browser on the mock backend (?mock=empty|emptymods|nofloor|gonemods|nogame|scanning|refoff|patched|offline|fresh|firstrun|key|premium|rejected|quotalow|running|nxmother|nocreations, comma-separated)
 npm run tauri dev      # the real app (WSL bench: set RIFTSTONE_GAME_ROOT / RIFTSTONE_MODS_DIR / RIFTSTONE_DATA_HOME)
 npm run tauri build    # on Windows: target/release/riftstone.exe (+ an unsigned NSIS installer)
 ```
 
 `RIFTSTONE_MODS_DIR` moves the library; without it the stone reads `<folder of riftstone.exe>\mods`
 (under `npm run tauri dev` that is `target/debug/mods`). Never point a bench at the investor's real
-mods folder with a download in mind: RS-2 lets the stone add files there.
+mods folder with a download in mind: RS-2 lets the stone add files there. The mock's `emptymods`
+scene empties the folder after the installs were made, `nofloor` gives a mods folder that could
+not be made at launch (the spine's Error, THE RIFT HAS NO FLOOR), and `gonemods` one that went
+while the stone ran (the Gone Warn, THE RIFT LOST ITS FLOOR; its Open mods folder makes the
+folder again, empty, and scans). `nxmother` has another program answer Nexus's links,
+`Wagonmaster.exe` (#00015 R16.24), so the nxm switch shows that program's line.
 
 No release pipeline and no updater: the investor ruled *"i do not really need a signed
 release for this"*. Build on the Windows side and run the installer. Installing a new version over
@@ -177,10 +191,20 @@ application data" box (unticked by default; ignored on an upgrade) removes
 backups, `nexus.json`, the settings, caches and logs. Uninstall mods from the stone before ticking
 it, or their files stay in the game folder with no journal to take them out.
 
+Before it removes a file, the uninstaller gives the Mod Manager Download links back:
+`NSIS_HOOK_PREUNINSTALL` in `src-tauri/windows/hooks.nsh` (wired in through `tauri.conf.json`'s
+`installerHooks`) runs `riftstone.exe --give-back-nxm`, which does what the nxm switch's off does
+(the user's registry key goes back as the stone found it, WINDOW-CONTRACT § The nxm handler)
+and, where it cannot put the key back while it still starts this exe, removes the key whole,
+because the exe is about to go. The hook is skipped on an updater's `/UPDATE` (there is no
+updater). An upgrade, whose installer uninstalls the old version first by default, gives the
+links back too: turn the switch on again after it (WINDOW-CONTRACT § v0.3 The one folder).
+
 **Before a release**, in this order:
 1. Every gate above, on the Linux bench.
 2. The Rust gates natively on Windows: `cargo test --workspace` and `cargo clippy` (the
-   `#[cfg(windows)]` code compiles nowhere else).
+   `#[cfg(windows)]` code compiles nowhere else), then `npm run tauri build` (the only build of
+   the uninstall hook).
 3. The presses no test makes, on a Windows desktop (Known Limitations).
 4. The README frames, when the window changed what they show: shot again from the mock
    (`npm run dev`, invented names only), then each one looked at.
@@ -191,9 +215,23 @@ it, or their files stay in the game folder with no journal to take them out.
 - Downloads in the stone need a premium account; a free account goes through the file's page and
   the site's Mod Manager Download button, which reaches the stone only while its nxm handler is on.
   Vortex, when installed with "Handle Nexus Links" on, takes the handler back at each of its starts.
+  An upgrade of the stone gives the handler back (by default its installer runs the old
+  uninstaller first, whose hook gives the links back): turn the switch on again after one.
 - A download is not resumed across a restart: its partial file is removed at the next launch.
 - A Nexus file that is not a zip, 7z or rar (a raw `.pak`, an `.exe`) lands in the mods folder under
-  its own name, but the scan never lists it: only archives and folders are packages.
+  its own name, but the scan never lists it: only archives and folders are packages. It gets no
+  link and no scan, and the window offers Show in folder instead of Show in the Rift.
+- A relink reads at most 4 GiB of candidate entries per scan (their listed sizes): installs
+  whose checks do not fit show `packageMissing` until a later scan (each launch or mods-folder
+  change) confirms them, and one check over 4 GiB alone is never read, so that install keeps its
+  id. A solid 7z or RAR may decode more than the listed sizes to reach the entries.
+- An archive overwritten in place by another version with the same file name and the same size
+  keeps its package id (name + size), so no relink is proposed: the install shows on the new
+  archive's option while the game folder holds the old bytes.
+- A relink confirms each file by the engine's fingerprint (its size and its first and last MiB),
+  not by every byte. A newer version of the same size whose changes all lie between the first and
+  last MiB of a file over 2 MiB still takes over the older install, and the Rift then shows the
+  newer option installed while the game folder holds the older bytes.
 - Nexus labels reach linked packages only. MD5 identify cannot link an unpacked folder (there is no
   archive to hash) or a repack (its bytes are new). Find on Nexus searches those by name (the
   package's, else its first option's bundle or modinfo name) and offers up to five candidates;
@@ -201,11 +239,19 @@ it, or their files stay in the game folder with no journal to take them out.
   by mod id stays unpinned (labels yes, "is my copy the newest" no) until the file's URL is pasted.
 - The veil's `adult` mode also blurs packages Nexus has not labelled yet, on purpose (a veil protects).
 - Windows-only (discovery reads the Windows registry; env overrides serve the WSL bench).
-- v0.3's Windows-only code has compiled and its tests have run natively on Windows (BUILD-SPEC
-  § v0.3 § The first native Windows run), but nothing has been pressed on a Windows desktop yet.
-  Owed: press Play by each route, use Open mods folder, turn the nxm handler on and off (with and
-  without another program holding it), and download once with each account type, cancelling one
-  mid-download (BUILD-SPEC § v0.3 § src-tauri, Open); also a Windows test run after 0b34ac4 and
-  `cargo clippy` there.
+- The Windows-only code compiles and its tests pass natively on Windows. On 2026-10-18
+  `cargo test --workspace` ran there (MSVC, Rust 1.98.0, `RUSTFLAGS=-D warnings`) at 31d26bf:
+  861 passed, 0 failed. So every `#[cfg(windows)]` line up to 80b1ca8 compiles there without a
+  warning, including `mod win`'s `user_key`, `restore_user`, `raw_value`, `put_value` and
+  `remove_if_empty` (the nxm handler's key memory in `protocol.rs`), `downloads.rs`'s
+  `move_new` and `copy_new`'s `cfg_attr`. `npm run tauri build` at 85ba93c built
+  `riftstone.exe` and the NSIS installer with the uninstall hook (5.88 MiB), and a read-only
+  bench probe of that build, on a copy of real app data, passed (BUILD-SPEC § v0.3 § The second
+  native Windows run). `cargo clippy` is not installed on the Windows bench and has never run
+  there. Still owed: `cargo clippy` natively, and every press on a Windows desktop: Play by each
+  route; Open mods folder, also after deleting it while the stone runs; the nxm switch on and
+  off, also over another program's key; a download with each account type, one cancelled, one
+  into a FAT32 or exFAT folder; uninstall with the switch on; an upgrade over an installed v0.3
+  (BUILD-SPEC § v0.3 § src-tauri, Open, lists each press in full).
 - No profiles yet.
 - Conflicts cover files the game addresses by path; two REFramework scripts can still clash in behaviour.

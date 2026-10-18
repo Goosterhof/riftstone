@@ -266,8 +266,10 @@ into `extra`. A repeated key: last wins (except `requires`).
    - ends with `.pak` (anywhere else) → `Pak { file_name: <file name> }`;
    - directly in the root, and `modinfo.ini` → skipped `Modinfo`; an image
      (`jpg jpeg png gif bmp webp`) → skipped `Picture`; a document (`txt md pdf url
-     nfo htm html rtf doc docx`) → skipped `Document`; anything else (`.dll .asi .ini
-     .json` …) → `Root { game_path: rel }`;
+     nfo htm html rtf doc docx`) → skipped `Document`; *(as built)* a program (`exe msi
+     bat cmd ps1 vbs com scr`) or an archive (`zip 7z rar`: the game never opens one,
+     465b7d6) → skipped `UnknownPlace`; anything else (`.dll .asi .ini .json` …) →
+     `Root { game_path: rel }`;
    - anything in another subfolder → skipped `UnknownPlace` (and one `FilesSkipped`
      problem on the package, naming the count).
 4. **Name:** modinfo `name`, else the root folder's last segment, else the package
@@ -314,10 +316,11 @@ Nexus download name, use its `name` and set `package.nexus` (source `Filename`).
 when the file name gave none (source `Homepage`). `size`/`modified_ms` from metadata
 (folder size = sum of files). Ids: `PackageId::for_archive(file name, size)` and (v0.3)
 `PackageId::for_folder(folder name)`, so moving the whole mods folder keeps every id. A
-folder package holding zip/7z/rar files that no option installs gets one `FilesSkipped`
-problem that counts them, never names them: "it holds N archives of its own; put each
-archive directly in the mods folder." When the folder installs nothing at all, its
-`NothingToInstall` problem says the same.
+folder package holding zip/7z/rar files that no option lists (as payload or as skipped) gets
+one `FilesSkipped` problem that counts them, never names them: "it holds N archives of its
+own; put each archive directly in the mods folder." When the folder installs nothing at all,
+its `NothingToInstall` problem says the same. (An archive an option lists is the classifier's
+to explain, once: § As built (catalog builder), the ruling after the verify pass.)
 
 ### search — `SearchIndex`
 Build per option a record: lower-cased name, trail (joined `›`), bundle, category,
@@ -554,8 +557,16 @@ pub fn rekey_with_files(ctx: &DeployContext, journal: &mut Journal, map: &BTreeM
                         package_files: &BTreeMap<OptionId, String>) -> RiftResult<usize>; // one atomic save
 pub fn recover(ctx: &DeployContext, journal: &mut Journal) -> Result<Option<RecoveryReport>, RiftError>;
 pub fn is_game_running() -> bool; // DD2.exe in the process list (Windows); false elsewhere
-// relink.rs — the relink pass (v0.3), pure
-pub fn propose(installs: &[InstalledOption], options: &[&ModOption]) -> BTreeMap<OptionId, OptionId>;
+// relink.rs — the relink pass (v0.3): the matcher is pure; the content check reads only what it is handed
+pub fn propose_on_shelf(installs: &[InstalledOption], shelf: &[Package]) -> BTreeMap<OptionId, OptionId>;
+pub fn propose(installs: &[InstalledOption], options: &[&ModOption]) -> BTreeMap<OptionId, OptionId>; // tests only now
+pub fn content_check(install: &InstalledOption, option: &ModOption) -> Option<ContentCheck>; // None: no fingerprint recorded
+pub struct ContentCheck { /* install, option, entries (entry → listed size), fingerprinted files and pak groups */ }
+impl ContentCheck { pub fn install(&self) -> &OptionId; pub fn option(&self) -> &OptionId;
+    pub fn entries(&self) -> impl Iterator<Item = (&str, u64)>; pub fn bytes(&self) -> u64;
+    pub fn confirms(&self, prints: &HashMap<String, String>) -> bool; }
+pub fn read_fingerprints(check: &ContentCheck, source: &mut dyn PackageSource, scratch: &Path)
+    -> RiftResult<HashMap<String, String>>; // entry → the engine's fingerprint; parts removed again
 // launch.rs — Play (v0.3)
 pub const REFUSED_NO_GAME: &str; // the sentence when no game was found at all (the spine says it)
 pub fn plan_launch(game: &GameInstall, ref_status: &RefStatus, journal: &Journal,
@@ -676,16 +687,37 @@ in the journal claims), `missing` (files the journal says are installed but are 
     refusals and save once, atomically: a refusal or a failed save changes nothing on disk
     or in memory, and a map that changes nothing saves nothing. Nothing in the game
     folder moves.
-12. **The relink matcher (v0.3).** `relink::propose` takes the journal's installs and
-    every option of every package in the mods folder. A candidate is an install whose
-    package no given option belongs to (a package without options counts as absent). An
-    option fits it when, compared case-blind: the option root is the install's recorded
-    root; every recorded loose, script and root file is in the option's payload at the
-    same game path; a recorded pak asks only that the option carries paks; and, when the
-    root is empty or only paks speak for the install, the install's name is the option's
-    name or its package's (read from `option.trail[0]`, the catalog's package crumb). It
-    proposes a match only for exactly one fitting option, never onto an id an install or a
-    backup owner holds, and never when two installs fit one target.
+12. **The relink matcher (v0.3).** `relink::propose_on_shelf` takes the journal's installs
+    and every package of the mods folder (those that yielded no option included). A
+    candidate is an install whose package is not on that shelf at all: a package that is
+    there but unreadable this scan, or that yielded no option, keeps its installs, because a
+    relink is permanent. An option fits a candidate when, compared case-blind: the option
+    root is the install's recorded root; every recorded loose, script and root file is in
+    the option's payload at the same game path and of the same size (where two entries
+    target one path, the later one, as an install writes it); the install's paks are the
+    option's paks by size, as many of each (a pak's name in `pak_mods/` is the stone's own,
+    so its size and their count tie it to the option); and, when the root is empty or only
+    paks speak for the install, the install's name is the option's name or its package's
+    (read from `option.trail[0]`, the catalog's package crumb). It proposes a match only for
+    exactly one fitting option, never onto an id an install or a backup owner holds, and
+    never onto an id two installs both fit. (`relink::propose`, the two-argument form, sees
+    only options, so it cannot tell an unreadable package from a gone one; only the tests
+    call it.) **The fingerprints confirm (31d26bf).** Sizes are not bytes: a version that kept every
+    file's size (a recolor) fits the sizes too. `relink::content_check(install, option)`
+    names what confirms a proposal: for every loose, script or root file the install
+    recorded a fingerprint for, the entry an install of the option writes at that game path;
+    for its fingerprinted paks, the option's pak entries of the same size. `None` when the
+    install recorded no fingerprint at all: its sizes are all there is.
+    `relink::read_fingerprints(check, source, scratch)` extracts those entries in one pass
+    through the package's own `PackageSource` into the caller's scratch folder (every part
+    created new, every part removed again before it returns) and fingerprints each with the
+    engine's private `fsops::fingerprint`, the one an install records (SHA-256 over the size
+    and the first and last MiB). `ContentCheck::confirms(prints)`: every fingerprinted file
+    is its entry's, and the fingerprinted paks of each size are found among the option's pak
+    entries of that size, each entry used once; a missing entry confirms nothing. A file
+    with no fingerprint is held to its size alone. A change that lies wholly between the
+    first and last MiB of a file over 2 MiB is not seen, so a same-size version whose
+    changes all lie there still relinks (CLAUDE.md, Known Limitations).
 13. **Play (v0.3).** Route: `Steam { url: "steam://rungameid/2054970" }` when
     `game.source == GameSource::Steam`, else `Exe { exe: DD2.exe as spelled on disk, cwd:
     the game root }`. Refusals, one sentence each, checked in this order: the game folder
@@ -760,7 +792,10 @@ restored, `pending` cleared. `recover` on a journal saved mid-intent. VDF parser
 `libraryfolders.vdf` shape and an `.acf`. RefStatus from fixture log/config files. (v0.3)
 `adopted_rules.rs` over a hand-seeded journal of adopted installs; `legacy_rules.rs`: the
 lift over hand-written schema-1 JSON with invented legacy kinds, rekey and relink;
-`launch_rules.rs`: each route, warning and refusal, and `start_exe`.
+`launch_rules.rs`: each route, warning and refusal, and `start_exe`. `legacy_rules.rs` also
+holds the relink's sizes and fingerprints: a newer archive of the same size told apart by its
+fingerprints, paks held to their fingerprints in any order, a file without a fingerprint held to
+its size, the later entry for a path read, and a read that fails leaving no part behind.
 **Never point a test at the real game folder.**
 
 **Bench (`tests/bench_real.rs`, `#[ignore]`, env `RIFT_BENCH_GAME=<the game folder>`):**
@@ -837,7 +872,8 @@ impl NexusClient {
     pub fn files_by_md5(&self, md5s: &[String]) -> Result<Vec<Md5Hit>, NexusError>;   // game 6234 only
     pub fn validate_key(&self) -> Result<NexusAccount, NexusError>;                    // v1, needs a key, no quota
     // v0.2.1: find_mods (§ v0.2.1). v0.3: files_v1, download_links, tracked_mods, track, untrack,
-    // endorsements, endorse, abstain, mod_file_details, browse, confirm_download, downloader (§ v0.3)
+    // endorsements, endorse, abstain, mod_file_details, browse, confirm_download, verify_download,
+    // downloader (§ v0.3)
 }
 pub struct NexusMod { pub mod_id: u64, pub name: String, pub version: Option<String>, pub updated_ms: Option<u64>, pub status: String,
                       pub category: Option<String>, pub tags: Vec<String>, pub adult: bool } // labels: v0.2
@@ -926,9 +962,10 @@ sample and asserts the JSON keys the TS side reads.
   swapped whole), the `World` (the game and its journal slot: no game, ready, or damaged
   and never reset), the `deploy_lock` (one writer in the game folder; a `Turn` holds it),
   the game-folder `Snapshot` (shared per change through `fresh.rs`), the Nexus store and
-  client, the account word, the standings cache, the downloads and the game word. No lock
-  is held across an archive read, a game-folder walk, a network call or a file write.
-  Lock order: `deploy_lock` → `world` → the rest, and `shelf` → `nexus`.
+  client, the account word, the standings cache, the downloads, the nxm link door (startup
+  step 9), the relink's verdicts and the game word. No lock is held across an archive read,
+  a game-folder walk, a network call or a file write. Lock order: `deploy_lock` → `world` →
+  the rest, and `shelf` → `nexus`.
 - `SpineConfig { dirs, discovery, library_dir, app_version, nexus_endpoints,
   watch_library, launcher: Arc<dyn GameLauncher>, game_watch: Arc<dyn GameWatch>,
   game_cadence, protocols: Arc<dyn ProtocolRegistry>, exe }`. `SpineConfig::system(dirs,
@@ -938,10 +975,15 @@ sample and asserts the JSON keys the TS side reads.
   There are no roots.
 - `persist.rs` — JSON in the app data dir: `settings.json`, `catalog-cache.json`,
   `nexus.json`, `nxm-handler.json` (v0.3); rift-deploy's `journal-<hex>.json` and
-  `backups/` live in the same dir; `thumbs/` in the cache dir. Every write is a temp file +
-  rename. A file that cannot be parsed is set aside as `<name>.damaged` and starts fresh;
-  one that exists but cannot be read is held: that session never writes over it.
-  `roots.json` (v0.2) is never read, written or deleted.
+  `backups/` live in the same dir; `thumbs/` and `relink-check/` (the relink's content
+  check, emptied after every scan and at every launch) in the cache dir. Every write is a
+  temp file + rename. A file that cannot be parsed is set aside as `<name>.damaged` and
+  starts fresh; one that exists but cannot be read is held: that session never writes over
+  it. `nxm-handler.json` is the exception: `persist::inspect_json` reads it where it lies, a
+  damaged one is never set aside, and the switch's off is refused while it cannot be read.
+  `DataDirs::installed()` finds the installed stone's folders without Tauri (`%APPDATA%` and
+  `%LOCALAPPDATA%` with the identifier) for the uninstaller's `--give-back-nxm`. `roots.json`
+  (v0.2) is never read, written or deleted.
 - `library.rs` (`Shelf`; `SourcePool`, a few packages kept open between reads and closed
   by a timer), `fresh.rs` (one game-folder read per change, shared by everyone who asks;
   a re-read takes one at most 250 ms old), `commands/*.rs`, `dto.rs`, `events.rs`.
@@ -972,17 +1014,21 @@ sample and asserts the JSON keys the TS side reads.
   `protocol.rs` (`ProtocolRegistry`). § v0.3 § src-tauri has their rules.
 
 **Plugins**, in this order: `tauri-plugin-single-instance` FIRST (v0.3; 2.5.2 in
-`Cargo.lock`, no `deep-link` feature), then `opener`, `dialog`, `log`. `tauri.conf.json`
-declares no URL scheme; its `main` window is built in `setup` (`create: false`), so a
-bench data home takes the WebView2 profile along.
+`Cargo.lock`, no `deep-link` feature), then `opener`, `dialog`, `log`. Before any of them,
+`run()` answers the uninstaller's `--give-back-nxm` and exits (`nxm::give_back_on_uninstall`).
+`tauri.conf.json` declares no URL scheme; its `main` window is built in `setup` (`create:
+false`), so a bench data home takes the WebView2 profile along; its `bundle > windows > nsis >
+installerHooks` names `windows/hooks.nsh` (v0.3, the uninstaller's give-back).
 
 **Threading:** every command is a thin `#[tauri::command] async fn` wrapper around a plain
 `*_impl(&AppState, …)` function, run on Tauri's blocking pool (`commands::blocking`), even
 the quick ones; a panic in the work still answers the window with a `RiftError`. Named
-threads: `riftstone-wake` (the watchers, the first scan, the launch's update check),
+threads: `riftstone-account` (started first at the wake, before the scan: the key's
+validation, then the link door's first half; also `nxm://premium`'s validation),
+`riftstone-wake` (the watchers, the first scan, the launch's update check),
 `riftstone-scan`, `riftstone-watch`, `riftstone-game` (the game watcher),
-`riftstone-account` (the key's validation, then the launch's nxm links),
-`riftstone-download` (the one download worker), `riftstone-pool`.
+`riftstone-download` (the one download worker), `riftstone-pool`. The relink's content check
+runs on the scanning thread (after a game switch, on that command's), with no lock held.
 Never hold the catalog write lock while opening archives: scan into a fresh `Catalog`,
 then swap it in.
 
@@ -1004,16 +1050,24 @@ then swap it in.
 (rift-deploy's discovery), `RIFTSTONE_MODS_DIR` (the mods folder; else `mods` beside
 `riftstone.exe`, never canonicalized), `RIFTSTONE_DATA_HOME` (replaces the app data and
 cache dirs, and takes the log and the WebView2 profile with it: tests and the bench never
-write into the real app data).
+write into the real app data; `--give-back-nxm` reads its memory there too when it is set).
 
-**Tests:** dto shape tests (an exact-key test per shape); a command-layer harness
-(`tests/support`, `Bench`) that builds `AppState` over a tempdir (a fake game root, one
-`mods` folder with two invented zips and a Nexus-named download) WITHOUT a Tauri runtime,
-through the `*_impl` functions, with a recording launcher, a switched game watch and a
-memory registry; `spine_ipc.rs` drives every command through Tauri's mock runtime by its
-invoke name and camelCase argument keys. Suites: account, contention, downloads, flow,
-ipc, legacy, nexus, nxm, play, startup, window. Gates: `cargo clippy -p riftstone
---all-targets -- -D warnings`, `cargo test -p riftstone`, and `cargo build -p riftstone`.
+**Tests:** dto shape tests (an exact-key test per shape); the window's own files read at
+compile time (`include_str!`), so a rename on either side fails: `src/types/rift.ts`'s
+`EVENTS` (`events.rs`), PreflightPage's `OWN_CHECKS` (`dto.rs`), every invoke name in
+`src/services/rift.ts` (`spine_ipc.rs`), and (v0.3, `dto.rs`)
+`error_kinds_and_nexus_reasons_are_the_literals_the_window_reads`, which strips rift.ts's
+comments, reads its `RiftError` kind union and its `NexusReason` union, and compares each,
+sorted, with `serde_json` of every rift-core variant; exhaustive matches make a variant added
+in rift-core fail to build until the test lists it. A
+command-layer harness (`tests/support`, `Bench`) builds `AppState` over a tempdir (a fake
+game root, one `mods` folder with two invented zips and a Nexus-named download) WITHOUT a
+Tauri runtime, through the `*_impl` functions, with a recording launcher, a switched game
+watch and a memory registry; `spine_ipc.rs` drives every command through Tauri's mock
+runtime by its invoke name and camelCase argument keys. Suites: account, contention,
+downloads, flow, ipc, legacy, nexus, nxm, play, startup, window. Gates: `cargo clippy -p
+riftstone --all-targets -- -D warnings`, `cargo test -p riftstone`, and `cargo build -p
+riftstone`.
 
 ## § The Window
 
@@ -1034,6 +1088,8 @@ the specs call; `src/services/` is the only door to Tauri (`rift.ts`), with the 
 what to do next), the ledger's wording and the seam's arithmetic beside it;
 `src/services/mock/` runs the window in a browser on invented data (`npm run dev`, `?mock=`
 scenes). The specs in `tests/` drive the window over the mock through `tests/harness.ts`.
+`src/composables/boot.ts` subscribes to every event before its first `get_overview`, which
+the spine takes as the window's signal that it listens (`tests/wake.spec.ts`).
 Gates: `npm run typecheck`, `lint`, `test`, `format:check`, `build`. § v0.3 § The window records
 what the v0.3 builders chose.
 
@@ -1102,15 +1158,16 @@ labels. The full rules are WINDOW-CONTRACT § Find on Nexus. A link by mod id st
 
 ## § v0.3 — one folder, the tree, Play, the key's extras (investor ask, 2026-10-17)
 
-*"i want to be able to get rid of [the old mod manager], should not be any reference to it, i moved
-the mods to <install dir>\mods where the riftstone itself is also installed. That should be the
-one place to place the installable mods, no need for difficult scanning and multiple places. In
-the rift i want to see the standard tree view, so in my case something like 9 packages first and
-then i can go deeper, … but once i search i should be able to see everything. I added an api key
-for nexus but i did not see any difference in what i can do with it, so let's see if we an do some
-more with that, and i was wondering if we can do a download from the riftstone itself? And i want
-a start to play button so i can start the game from the riftstone and i like the name riftstone,
-so i want to work with that."* (the investor's install path written as `<install dir>`.)
+The ask opened with the stone standing alone, with no reference to other mod managers left in
+it. Then, in the investor's words: *"… i moved the mods to <install dir>\mods where the
+riftstone itself is also installed. That should be the one place to place the installable mods,
+no need for difficult scanning and multiple places. In the rift i want to see the standard tree
+view, so in my case something like 9 packages first and then i can go deeper, … but once i
+search i should be able to see everything. I added an api key for nexus but i did not see any
+difference in what i can do with it, so let's see if we an do some more with that, and i was
+wondering if we can do a download from the riftstone itself? And i want a start to play button
+so i can start the game from the riftstone and i like the name riftstone, so i want to work
+with that."* (the investor's install path written as `<install dir>`.)
 
 The behaviour is WINDOW-CONTRACT § v0.3 (authoritative for the wire and every rule). This section
 is the crate-level contract: who builds what, the public API each crate offers the spine, and the
@@ -1119,26 +1176,41 @@ rules each crate proves with tests.
 ### Rulings taken for the build (main session, 2026-10-17)
 
 1. **"No reference" covers the gadget's tree**: code, identifiers, comments, tests, fixtures,
-   scripts, docs and UI text. No literal of the old manager's name or its initials survives
+   scripts, docs and UI text. They describe what the stone does; where a removal must be
+   mentioned, they say "other mod managers", never one product. No forbidden word survives
    anywhere in `crates/`, `src-tauri/`, `src/`, `tests/`, `scripts/`, `docs/`, `README.md`,
-   `CLAUDE.md`, `index.html`. Persisted legacy data is read by a generic lift that names nothing
-   (§ rift-deploy). The git history is not rewritten.
+   `CLAUDE.md`, `index.html`. Two gates keep it so without spelling a word:
+   the stands-alone spec (`tests/standsAlone.spec.ts`) builds the words from their letters'
+   codes and reads the
+   window's sources and specs, the page, the docs, `README.md`, `CLAUDE.md`, the sweep's
+   Python and every Rust file under `src-tauri/` and `crates/` on every `npm test`; the privacy
+   sweep's `--forbid` list (in its git-ignored args file) checks the working tree and the tip a
+   push publishes. Both match a word of five letters or more anywhere and a shorter one only as
+   a whole word, so a letter run inside embedded data (the audition's base64 fonts) is no hit;
+   the spec's own fixtures build even their identifiers from the codes. Persisted legacy data is read by a generic lift that names nothing
+   (§ rift-deploy). The git history is not rewritten. Pictures are every gate's blind spot: the
+   README's frames are shot from the mock and looked at by hand (§ The window, Open).
 2. **What survives under neutral words**: the modinfo.ini packaging format (`addonfor`,
    `NameAsBundle`, `DummyMod`, `MenuPriority`, `requires`, screenshots) — it is how mods are
-   packaged; adopted installs (origin `adopted`); the `zrift-` prefix and the stripping of a
-   numbered `xNNNN-` prefix another tool gave a pak.
-3. **What goes**: the drive-wide discovery, the ledger reader, adoption, un-adopted owners and
-   their conflict layers, the renamed-crash-reporter check, Find's manager-name noise rule, the
-   Downloads root, custom roots, root filters, the DD2-shaped filter and the passed-over memory.
+   packaged; adopted installs (origin `adopted`); the `zrift-` prefix and the stripping of the
+   numbered `xNNNN-` prefix other tools give paks.
+3. **What goes**: everything that found, read or matched other mod managers' data (the search
+   for them across the drive, the reader of the install lists they keep, adoption, un-adopted
+   owners and their conflict layers), the renamed-crash-reporter check, Find's rule that dropped
+   mod managers' names as noise, the Downloads root, custom roots, root filters, the DD2-shaped
+   filter and the passed-over memory.
 4. **Folder package ids follow the name** (`PackageId::for_folder(name)`); the spine re-keys v0.2
    ids exactly (`PackageId::legacy_folder`) and relinks the rest by option (§ src-tauri).
 5. **Downloads**: premium in the stone; free through the site's Mod Manager Download link and an
-   opt-in nxm handler that gives the protocol back on opt-out. Never installs by itself.
+   opt-in nxm handler that gives the protocol back on opt-out (and, since 80b1ca8, when the
+   stone is uninstalled). Never installs by itself.
 6. **Play** through Steam when the game came from Steam, else `DD2.exe`. Warnings never block:
    the spine never refuses Play for one, and the window asks once, in Play's inline confirm
    (WINDOW-CONTRACT § v0.3 Play), before it starts the game.
 7. **Version 0.3.0** (workspace `Cargo.toml`, `package.json`, `tauri.conf.json`). Name, product
-   name, identifier (`nl.zmuuzn.riftstone`) and keyring service unchanged.
+   name, identifier (`nl.zmuuzn.riftstone`) and keyring service unchanged. **0.3.1** on
+   2026-10-18: the final review's round (§ The window, After the final review; the spine's
+   relink progress and watcher re-arm), so an installer built before it can be told apart.
 
 ### Ownership in the build (parallel builders never edit outside their row)
 
@@ -1194,8 +1266,8 @@ A builder that needs a contract change says so in its report; it never edits ano
   entries include `.zip`/`.7z`/`.rar` files no option carries gets `ProblemKind::FilesSkipped`
   with the message "holds N archives of its own; put each archive directly in the mods folder"
   (counts only, no names).
-- **Words:** every comment, doc, test name and fixture that names the old manager or "library
-  roots" (catalog.rs, scan.rs, tree.rs, modinfo.rs's test named after the other manager,
+- **Words:** every comment, doc, test name and fixture that names other mod managers or
+  "library roots" is reworded (catalog.rs, scan.rs, tree.rs, a modinfo.rs test name,
   classify.rs, search.rs fixtures, test_support.rs, lib.rs; rift-archive lib.rs and
   bench_real.rs; rift-pak lib.rs's REtool sentence goes). The scan's unreadable messages say
   "the mods folder".
@@ -1236,22 +1308,28 @@ A builder that needs a contract change says so in its report; it never edits ano
   root, two roots, the DD2-shape test). modinfo.rs's test is `reads_every_key_the_format_knows`.
 - The bench reads only `RIFT_BENCH_LIBRARY`; it also prints `tree::nest` counts and the
   startup-preview time, and asserts that the preview equals the warm scan.
-- **Open (needs a ruling):** an archive file at an option root (beside a `modinfo.ini` or a
-  `natives/` anchor) falls under classify rule 3's "any other file at the root" and is `Root`
-  payload: it would install into the game root. The archives problem does not count it,
-  because an option installs it. Skipping archives at option roots would change
-  classification.
+- **Ruled after the verify pass (465b7d6): an archive inside a mod is never payload.** A zip, 7z
+  or rar at an option root (beside a `modinfo.ini` or a `natives/` anchor) was `Root` payload
+  and would have been copied into the game root, where the game never opens it. It is now a
+  skipped `UnknownPlace` file, like a program at the root; one under `natives/` or
+  `reframework/` stays payload (there it is a game file). Every archive an option carries gets
+  one `FilesSkipped` why of its own: "1 archive sits inside the mod, and the game never opens
+  archives. The options list it under skipped files; to install what it holds, put that archive
+  directly in the mods folder." (and the plural). The folder scan's held-archives count leaves
+  out every archive an option lists (payload or skipped), so one archive is never explained
+  twice.
 
 ### § rift-deploy (builder: deploy)
 
-- **Gone:** the other manager's module (its discovery, its env override, the ledger parser and
-  its types), the context's ledger field, the set of paths the ledger listed, the old-manager
-  arms of `foreign_below`, the helper that named an install by its ledger section, the
-  requires-satisfied-by-ledger rule, the `restore_parked` refusal over ledger files,
-  `owner_label`'s old-manager arm, adoption (the adopt function, `adopted_below`,
-  `adopted_kind`), the stack helper that found the layer above a ledger file,
-  `Journal::adopted_sections`, `AdoptReport`, the `WriteAction` variant that named the other
-  manager (those files are `OverwriteUnowned`), `PakOwner`'s old-manager variant, the
+- **Gone:** the module that read other mod managers' data (the search for their installs, its
+  env override, the parser of the install lists they keep and its types), the context's field
+  for such a list, the set of paths it named, the arms of `foreign_below` and of
+  `owner_label` that named other mod managers, the helper that named an install by its
+  section in such a list, the rule that let such a list satisfy `requires`, the
+  `restore_parked` refusal over the files it listed, adoption (the adopt function,
+  `adopted_below`, `adopted_kind`), the stack helper that found the layer above such a file,
+  `Journal::adopted_sections`, `AdoptReport`, the `WriteAction` and `PakOwner` variants for
+  files other mod managers own (those files are `OverwriteUnowned` and `Unowned`), the
   un-adopted list and its state struct, the crash-reporter check, `CheckAction`'s adopt
   action, the un-adopted check; the deps `dirs` and `encoding_rs` if nothing else uses them.
 - **Journal schema 2.** `Origin { Riftstone, Adopted { label: String } }`, `BelowOwner { Unowned,
@@ -1274,6 +1352,13 @@ A builder that needs a contract change says so in its report; it never edits ano
   WINDOW-CONTRACT § v0.3 Legacy data (same root case-blind; every recorded loose/script/root game
   path in the option's payload; paks only if the option has paks; name check when the root is
   empty or the install is pak-only; exactly one candidate; never onto an id the journal holds).
+  *(As fixed after the verify pass: 301b339 added `relink::propose_on_shelf(installs:
+  &[InstalledOption], shelf: &[Package])`, which decides presence from every package on the
+  shelf, so an unreadable package keeps its installs, and held each recorded file to its size
+  and the paks to the option's paks by size and count; 31d26bf added the content check:
+  `relink::content_check(install, option) -> Option<ContentCheck>` (`install`, `option`,
+  `entries`, `bytes`, `confirms`) and `relink::read_fingerprints(check, source, scratch)`.
+  Rule 12 of the base § rift-deploy has the rule as built.)*
 - **Play.** `launch::plan_launch(game: &GameInstall, ref_status: &RefStatus, journal: &Journal,
   game_state: &GameState, running: bool, busy: bool) -> LaunchPlan { route: LaunchRoute,
   warnings: Vec<LaunchWarning>, refused: Option<String> }`; `LaunchRoute::Steam { url:
@@ -1284,11 +1369,12 @@ A builder that needs a contract change says so in its report; it never edits ano
   progress), `journal.pending` (cut short). `launch::start_exe(exe, cwd) -> RiftResult<()>`
   (spawn, detached, no window of its own). The Steam route is opened by the spine.
 - **Strays** are files no journal layer claims (wording names the game's mod places, never a
-  manager). The x-prefix stripping in `paks.rs` stays, its doc and test renamed.
-- **Tests:** the other manager's rules suite goes, and `adopted_rules.rs` replaces it over a
-  HAND-SEEDED journal of adopted installs (load, uninstall keeps an unknown-vanilla root file and
-  deletes nothing-below files, hand-down to a Riftstone layer above, a path listed twice in two
-  spellings uninstalls once, reorder renames adopted `x000N-` paks to `zrift-NNNN-<stem>`); a lift
+  mod manager). The x-prefix stripping in `paks.rs` stays, its doc and test renamed.
+- **Tests:** the suite of rules over other mod managers' data goes, and `adopted_rules.rs`
+  replaces it over a HAND-SEEDED journal of adopted installs (load, uninstall keeps an
+  unknown-vanilla root file and deletes nothing-below files, hand-down to a Riftstone layer
+  above, a path listed twice in two spellings uninstalls once, reorder renames adopted `x000N-`
+  paks to `zrift-NNNN-<stem>`); a lift
   test over schema-1 JSON with invented legacy kinds and a stand-in id; rekey and relink tests
   (exact, refused on pending, refused on collision, ambiguous → no match); `plan_launch` tests
   (each route, each warning, each refusal). Keep every surviving invariant's twin
@@ -1307,23 +1393,31 @@ built; these are the builder's notes beside it.
   `launch::REFUSED_NO_GAME` are additions the spec did not name.
 - `dirs` and `encoding_rs` left rift-deploy. `encoding_rs` stays a workspace dependency for
   rift-catalog; `dirs` left the workspace when its last user went (822c913).
-- Tests: `adopted_rules.rs` (7), `legacy_rules.rs` (16: the lift over hand-written schema-1
-  JSON with the invented kinds `adoptedFromElsewhere` and `takenOverByHand` and the owner
-  `elsewhere`, plus rekey and relink), `launch_rules.rs` (8). `common::ctx_with(running)` and
-  `common::adopted(...)` seed them. The same-length byte fixtures are `RIVAL GLOW` (10 bytes)
-  and `RIVAL BYTES` (11). The bench reads only `RIFT_BENCH_GAME`.
+- Tests: `adopted_rules.rs` (7), `legacy_rules.rs` (16 then; 26 after the verify pass: the
+  lift over hand-written schema-1 JSON with the invented kinds `adoptedFromElsewhere` and
+  `takenOverByHand` and the owner `elsewhere`, rekey, and the relink by paths, sizes and
+  fingerprints), `launch_rules.rs` (8). `common::ctx_with(running)` and `common::adopted(...)` seed
+  them. The same-length byte fixtures are `RIVAL GLOW` (10 bytes) and `RIVAL BYTES` (11). The
+  bench reads only `RIFT_BENCH_GAME`.
+- After the verify pass (301b339): recovery's leftover cleanup saves the journal only when it
+  changed it, so a leftover that cannot go yet no longer rewrites the journal at every launch
+  (one an older build wrote stays schema 1 until a real change).
 - The spine's migration order, one save: build the exact map (each install whose package is a
   v0.2 folder id → `OptionId::new(&PackageId::for_folder(name), id.root())`); apply it to a
-  clone with `Journal::rekey`; run `relink::propose` over the clone and every option of every
-  package; merge both maps; call `engine::rekey_with_files` once on the real journal.
+  clone with `Journal::rekey`; run `relink::propose_on_shelf` over the clone and every package
+  of the shelf (`relink::propose` over every option before 80b1ca8); keep each proposal whose
+  install recorded fingerprints only on a verdict that its fingerprints confirmed it (31d26bf, read
+  before the migration, § src-tauri); merge both maps; call `engine::rekey_with_files` once on
+  the real journal.
 - **Windows:** the `CreateProcessW` path in `launch.rs` was first type-checked against
   `windows-sys` 0.61.2 in a scratch crate; it has since compiled natively, and the native run
   found the `DD2.exe` spelling bug that 0b34ac4 fixed (§ v0.3 § The first native Windows run).
   No test spawns the game (`start_exe`'s test only checks its refusals), so the
   `CreateProcessW` call has compiled on Windows but never run there.
 - **Open:** press Play once by each route on Windows (Steam, then `DD2.exe` from a folder picked
-  by hand). `relink::propose` reads a package's name from `ModOption.trail[0]`: if the catalog
+  by hand). The relink reads a package's name from `ModOption.trail[0]`: if the catalog
   changes how trails start, the name half of the match breaks (the rest does not depend on it).
+  `relink::propose` (the two-argument form) has no caller outside the tests and may go.
 
 ### § rift-nexus (builder: nexus)
 
@@ -1366,7 +1460,8 @@ built; these are the builder's notes beside it.
   `EndorseRefused(EndorseRefusal)`; `From<NexusError> for RiftError` sets the matching
   `NexusReason` (offline, rateLimited, noKey, keyRejected too). No sentence says "401", "403" or
   "reject" unless the key really was rejected.
-- **Find's terms** lose the manager-name rule and its tests; everything else in `terms.rs` stays.
+- **Find's terms** lose the rule that dropped mod managers' names, and its tests; everything
+  else in `terms.rs` stays.
 - **Tests** (the loopback stand-in; a second stand-in plays the CDN): download_link with and
   without a grant, each refusal code, quota spent → refused locally; the CDN request never carries
   `apikey` (assert on the CDN stand-in) while `a_redirect_is_never_followed_so_the_key_never_reaches_another_host`
@@ -1381,7 +1476,9 @@ are encoded by hand, so reqwest's `form` feature is not needed).
 - `validate_key` is unmetered and reads `is_premium?` / `is_supporter?` as fallbacks. Every
   other v1 call goes through one shared path: the identity headers, the local refusal while
   the quota is spent, 401 → `KeyRejected`. `files_v1` → `V1FileList.file_names:
-  BTreeMap<u64, String>` (`#[serde(default)]`) and `file_name(file_id)`.
+  BTreeMap<u64, String>` (`#[serde(default)]`) and `file_name(file_id)`; after the verify pass
+  also `size_of(file_id)`, the file's `size_in_bytes` (never the kilobyte fields): the size a
+  download is checked against when v2 states none.
 - `download_links(mod_id, file_id, grant: Option<&NxmGrant>)`: 400 `LinkRefused`, 401
   `KeyRejected`, 403 `PremiumRequired`, 404 `FileGone`, 410 `LinkExpired`. Mirrors that are
   not https are dropped (loopback http is kept); none left → `BadResponse`. The grant travels
@@ -1405,21 +1502,31 @@ are encoded by hand, so reqwest's `form` feature is not needed).
   (without text it sorts by endorsements). The offset is clamped, a page is 20, and no
   top-level `op: OR` is ever sent. Without `totalCount`, `total` = offset + mods.
 - `confirm_download(md5, mod_id, file_id)`: a hit for this file → `DownloadCheck::Confirmed`;
-  no Dragon's Dogma 2 hit → `Unknown` (Nexus has not hashed it yet; the size alone vouches);
-  hits for other files only → `Err(NotTheFile)`. A malformed md5 → `BadResponse`, nothing sent.
+  no Dragon's Dogma 2 hit → `Unknown` (Nexus has not hashed it yet); hits for other files
+  only → `Err(NotTheFile)`. A malformed md5 → `BadResponse`, nothing sent. After the verify
+  pass (301b339) the whole verifying step is `verify_download(&Downloaded, mod_id, file_id)`:
+  `confirm_download` on its MD5, and `Unknown` stands only when a stated size vouched for the
+  byte count (`Downloaded.size_vouched`); with no size stated it is `BadResponse` ("nothing
+  vouched for the download").
 - `Downloader` (`Send + Sync + Clone`, never holds a key): `new(app_version)`,
-  `with_idle_timeout`, `download_to(uri, dest, expected, progress, cancel)`. Reads of up to
-  1 MiB into a `create_new` file, MD5 on the way, `cancel` checked between reads. A
-  `Content-Length` that disagrees with `expected` is refused before the body; a body that runs
-  past the stated size is stopped early. CDN 401/403/410 → `LinkExpired` (never
-  `KeyRejected`), 404 → `FileGone`, 429 → `RateLimited`. The URL is stripped from reqwest's
-  errors and scrubbed from messages. A drop guard deletes the file on every error, on cancel
-  and on a panic in the progress callback; an existing `dest` → `Disk`, left untouched.
+  `with_idle_timeout`, `download_to(uri, dest, expected, progress, cancel) -> Downloaded {
+  bytes, md5, size_vouched }`. Reads of up to 1 MiB into a `create_new` file, MD5 on the way,
+  `cancel` checked between reads. A `Content-Length` that disagrees with `expected` is refused
+  before the body; a body that runs past the stated size is stopped early. A body that neither
+  Nexus nor the server sized is stopped past `MAX_UNSTATED_DOWNLOAD_BYTES` (32 GiB;
+  `with_unstated_cap` lowers it for tests) with `BadResponse`, and `size_vouched` is `false`
+  for one that lands under it. CDN 401/403/410 → `LinkExpired` (never `KeyRejected`), 404 →
+  `FileGone`, 429 → `RateLimited`. The URL is stripped from reqwest's errors and scrubbed from
+  messages. A drop guard deletes the file on every error, on cancel and on a panic in the
+  progress callback; an existing `dest` → `Disk`, left untouched.
 - nxm: `NxmMessage { File(NxmLink), Premium }`; `NxmLink::made_for(account_user_id)` is true
   unless both ids are known and differ; `NxmGrant` prints `<redacted>`, never serializes, and
   `expired(now_s)` is `now_s >= expires_s`; `NxmRefusal { OtherGame, Collection, Unreadable }`,
-  each a sentence. A key without its expiry (or the reverse), or a `user_id` that is not a
-  number, makes the link unreadable.
+  each a sentence. Ids must be in 1..=i32::MAX and the key printable ASCII without spaces, at
+  most 512 characters. A key without its expiry (or the reverse), a `user_id` that is not a
+  positive number (a blank one included), or a `key`, `expires` or `user_id` given twice with
+  two different values makes the link unreadable (the last two since 301b339); a blank `key`
+  with a blank `expires` is no grant.
 - `NexusError::reason() -> Option<NexusReason>` covers offline, rateLimited, noKey,
   keyRejected and every new case; `BadResponse`, `Http` and `Cancelled` have none.
   `From<NexusError> for RiftError` uses `RiftError::nexus_because` when there is a reason,
@@ -1430,9 +1537,10 @@ are encoded by hand, so reqwest's `form` feature is not needed).
   `EndorseStatus { Endorsed, Abstained }`. `mod_manager_page_url(mod_id, file_id)` is the
   file's page with `&nmm=1`. Constants: `BROWSE_PAGE_SIZE` 20, `FILE_DESCRIPTION_CHARS` 400,
   `DOWNLOAD_CHUNK_BYTES` 1 MiB, `DOWNLOAD_CONNECT_TIMEOUT` 15 s, `DOWNLOAD_IDLE_TIMEOUT` 60 s,
-  `MAX_DOWNLOAD_REDIRECTS` 5.
-- Find's manager-name rule (its constant, enum and function) and its test are deleted;
-  `terms.rs` keeps `game_name` and a test for the `for`-before-the-game's-name rule.
+  `MAX_DOWNLOAD_REDIRECTS` 5, `MAX_UNSTATED_DOWNLOAD_BYTES` 32 GiB (301b339).
+- Find's rule that dropped mod managers' names (its constant, enum and function) and its test
+  are deleted; `terms.rs` keeps `game_name` and a test for the `for`-before-the-game's-name
+  rule.
 - **Open:** the live API never confirmed the browse sort keys `downloads` and `updatedAt`
   (the research measured `endorsements` and relevance). To check them:
   `RIFT_BENCH_NEXUS_BROWSE=1 cargo test -p rift-nexus --test bench_real -- --ignored --nocapture`.
@@ -1445,18 +1553,43 @@ are encoded by hand, so reqwest's `form` feature is not needed).
   it (`create_dir_all`; failure → the `mods` Error check and an empty shelf, never a panic) and
   removes `.riftstone-*.part` files directly inside it. `roots.json` is never read, written or
   deleted. The watcher arms on the one folder. `open_mods_folder` opens it with
-  `tauri_plugin_opener::open_path` (made first if missing).
-- **Gone:** everything that discovered, read or matched the old manager (its finder, its ledger
-  reader, its matcher and its root; `downloads_root`, `custom_root`, `same_folder`, the ledger
-  params of `game_layers`, the stand-in conflict layers), the adopt command, `add_root`,
-  `remove_root`, `StoredRoots`, the `roots` checks, `Overview`'s old-manager field and `roots`.
+  `tauri_plugin_opener::open_path` (made first if missing). *(As built after the verify pass,
+  80b1ca8: a folder made at launch and gone since is the `mods` Warn "The mods folder is gone"
+  with `CheckAction::OpenModsFolder`, and `open_mods_folder` makes it again, then re-arms the
+  watcher and scans whenever it made the folder or nothing watched it. Since the final review
+  (2026-10-18), a scan that finds the folder gone drops its watcher, and `rescan` arms one when
+  the folder is there and nothing watches it, so a folder made or put back by hand is watched
+  again after Open mods folder or Scan.)*
+- **Gone:** everything that found, read or matched other mod managers' data (the finder, the
+  reader of their install lists, the matcher and its root; `downloads_root`, `custom_root`,
+  `same_folder`, the list params of `game_layers`, the stand-in conflict layers), the adopt
+  command, `add_root`, `remove_root`, `StoredRoots`, the `roots` checks, `Overview`'s field for
+  other mod managers' installs and `roots`.
 - **Migration after every scan** (under the deploy lock, never while a change is pending): (1)
   the exact folder re-key: for each folder package now in the mods folder,
   `legacy_folder(<mods dir>/<name>)` → `for_folder(<name>)` for every journal option id and every
   `nexus.json` key that carries the legacy id; (2) the relink pass (`relink::propose` over the
   installs whose package is missing); one `engine::rekey` save, one `nexus.json` save (moving a
   link record follows its package), then `rift://game-changed` and the `relinked` Info check
-  (count) for the session.
+  (count) for the session. *(As built after the verify pass: the pass is
+  `relink::propose_on_shelf` over every package of the shelf (80b1ca8), and its proposals stand
+  on their fingerprints (31d26bf): `AppState::confirm_relinks` runs after every scan (in `scan_once`)
+  and after `switch_game` lets go of its turn, BEFORE the migration and holding no lock. It
+  plans with `migrate::plan_rekey(journal, moves, packages, verdict)`, which returns
+  `RekeyPlan { map, files, package_moves, unconfirmed, asked }`: every proposal whose install
+  recorded fingerprints and whose `migrate::Confirmation` (the check, the package's path, its
+  size and time) has no verdict yet is left out of `map` and listed in `unconfirmed`.
+  `migrate::within_budget(unconfirmed, RELINK_READ_BUDGET)` picks what one scan reads (4 GiB
+  by the sizes the packages list; a check alone over the budget is never read and gets the
+  verdict `false`, so its install keeps its id). Each is read through `rift_archive::open`
+  into `DataDirs::relink_scratch()` (`<cache>/relink-check`, emptied after each scan and at
+  every launch), one reader at a time, and the verdicts last for the session (those `asked`
+  no more are dropped). `migrate_locked` then applies only confirmed proposals and never
+  reads. `AppState::relink_checks_read()` counts the reads, for the tests. Since the final
+  review (2026-10-18), while a scan confirms a relink by reading bytes, the scan-progress
+  event's `current` is "checking {package file name} against the installed files ({i} of
+  {n})", n being the confirmations this pass reads; the reads lie inside the scan's span, so
+  `rift://library-changed` follows them.)*
 - **Library tree.** `get_library` → `LibraryView`: every shelf package sorted by display name
   (case-blind) then file name; `tree::nest` decorated into `TreeNode` (installed from the journal,
   conflicted from the snapshot, kinds, hasScreenshot, menuOnly; bundles: any/sum); package counts,
@@ -1473,7 +1606,9 @@ are encoded by hand, so reqwest's `form` feature is not needed).
   a launch the watcher samples every 1 s for up to 120 s.
 - **Account.** The wake thread validates a stored key after the first scan (unmetered) →
   `NexusSummary.key`/`account` and the quota; `set_nexus_key` keeps the account it validated;
-  `refresh_nexus_account`. The update check no longer waits on the v1 quota.
+  `refresh_nexus_account`. The update check no longer waits on the v1 quota. *(As built after
+  the verify pass, 80b1ca8: the validation starts first at the wake, before the scan, on its
+  own `riftstone-account` thread, so a long first scan never delays it.)*
 - **Standings.** `get_nexus_standings(refresh)` (session cache), `set_tracked`, `set_endorsement`
   (version: the linked package's local version, else the mod's current version from v2).
 - **Mod files and browse.** `get_mod_files(modId)` (marks `inLibrary` from pinned links and
@@ -1485,6 +1620,13 @@ are encoded by hand, so reqwest's `form` feature is not needed).
   `nexus.json` pre-link (`LinkSource::Download`, pinned mod + file + group + version + upload time),
   then `request_scan`. Never holds `deploy_lock` or `nexus_check`. The free path parks the job as
   `waiting` with `nexusPageUrl = https://www.nexusmods.com/dragonsdogma2/mods/<mod>?tab=files&file_id=<file>&nmm=1`.
+  *(As built after the verify pass, 80b1ca8: the size comes from v2, else v1 `files.json`
+  (one read for the name and the size); the MD5 half is rift-nexus's `verify_download`, and a
+  lookup that cannot be asked lands on a stated size; the name rule cleans Unicode format
+  characters and reserves `CONIN$`/`CONOUT$`, counting 180 UTF-16 units; the landing moves
+  with `MoveFileExW` (no `MOVEFILE_REPLACE_EXISTING`) where hard links fail; a file that is no
+  archive gets no package id, no pre-link and no scan. WINDOW-CONTRACT § v0.3 Downloads has
+  each rule.)*
 - **nxm.** `tauri-plugin-single-instance` (2.x for tauri 2.12; as built 2.5.2, pinned in
   `Cargo.lock`) registered FIRST; its callback and the cold-start argv hand any `nxm://` argument
   to `handle_nxm(state, text)` (parse → refusals per WINDOW-CONTRACT § The nxm handler → resume
@@ -1493,17 +1635,22 @@ are encoded by hand, so reqwest's `form` feature is not needed).
   `SpineConfig.exe` naming the stone's own `riftstone.exe`): `System` (Windows, `winreg`; it
   reads HKCU, HKLM and HKCR and writes only HKCU; the previous command is remembered in
   `nxm-handler.json`), `Unsupported` (elsewhere), `Memory` (tests). Never registered at install:
-  `tauri.conf.json` declares no deep-link schemes and no deep-link plugin is added.
+  `tauri.conf.json` declares no deep-link schemes and no deep-link plugin is added. *(As built
+  after the verify pass, 80b1ca8: early links wait at a door until the launch's validation has
+  run and the window has read its first frame; the memory is schema 2, the user's key as far as
+  the claim writes it, and off puts that back; the uninstaller runs `--give-back-nxm` through
+  an NSIS hook. The spine's as-built notes below have the names.)*
 - **Wire:** dto mirrors of every v0.3 shape with exact-key tests; `WINDOW_CHECK_IDS` and
   `OWN_CHECKS` move together (`mods` replaces the old row); events.rs gains the three events;
   `with_commands` + `spine_ipc.rs` cover every command by invoke name and argument keys.
 - **Tests:** the Bench becomes one `mods` folder (the two invented zips and the Nexus-named
-  download) with no other manager anywhere; a seeded schema-1 journal with an adopted install loads,
-  lists as adopted, uninstalls; the folder re-key and the relink against a bench that moved its
-  mods folder; Play refused/started through the recording launcher; the watcher's flip emits once;
-  a download through a loopback API stand-in and a loopback CDN stand-in lands under its Nexus
-  name, links itself, and a cut-off body leaves nothing; the nxm handler claim/give-back on the
-  memory registry; `handle_nxm` refusals (expired, another account, another game, no key).
+  download) with no other mod managers' data anywhere; a seeded schema-1 journal with an
+  adopted install loads, lists as adopted, uninstalls; the folder re-key and the relink against
+  a bench that moved its mods folder; Play refused/started through the recording launcher; the
+  watcher's flip emits once; a download through a loopback API stand-in and a loopback CDN
+  stand-in lands under its Nexus name, links itself, and a cut-off body leaves nothing; the nxm
+  handler claim/give-back on the memory registry; `handle_nxm` refusals (expired, another
+  account, another game, no key).
 
 **As built (two builders, 2026-10-17: spine-core for the folder, the tree and Play; spine-nexus
 for the key's extras).** WINDOW-CONTRACT § v0.3 records the behaviour each one chose.
@@ -1517,14 +1664,14 @@ for the key's extras).** WINDOW-CONTRACT § v0.3 records the behaviour each one 
   a test reads against the `EVENTS` block of `src/types/rift.ts`. `rift://game-changed` also
   fires on a game-watcher flip (once per flip, never per sample) and after the migration
   re-keys the journal. `rift://updates-changed` also fires when the migration moves link
-  records, when the account's standing changes, after a track or an endorsement, and when a
-  download lands.
-- **DTOs** (each with an exact-key test): gone are `RootKind`, `LibraryRoot`, the old
-  manager's summary and row views, `JournalOrigin`, `AdoptResultView`, `Overview`'s
-  old-manager field and `roots`, `SearchFilters.rootIds` (a v0.2 query still parses; the
-  filter is ignored), `SearchResult.rootId`, `PackageSummary.rootId`, `OptionDetail`'s
-  old-manager flag, `InstalledView`'s un-adopted list, `CheckAction`'s adopt action and
-  `WriteAction`'s old-manager variant. Added: `ModsFolderView` and `Overview.mods`,
+  records, when the account's standing changes, after a track or an endorsement, and when an
+  archive lands (a file that is no archive links nothing, since 80b1ca8).
+- **DTOs** (each with an exact-key test): gone are `RootKind`, `LibraryRoot`, the summary and
+  row views of other mod managers' installs, `JournalOrigin`, `AdoptResultView`, `Overview`'s
+  field for them and `roots`, `SearchFilters.rootIds` (a v0.2 query still parses; the filter
+  is ignored), `SearchResult.rootId`, `PackageSummary.rootId`, `OptionDetail`'s flag for
+  them, `InstalledView`'s un-adopted list, `CheckAction`'s adopt action and `WriteAction`'s
+  variant for their files. Added: `ModsFolderView` and `Overview.mods`,
   `LaunchRoute`, `GameSummary.startedMs` / `.launch`, `NexusKeyStanding`,
   `NexusAccountView`, `NexusSummary.key` / `.account`, `InstallOrigin` (`riftstone` |
   `adopted`, in `InstalledInfo.origin` and `InstalledRow.origin`), `OwnerKind::Adopted`,
@@ -1534,7 +1681,11 @@ for the key's extras).** WINDOW-CONTRACT § v0.3 records the behaviour each one 
   `Page`, `EndorseStatus`, `EndorsementView`, `NexusStandings`, `DownloadPhase`,
   `DownloadView`, `DownloadProgressEvent`, `NxmHandlerState` / `View` and `NxmReceivedEvent`
   (Serialize-only, because rift-core's `RiftError` has no Deserialize).
-  `WINDOW_CHECK_IDS`: `("mods", "mods")` replaces the old row.
+  `WINDOW_CHECK_IDS`: `("mods", "mods")` replaces the old row. After the verify pass
+  (31d26bf), `error_kinds_and_nexus_reasons_are_the_literals_the_window_reads` pins rift.ts's
+  `RiftError` kinds and `NexusReason` literals against `serde_json` of every rift-core variant
+  (§ src-tauri, Tests; a deliberate rename on the Rust side made it fail before it was
+  reverted).
 - **State:** `SpineConfig` (see § src-tauri above), `SpineConfig::system(dirs, library_dir)`,
   `Discovery::{System, Fixed { game_root }}`, `mods_dir_from`, `MODS_DIR_ENV`,
   `is_partial_download(&str)` (the `.riftstone-<id>.part` rule every download name follows).
@@ -1542,7 +1693,11 @@ for the key's extras).** WINDOW-CONTRACT § v0.3 records the behaviour each one 
   `relinked_count`, `watch_game`, `sample_game`, `observe_game`, `game_run`, `game_launched`,
   `deploy_busy`, `installs_under_way`, `begin_install`, `turn`, `try_turn`,
   `queue_launch_links`, `take_launch_links`. A `Turn` holds the deploy lock and, when it drops,
-  runs any migration a scan deferred.
+  runs any migration a scan deferred. After the verify pass: `library_unwatched` (80b1ca8),
+  the link door (`hold_link`, `launch_validated`, `window_listens`, over a `LinkDoor { held,
+  validated, listening }`; 80b1ca8), `confirm_relinks` and `relink_checks_read` (31d26bf).
+  `deploy_busy` probes the lock through `try_turn`, so a migration it put off runs when the
+  probe's turn ends (80b1ca8).
 - **Play** (`play.rs`): the trait `GameLauncher` (`launch(&LaunchRoute)`, `show_folder(&Path)`;
   the launcher also shows the mods folder, so the IPC test can call `open_mods_folder` without
   opening Explorer); `SystemLauncher`; `RecordingLauncher` (`starting(watch)` makes a launch
@@ -1550,14 +1705,19 @@ for the key's extras).** WINDOW-CONTRACT § v0.3 records the behaviour each one 
   `asked`); `GameCadence` (2 s; 1 s for 120 s after Play); `GameWord`; `spawn_watcher`.
 - **Migration** (`migrate.rs`, pure): `folder_moves`, `plan_rekey`, `journal_ids`, `RekeyPlan {
   map, files, package_moves }`. `NexusStore::move_records(&BTreeMap<PackageId, PackageId>) ->
-  bool`; `nexus_error` is `err.into()`.
+  bool`; `nexus_error` is `err.into()`. After the verify pass (31d26bf): `plan_rekey(journal,
+  moves, packages, verdict)` runs `relink::propose_on_shelf` and asks `verdict` about each
+  proposal the fingerprints must confirm; `RekeyPlan` gains `unconfirmed` and `asked`;
+  `Confirmation { check, package, stamp }`, `within_budget`, `RELINK_READ_BUDGET` (4 GiB).
 - **Account** (`account.rs`): `AccountWord { standing, known, epoch }`, `KnownAccount {
   account, checked_ms }`, `StandingsCache { epoch, tracked, endorsements, checked_ms }`;
   `validate`, `validate_at_wake`, `key_changed`, `account_now`, `key_rejected`,
   `account_user_id`. Every key change bumps the epoch, and an answer that started under an
   older key is never applied. `wake()` scans, then starts the `riftstone-account` thread
   (validate the key, then the launch's nxm links) while the anonymous update check runs
-  beside it, so the check never waits on the key or its quota.
+  beside it, so the check never waits on the key or its quota. *(Since 80b1ca8 `wake()`
+  starts the `riftstone-account` thread first, before the watchers and the scan; when it is
+  done it opens the link door's first half, `nxm::launch_validated`.)*
 - **Downloads** (`downloads.rs`): `Downloads` (`views()`, `view(id)`), `PROGRESS_EVERY` (200 ms),
   `part_name(id)`, `start`, `take_link`, `cancel`, `clear`, `ensure_worker`, `Landing {
   Written, AlreadyHad }`, `landing_name`, `clean_file_name`, `link_file_name`, `land`. Phases:
@@ -1569,6 +1729,27 @@ for the key's extras).** WINDOW-CONTRACT § v0.3 records the behaviour each one 
   collision rule: a case-blind name match with the same size and MD5 is `alreadyHad`, else
   ` (n)` before the extension; a hard-link no-clobber rename means a file is never written
   over. Pre-link: `NexusStore::set_link_for(&PackageId, NexusLink)` with `LinkSource::Download`.
+  After the verify pass (80b1ca8):
+  - `v1_listing` reads `files.json` once for the archive's name and its size
+    (`V1FileList::size_of`); the size checked is v2's, else v1's.
+  - `verify` is `NexusClient::verify_download`, and where `Downloaded.size_vouched`, an
+    `Offline`, `RateLimited`, `Http` or `BadResponse` from the lookup lands the archive on its
+    size (logged); `NotTheFile` always fails.
+  - The name rule turns Unicode format characters (`hidden_in_a_name`: category Cf and the
+    line and paragraph separators) into `_`, reserves `CONIN$` and `CONOUT$` and the
+    superscript `COM`/`LPT` names, and counts 180 UTF-16 units (`LONGEST_NAME`) with the leading
+    `_` included (`fit`, `clamp`, `is_reserved`).
+  - `rename_new` takes the name by `fs::hard_link` (an `AlreadyExists` moves on to the next
+    ` (n)`); where the link fails for another reason, `move_new`: `MoveFileExW` without
+    `MOVEFILE_REPLACE_EXISTING` through the folder's canonical (`\\?\`) spelling on Windows,
+    `renameat2(RENAME_NOREPLACE)` on Linux (falling back to `copy_new` on `EINVAL`, `ENOSYS` or
+    `EOPNOTSUPP`), `copy_new` elsewhere: a copy into a `create_new` file, flushed, then the
+    partial removed (a copy that fails removes only the file it made).
+  - A landing whose name has no zip, 7z or rar extension gets no package id, no pre-link and no
+    scan (`DownloadView.packageId` is `null`).
+  - Dependencies: `windows-sys` 0.61 (`Win32_Storage_FileSystem`, Windows only, the version
+    rift-deploy already uses) and `libc` 0.2 (Linux only). Cargo.lock gained no new crate
+    version: only the riftstone entry's dependency list names them.
 - **nxm** (`protocol.rs`, `nxm.rs`): the trait `ProtocolRegistry` (`supported`, `user_command`,
   `machine_command`, `effective_command`, `write_user`, `remove_user`), `system_registry()`,
   `UnsupportedRegistry`, `MemoryRegistry` (`holding`, `user`, `set_user`, `writes`), `command_for`,
@@ -1576,94 +1757,255 @@ for the key's extras).** WINDOW-CONTRACT § v0.3 records the behaviour each one 
   `set_handler` (writes `nxm-handler.json` `{ schema: 1, previous: <the command HKCU held, or
   null> }` BEFORE it touches the registry), `nxm_arguments`, `handle_nxm` (never waits on the
   network: the single-instance callback runs on the window's thread), `handle_launch_links`.
-  `persist::DataDirs::nxm_handler_file()`.
+  `persist::DataDirs::nxm_handler_file()`. After the verify pass (80b1ca8):
+  - `ProtocolRegistry` gains `user_key() -> UserKey` and `restore_user(&UserKey)`. `UserKey {
+    exists, default, url_protocol, command_depth, command }` is the user's key as far as the
+    claim writes it (`UserKey::claimed`, `handler()`), with `PROTOCOL_NAME` and `COMMAND_PATH`
+    (`shell`, `shell\open`, `shell\open\command`). `restore_user` removes the key whole when it
+    was not there; otherwise it puts the three values back (deleting the unset ones) and
+    removes, innermost first, the command keys the claim made while they are empty.
+    `MemoryRegistry` keeps the values the claim never writes (`add_extra`, `extras`,
+    `set_user_key`, `user_key_now`) and merges like Windows: a user command key answers even
+    with a blank value.
+  - `set_handler`'s claim writes `{ schema: 2, previous, before: <UserKey> }` first (a memory
+    left by an earlier claim is spent); off is `give_back(registry, exe, memory_file) ->
+    Result<bool>`: `restore_user` of the remembered key, with a command that starts a
+    `riftstone.exe` (`worth_giving_back`) left out; a schema-1 memory writes its previous
+    command back, else removes the key. The memory is read by `persist::inspect_json` and is
+    `Nothing`, `Held` or `Unknown(why)`: an unknown memory refuses the off while the key is
+    ours, is never set aside or removed, and makes `givesBackTo` null.
+  - The uninstaller: `GIVE_BACK_ARG` (`--give-back-nxm`), `give_back_on_uninstall() -> i32` (the
+    system registry, `current_exe`, `DataDirs::from_env()` else `DataDirs::installed()`; exit 0
+    when nothing points at the exe or there is no registry, else 1) and
+    `give_back_as_uninstalled`, which removes the key whole when `give_back` cannot finish
+    while the key still starts the exe. `src-tauri/windows/hooks.nsh` defines
+    `NSIS_HOOK_PREUNINSTALL`: `${If} $UpdateMode <> 1`, `ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe"
+    --give-back-nxm'`, `ClearErrors`.
+  - The link door: `second_launch` holds or handles each nxm argument (`AppState::hold_link`),
+    `launch_validated` (the account thread, after the validation) and `window_listens` (the
+    first `get_overview`) each hand over the held links once both have happened. A cold
+    start's links are queued with `queue_launch_links` before `wake()`.
+    `handle_launch_links` is gone.
 - **lib.rs:** single-instance first, with `second_launch` (each nxm argument to `handle_nxm`,
   then unminimize, show and focus `main`). A cold start queues the argv's nxm links before
-  `wake()`.
-- **Windows-only, never compiled on the Linux bench** (`winreg` refuses other targets; compiled
-  natively on 2026-10-17, § v0.3 § The first native Windows run):
+  `wake()`. Since 80b1ca8 `run()` first answers `--give-back-nxm` (scanning `args_os`, so an
+  argument that is not Unicode never stops the stone from starting) and exits, before any
+  plugin; and `second_launch` goes through the link door (`nxm::second_launch`).
+- **Windows-only, never compiled on the Linux bench** (`winreg` refuses other targets):
   `protocol.rs`'s `mod win` (`winreg` 0.56: reads the default value of
   `HKCU\Software\Classes\nxm\shell\open\command`, the same path under HKLM, and
   `HKCR\nxm\shell\open\command`; writes `HKCU\Software\Classes\nxm` (`URL:NXM Protocol`, `URL
   Protocol` = "", `shell\open\command`); removes it with `delete_subkey_all`), the
   `cfg(windows)` line in `system_registry()`, and `[target.'cfg(windows)'.dependencies] winreg
-  = "0.56"`. These compile everywhere but act only on Windows: the single-instance
+  = "0.56"`. These compiled natively on 2026-10-17 (§ v0.3 § The first native Windows run).
+  **Added after that run** (80b1ca8): in `mod win`, `user_key`, `restore_user`, `raw_value`,
+  `put_value` and `remove_if_empty`; `downloads.rs`'s Windows `move_new` (`MoveFileExW` through
+  `fs::canonicalize`) with its `windows-sys` 0.61 dependency, and the `cfg_attr(windows,
+  allow(dead_code))` on `copy_new`. These compiled natively, without a warning, on 2026-10-18
+  (§ v0.3 § The second native Windows run). `src-tauri/windows/hooks.nsh` is compiled into the
+  installer only by `npm run tauri build`, which first built it that day (at 85ba93c). These
+  compile everywhere but act only on Windows: the single-instance
   `WM_COPYDATA` callback and the `hard_link` landing on NTFS.
 - **Open:**
-  - The Windows-only paths have compiled and the suites have run natively (§ v0.3 § The first
-    native Windows run), but nothing has been pressed on a Windows desktop yet. Owed, once
-    each: press Play by each route; use Open mods folder; turn the nxm handler on and off, with
-    and without another program registered; with a free account, press Mod Manager Download
-    while the stone runs (a second launch through single-instance) and while it is closed (a
-    cold start); with a premium account, download one file and cancel another mid-download.
+  - The Windows-only paths compiled and their suites ran natively, the code the verify pass
+    added included, and `npm run tauri build` built the installer with its hook (§ v0.3 § The
+    first native Windows run, § The second native Windows run). `cargo clippy` has never run on
+    Windows (it is not installed on the Windows bench), and nothing has been pressed on a
+    Windows desktop yet. Owed, in this order: `cargo clippy` natively; then, once each: press Play by each
+    route; use Open mods folder, also after deleting the folder while the stone runs; turn the
+    nxm handler on and off, with and without another program registered before the claim, and
+    over a key another program left with a `DefaultIcon`; with a free account, press Mod
+    Manager Download while the stone runs (a second launch through single-instance) and while
+    it is closed (a cold start); with a premium account, download one file and cancel another
+    mid-download; download once into a mods folder on FAT32 or exFAT (the `MoveFileExW`
+    landing); uninstall with the switch on, with and without another program's handler before
+    the claim; and an upgrade over an installed v0.3.
   - `tauri-plugin-single-instance` is pinned to 2.5.2 (published 2026-10-01) by a hand-edited
     lock entry (version and checksum), because `cargo update --precise` also moved unrelated
     `windows-sys` entries. `cargo metadata --locked` passes; a later `cargo update` will move
     it.
-  - A known, benign race: when `deploy_busy()`'s momentary `try_lock` (from `plan_launch`)
-    meets a scan's migration attempt, the migration waits for the next turn or scan.
+  - Fixed after the verify pass (80b1ca8): `deploy_busy()`'s probe (from `plan_launch`) went
+    through a bare `try_lock`, so a scan's migration that met it waited for the next turn or
+    scan; the probe is a `Turn` now, and the migration runs when it ends.
   - A Nexus file that is not a zip, 7z or rar (a raw `.pak` or `.exe`) lands under its own
-    name, and the scan never lists it.
+    name, and the scan never lists it (no package id, no link, no scan since 80b1ca8).
+  - The relink's 4 GiB budget counts the entries' listed sizes. A solid 7z or RAR may decode
+    more than that to reach them, so the CPU time a scan spends on solid archives is not
+    strictly bounded by it.
+  - An archive overwritten in place by another version with the same name and the same size
+    keeps its package id (`for_archive(name, size)`), so no relink is proposed: the install
+    shows on the new archive's option while the game folder holds the old bytes.
+  - A relink confirms each file by the engine's fingerprint (its size and its first and last
+    MiB), not by every byte. A newer version of the same size whose changes all lie between the
+    first and last MiB of a file over 2 MiB still takes over the older install, and the Rift
+    then shows the newer option installed while the game folder holds the older bytes
+    (CLAUDE.md, Known Limitations).
+  - Two failures carry no reason code, so the window voices both as an answer it could not
+    read: no download link offered (`downloads.rs`) and an HTTP 401/403 on a key that
+    validates (rift-nexus `http_sentence`). A reason each would let the window say what
+    happened.
+  - The new scratch-folder extraction (`relink-check`) and its `remove_dir_all` under
+    `%LOCALAPPDATA%` have not run on Windows; an antivirus may slow the part writes.
 
 ### § The window (builder: window — the Illusionist, after the Artisan's amendment to #00015)
 
 Everything in WINDOW-CONTRACT § v0.3 that the player sees: the library tree as the Rift's idle
 view (with the trouble fold above it), Play on the stone, the mods-folder row and empty state, the
 account card, downloads, browsing Nexus, a mod's files and patch notes, track and endorse, the nxm
-handler switch, an uninstall door on every load-order row, every old-manager and multi-root
-surface removed, the mock and specs to match, and a source sweep spec that proves the old
-manager's name appears nowhere in `src/` or `tests/` without spelling it.
+handler switch, an uninstall door on every load-order row, every surface for other mod managers
+and for several roots removed, the mock and specs to match, and a source sweep spec
+(the stands-alone spec, `tests/standsAlone.spec.ts`) that proves the forbidden words appear nowhere without spelling
+them.
 
 **As built (four window builders, 2026-10-17: the floor, the tree and Play, the far world, the
 specs; committed in c7ed0c2).** 227 specs in 26 files (new: tree 14, play 7, farWorld 22,
-modsFolder 6, yourWorld 3, noOldManager 3), green over 10 shuffled runs; typecheck, lint, format
+modsFolder 6, yourWorld 3, standsAlone 3), green over 10 shuffled runs; typecheck, lint, format
 and build clean.
 - **New:** `LibraryTree.vue`, `LibraryBranch.vue`, `PlayStone.vue`, `AccountCard.vue`,
   `NxmSwitch.vue`, `DownloadShelf.vue`, `ModFiles.vue`, `NexusBrowse.vue`, `FarModCard.vue`,
   `StandingControls.vue`; the composables `useLibrary`, `useLaunch`, `useDownloads`,
   `useNexusAccount` and `useNxmHandler`, each reset by `resetRiftstone`; the mock's `far.ts` and
   `library.ts`; the scenes `emptymods`, `premium`, `rejected`, `running` and `nxmother`.
-- **Choices the builders made where §16 was silent or read otherwise** (as committed):
+- **Choices the builders made where §16 was silent or read otherwise** (as committed in c7ed0c2;
+  where the verify pass changed one, it says so):
   1. Keys: Space zooms an option's screenshot, else acts as Enter; `*` opens every sibling
      branch; ↓ from the well lands on the row the tree last held, else the first. These follow
-     WINDOW-CONTRACT § v0.3 The library tree, which is authoritative for behaviour; R16.6 reads
-     Space = Enter, `*` unbound and ↓ to the first row, and is owed the amendment.
+     WINDOW-CONTRACT § v0.3 The library tree, which is authoritative for behaviour. *(R16.6 was
+     amended to these keys on 2026-10-18.)*
   2. R16.10's 12ch label floor is approximated: the kind badges fold to `+N kinds` when a row is
      at most 420 px wide (a container query in `LibraryBranch.vue`), an estimate, not the 12ch
      rule itself.
   3. 4 px (`--rs-space-1`) between collapsed package slabs; R16.4 names only the 8 px after an
      expanded one.
-  4. Play while stirring is drawn pressable (R16.13), but `useLaunch().play()` ignores a press
-     while a launch is in flight: until the watcher sees the game, or the 120 s wait ends with a
-     warn toast. A second press can never start a second game; R16.13 wanted a press there so
-     that a start that never comes leaves no dead stone.
+  4. Play while stirring is drawn pressable (R16.13). *(As committed, `useLaunch().play()`
+     ignored a press while a launch was in flight. Since 85ba93c a press while THE WORLD STIRS
+     plans again and calls `launch_game` again, and the wait starts over, so a start that never
+     comes leaves no dead stone; only a press whose `plan_launch` and `launch_game` are still on
+     their way swallows the next. The spine refuses `launch_game` once its watcher believes the
+     game runs.)*
   5. A free account's update row reads `Get it on Nexus` (it starts a waiting download and opens
      the file's page); R16.23 names only `Download v{version}`. The files view says `Download`
-     for every account, as R16.21 rules.
+     for every account, as R16.21 rules. *(Settled 2026-10-18: R16.23 now names `Get it on
+     Nexus` for a free account.)*
   6. `Replace key…` opens THE FAR WORLD's own key form, as v0.2 did; R16.17 points it at
-     Preflight's key row.
-  7. The TRACKED section's head reads `TRACKED ON NEXUS`; R16.16 names it `TRACKED`.
-  8. The mock's other nxm program is `OtherManager.exe` (`src/services/mock/far.ts`); R16.24
-     names `Wagonmaster.exe`.
+     Preflight's key row. *(Since the final review, 2026-10-18, every key door opens that form
+     and none sends the player to PREFLIGHT for the key: § After the final review, below.
+     Settled 2026-10-18: R16.17 now points `Replace key…` at that form.)*
+  7. The TRACKED section's head reads `TRACKED ON NEXUS`; R16.16 names it `TRACKED`. *(Settled
+     2026-10-18: R16.16 and R16.20 now name `TRACKED ON NEXUS`.)*
+  8. The mock's other nxm program had a placeholder name; R16.24 names `Wagonmaster.exe`.
+     *(Since the final review, 2026-10-18, the mock's program is `Wagonmaster.exe`
+     (`src/services/mock/far.ts`), as R16.24 names it.)*
   9. `Fix it` maps each warning to its PREFLIGHT row (`reframeworkMissing` → `reframework`,
      `pakFolderOff` → `pakdir`, `looseLoaderOff` → `loose`, `buildChanged` → `build`); the rows
-     carry `data-check`.
+     carry `data-check`. *(Since 85ba93c the keyboard lands on that row's own button, else on
+     the row, so the focus never drops to the page.)*
   10. Tracked cards carry no Download (a card holds no file id): a download goes through Files.
   11. A refusal to track or endorse is kept per mod and said under the pair, never as a toast
       (R16.22).
-- **Drift from §16 that the specs pin as built** (a ruling, or a fix): R16.25 asks for `Scan`
-  Primary, `Open mods folder` Secondary and the path ellipsized from the left with the whole
-  path in `title`; built: `Open mods folder` is Primary unless the row is OK, `Scan` is
-  Secondary, and there is no `title`. R16.26 asks for `its package isn't in your mods folder`
-  and a `title` on `adopted`; built: a `no package` mark, and `adopted` with no title. The Mods
-  folder row's detail follows the check's title with no space between them, so a screen reader
-  may run the two together.
+- **Drift from §16 recorded at c7ed0c2 or found by the verify pass**, all settled by 85ba93c and
+  the 2026-10-18 amendments of #00015: R16.25 (now amended to the build: `Open mods folder` is
+  the row's Primary and `Scan` its Secondary whenever the `mods` check's action is
+  `openModsFolder`, else `Scan` Primary; and built to it: the path ellipsized from the left with
+  the whole path in `title`, the check's detail on a line of its own); R16.26 (built: `its
+  package isn't in your mods folder`, and `adopted` with its `title`); R16.4's slabs in the
+  package view (`PackageTree.vue` now follows R16.3–R16.5).
+- **After the verify pass (committed in 85ba93c, 2026-10-18).** 309 specs in 32 files (227 in
+  26 before; new files `account`, `downloads`, `modFiles`, `packageTree`, `treeDraw`, `wake`),
+  green over shuffled runs; `npm run typecheck`, `lint`, `test`, `format:check` and `build`
+  clean (run again for this record on 2026-10-18: 309 of 309). New: `ModFileRow.vue`; the
+  scenes `nofloor` and `gonemods`. What changed, each with a spec that failed first:
+  - The tree: every letter typed goes to the well (only `1`–`4` and `/` pass through); each
+    row's accessible name is its label and its description the format, counts, problems,
+    chips and badges; a package row's verdict comes from the trouble kinds only; formats read
+    `ZIP`, `7Z`, `RAR` and `FOLDER`. The package view's `PackageTree.vue` follows R16.3–R16.5:
+    option rows on the void at 32 px, a 2 px state rail on each leaf (none on menus or
+    bundles), 16 px per level with a 1 px `--rs-edge` guide, `--rs-misthi` on hover, the focus
+    ring inside the row, a `CONFLICT` chip on a conflicted leaf and no chips or kind badges on
+    bundles and menus; a bundle no longer wears the selected frame when no option is open.
+  - Play: item 4 above; a plan read while the game ran is void once the overview says it
+    stopped (`planStale`), so Play never shows a stale "already running"; `Fix it`'s focus
+    (item 9).
+  - The mods folder: `useStone()` gains `modsWantOpen` and `modsMissing` (`gone` or `unmade`);
+    the Rift carves THE RIFT LOST ITS FLOOR (warn) with `Open mods folder` for a folder that
+    went, and keeps THE RIFT HAS NO FLOOR for one that could never be made; PREFLIGHT's row as
+    R16.25 now reads. The mock's `nofloor` sends the spine's Error word for word, and
+    `gonemods` the Gone Warn, whose `Open mods folder` makes the folder again, empty, then
+    scans.
+  - THE FAR WORLD: the verifying phase reaches the shelf (`Checking the file`); an update row is
+    read again after a landing's scan; the low-quota line says update checks don't use the
+    quota, and nothing gates `Check now`; the update row's `Download v{version}` / `Get it on
+    Nexus` and a FILES row's `Download` are held (`refused`, reason `Downloading: see
+    DOWNLOADS`) while that download is unfinished, the mod's other files free; a free
+    account's start toast reads the nxm handler first and, while nothing answers Nexus's
+    button, says so and offers `Answer Nexus's button`; a landed file that is no archive says
+    the Rift does not list it and offers `Show in folder`; landed toasts are cyan with `Show in
+    the Rift` (gold stays for THE CROSSING and THE WORLD IS AWAKE); the nxm switch stands alone
+    in ACCOUNT when no card shows, so the stone can always give the link back; Endorse and
+    Abstain live in a mod's FILES only, and the update rows' buttons wrap below 1199 px; the
+    subtitle names what the page holds (`Your account, downloads, updates, tracked mods and
+    Find on Nexus · updates checked …`); an accepted nxm link is told under THE FAR WORLD
+    ANSWERS with `Show downloads`, and a refusal's `Open on Nexus` opens the file's own page
+    (`file_id`, `nmm=1`), where Nexus makes a fresh link.
+  - The voice: §9's sentences carried into `voice.ts` and `DownloadShelf.vue` (a link for
+    another account, Premium required's first sentence, no key in the download and nxm
+    contexts, the write failure's partial-file sentence, the waiting row's second sentence,
+    `The download of X stopped.`).
+  - The wake: `boot.ts` keeps `await subscribe()` before the first `refreshOverview()`, the
+    spine's sign that the window listens (WINDOW-CONTRACT startup step 9); `tests/wake.spec.ts`
+    fails when the order is reversed.
+  - The stands-alone spec (`tests/standsAlone.spec.ts`) reads the docs, `README.md`, `CLAUDE.md`, the sweep's Python
+    and every Rust file too (§ Rulings, 1), and never matches `scripts/privacy-sweep.args`.
+- **After the final review (2026-10-18, 0.3.1).** 316 specs in 32 files (new: the tree tools'
+  absence, the key doors from FILES, a held Download, the refused link's toast and a Find row,
+  the switch's line, the gone-package line); typecheck, lint, format and build clean. The Rust
+  workspace passes 878 tests on the Linux bench (8 env-gated benches ignored, 44 test targets).
+  - THE FAR WORLD IS SILENT's body (no key): "Add your Nexus Mods personal API key and the stone
+    will show your account, and download, track and endorse mods for you. It stays on this PC.
+    Update checks and browsing Nexus work without it." The update check is anonymous, so the
+    body no longer promises it as the key's work.
+  - The key's doors (WINDOW-CONTRACT § The key's extras): a mod's FILES without a key says "Add
+    your Nexus key to download from the stone." with a small button `Add key…`; a held
+    Download's reason without a key is the same sentence; a refused nxm link's toast offers the
+    voice's own recovery label (`Add key…` or `Replace key…`) instead of `Open Preflight`. Every
+    one of these doors opens THE FAR WORLD's key form: it goes to THE FAR WORLD if elsewhere,
+    opens the ACCOUNT section's key form and focuses its password field (NexusPage's
+    `replaceKey`). No door sends the player to PREFLIGHT for the key. PREFLIGHT's own NEXUS KEY
+    row (`Add` / `Replace`) is the same door, and so is a Find row failure's `Add key…` /
+    `Replace key…` (a link Nexus refused for the key lands on the row): each opens the form with
+    its field focused.
+  - The nxm switch's line while another program answers: "{other} answers it now. Turn this on
+    and the stone remembers it, and gives it back when you turn this off." ({other} is the
+    program's name, else "Another program".) Its state (ON / OFF) is a plain mono word: no
+    border, padding or radius; ON in the Rift's cyan, OFF muted. Both as R16.24 reads.
+  - The mock's `?mock=nxmother` program is `Wagonmaster.exe` (item 8).
+  - The scan's progress names a relink's read (WINDOW-CONTRACT § v0.3 Legacy data, When it
+    runs), and the window shows that `current` as it shows any ("now: …").
+  - The source sweep spec is the stands-alone spec, `tests/standsAlone.spec.ts`; its test reads
+    "should carry none of the forbidden words". Its fixtures build every forbidden letter run
+    from the words' character codes, including the identifier that proves the short word is
+    matched only as a word of its own.
+  - The tree header's `Expand all` and `Collapse all` are drawn only when the library has a
+    package and the folder is there, as the answers' sort and group tools already were.
+  - The small leftovers are gone: `ledger.ts`'s `DOWNLOAD_PHASE_WORD` and `LoadOrderList.vue`'s
+    unused `.is-warn` rule are removed, and YOUR WORLD's gone-package line (`home__gone`) is
+    drawn as R16.26 says, Alegreya 14 in `--rs-faint`.
+- **§16 and §9 drift:** none left. On 2026-10-18 #00015 was amended to the build: items 5–8
+  above (R16.23, R16.17, R16.16 and R16.20, R16.24), R16.18's Failed and Waiting rows, R16.21's
+  keyless line, R16.25's two folder states, and §9 row by row (the expired link, another game or
+  a collection, another account, Premium required, the nothing-changed sentences, the free
+  account's start toasts, no key in and outside the download and nxm contexts, key rejected,
+  offline and not checked yet with their ACCOUNT doors, endorsing refused). §15 question 2 is
+  written as measured.
 - **Measured on the mock** (headless Chromium over `npm run dev`, 2026-10-17, by the v0.3 review
-  and its fixers; #00015 §16.8 and §15 still read predicted or unmeasured):
+  and its fixers; #00015 §16.8 records Q16.1–Q16.3 as measured since 2026-10-18, its Q16.3
+  leaving smoothness in WebView2 on a 3,000-option library unmeasured; §15 question 2 reads
+  measured since 2026-10-18):
   - Q16.1: at 1024×680 the Play slab sits wholly inside the window in every state, above the
     foot at 634 px: Ready 573–634, Running 565–634, refused 531–634, a two-warning confirm
     478–634. The facet block keeps 211 px of its 602 px content at rest (169 refused, 116 in
-    the confirm) and scrolls. At 1320×860: the slab at 753–814, the facets 385 of 532 px.
+    the confirm) and scrolls. At 1320×860: the slab at 753–814, the facets 385 of 532 px. The
+    build applies §8.0's fallback: `Show menu-only` sits above `STATE`.
   - Q16.2: `Play anyway` (95 px) and `Fix it` (53 px) share one line in the slab's 216 px at
     1024×680.
   - Q16.3: 250 answers are on screen 358 ms (1320×860) and 382 ms (1024×680) after the
@@ -1672,15 +2014,28 @@ and build clean.
   - §15 question 2: the seam's lit length at reach 1 is 746 px at 1320×860 and 572 px at
     1024×680 (predicted 742 and 562).
 - **Open:**
-  - Rulings on R16.6 (to match the contract), R16.16, R16.17, R16.23, R16.24, R16.25 and R16.26,
-    each from the lists above, then #00015 or the window amended to match; and the Q16 values
-    above written into #00015 as measured.
-  - Play shows a stale refusal for one plan read after the game stops: `boot.onGameChanged`
-    reads the overview before `useLaunch().onGameChanged` reads the plan again (`play.spec`
-    waits for Ready).
-  - The README's three frames were v0.2 shots (the roots facet, no Play, and the retired name in
-    their pixels). They are out of the README until they are shot again from the v0.3 mock; the
-    files in `docs/images/` still need replacing or removing.
+  - Q16.3's smoothness in WebView2 on a real 3,000-option library (the mock's 250 answers
+    scroll at a frame p95 of about 17 ms in headless Chromium).
+  - Fixed in 85ba93c: the stale refusal Play showed for one plan read after the game stopped
+    (`planStale`).
+  - Play's second press while THE WORLD STIRS asks Steam or Windows again until the watcher
+    (sampling every 1 s after a launch) sees the game: on the exe route Windows is asked to
+    start `DD2.exe` once more. What Steam and the game do with a start that is already under way
+    is unmeasured: pressing each route twice in quick succession is owed with the Windows
+    presses.
+  - The README's frames: the three v0.2 shots (the roots facet, no Play, and words ruling 1
+    forbids in their pixels) were shot again on 2026-10-18 from the v0.3 mock, beside two new
+    ones: `docs/images/riftstone-tree.png`, `riftstone-answers.png`, `riftstone-crossing.png`,
+    `riftstone-far-world.png` and `riftstone-nothing-answers.png`. Each was looked at for this
+    record: invented names only, no forbidden word, and the README embeds all five again. All five were shot
+    again after the final review's round (the nxm switch's state word changed in the far world
+    frame) and looked at once more: invented names only, no forbidden word, no text chunks. No
+    text gate can see a picture, so the next window change that shows in them owes new frames
+    and another look (CLAUDE.md, Privacy). The older commits keep the v0.2 frames (ruling 1:
+    the history is not rewritten).
+  - A mock divergence: the mock refuses at once an nxm link for a file the mod's list lacks
+    (`fileGone` in the event), while the spine accepts the link and the download fails later, at
+    linking.
 
 ### The first native Windows run (2026-10-17, after 822c913)
 
@@ -1697,6 +2052,28 @@ A Windows clone of the branch ran the Rust tests natively (`cargo test --workspa
   `child_ci` tries the asked-for name first, and a case-blind file system answers it for any
   spelling, so the exe route carried the asked-for spelling instead of the one on disk. 0b34ac4
   makes `game_exe` list the game folder and take the entry whose name matches case-blind.
-- **Still owed on Windows:** a test run after 0b34ac4 (the Linux bench passes it); `cargo clippy`
-  (not installed on that machine); `npm run tauri build` and its installer; and the presses no
-  test makes (§ rift-deploy and § src-tauri, Open).
+- **Still owed on Windows after this run:** a native run of the tree as it stands (31d26bf for
+  the Rust, 85ba93c for the window), the first compile of the Windows-only code the verify pass
+  added (`protocol.rs`'s key memory in `mod win`, `downloads.rs`'s `MoveFileExW` `move_new`, the
+  `cfg_attr(windows, allow(dead_code))` on `copy_new`) and the first build of
+  `src-tauri/windows/hooks.nsh`. The second run, below, did all three. The Linux bench passes
+  875 workspace tests at 31d26bf (8 env-gated benches ignored, 44 test targets) and the window's
+  309 specs at 85ba93c.
+
+### The second native Windows run (2026-10-18, at 31d26bf)
+
+- **Tests:** `cargo test --workspace` ran natively on Windows (MSVC, Rust 1.98.0,
+  `RUSTFLAGS=-D warnings`) at 31d26bf: 861 passed, 0 failed. So every `#[cfg(windows)]` line up
+  to 80b1ca8 compiles there without a warning, including `mod win`'s `user_key`,
+  `restore_user`, `raw_value`, `put_value` and `remove_if_empty`, `downloads.rs`'s `move_new`
+  and `copy_new`'s `cfg_attr`.
+- **Lint:** `cargo clippy` is not installed on the Windows bench and has never run there.
+- **Build:** `npm run tauri build` at 85ba93c built `riftstone.exe` and the NSIS installer with
+  the uninstall hook (5.88 MiB), the hook's first build.
+- **Probe:** a read-only bench probe of that build, on a copy of real app data, passed. Nothing
+  it counted or named is recorded here (CLAUDE.md, Privacy).
+- **Still owed:** `cargo clippy` natively, and every press on a Windows desktop: Play by each
+  route; Open mods folder, also after deleting it while the stone runs; the nxm switch on and
+  off, also over another program's key; a download with each account type, one cancelled, one
+  into a FAT32 or exFAT folder; uninstall with the switch on; an upgrade over an installed v0.3
+  (§ src-tauri, Open, lists each press in full).
