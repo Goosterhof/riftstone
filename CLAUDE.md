@@ -89,6 +89,18 @@ npm run build
 python3 -I scripts/privacy-sweep.py --self-test
 ```
 
+**The Sentinel** (`.github/workflows/sentinel.yml`, armed with the first push on 2026-10-18) runs
+those gates on every push to `main` and every pull request against it, in three jobs:
+- *Window*: `npm ci`, then typecheck, lint, test, format:check and build.
+- *Crates*: fmt, clippy with warnings denied, and the workspace's tests. It is pinned to Rust
+  1.98.0, the toolchain both benches verified with, because a newer stable's lints can turn
+  `-D warnings` red overnight. Moving the pin is a deliberate commit, run on both benches first.
+- *Privacy*: the sweep's `--self-test`.
+
+CI never sees the library, the journal, the saves or the game, so the full sweep stays a bench
+step before each push. `main` is protected behind the three checks: changes land by pull request,
+merged with merge commits only (the lab's Decision 025).
+
 `#[cfg(windows)]` code (the registry for Steam and the nxm handler, the process list, Play's
 `CreateProcessW`, a download's no-overwrite `MoveFileExW` landing, and a few file-system checks)
 never compiles on the Linux bench: build, test and lint it natively on Windows before a release.
