@@ -56,8 +56,13 @@ const veilLine = computed(
 const buildLevel = computed<Level>(() => (game.value?.buildChanged ? "warn" : "ok"));
 
 /** v0.3: the Mods folder row. The spine's `mods` check speaks when there is
- *  something to say (empty, unlistable, missing); otherwise the row counts. */
+ *  something to say (empty, unlistable, gone, never made); otherwise the row
+ *  counts. Open mods folder is drawn while the folder is there, and whenever
+ *  the check's own action asks for it (a folder that went: the press makes it
+ *  again), and then it is the row's Primary: the check's way on leads. Scan is
+ *  the Primary otherwise (R16.25); a scan never makes a missing folder. */
 const modsLevel = computed<Level>(() => stone.modsCheck.value?.level ?? "ok");
+const openDrawn = computed(() => (o.value?.mods.exists ?? false) || stone.modsWantOpen.value);
 const modsLine = computed(() => {
   const check = stone.modsCheck.value;
   if (check) return check.title;
@@ -84,9 +89,10 @@ const modsLine = computed(() => {
     </RiftInscription>
 
     <!-- data-check: each row's check id (WINDOW-CONTRACT § Check ids). Play's
-         "Fix it" opens this page on the first warned row by it (R16.14). -->
+         "Fix it" opens this page on the first warned row by it (R16.14) and
+         puts the keyboard on the row's button, else on the row (tabindex -1). -->
     <ol class="pre__list">
-      <li class="pre__row" data-check="game" :class="`is-${game ? 'ok' : 'error'}`">
+      <li class="pre__row" data-check="game" tabindex="-1" :class="`is-${game ? 'ok' : 'error'}`">
         <span class="pre__glyph">{{ GLYPH[game ? "ok" : "error"].glyph }}</span>
         <span class="pre__word rs-mono">{{ GLYPH[game ? "ok" : "error"].word }}</span>
         <span class="pre__what">Game install</span>
@@ -95,7 +101,7 @@ const modsLine = computed(() => {
           >Change…</RiftButton
         >
       </li>
-      <li v-if="game" class="pre__row" data-check="build" :class="`is-${buildLevel}`">
+      <li v-if="game" class="pre__row" data-check="build" tabindex="-1" :class="`is-${buildLevel}`">
         <span class="pre__glyph">{{ GLYPH[buildLevel].glyph }}</span>
         <span class="pre__word rs-mono">{{ GLYPH[buildLevel].word }}</span>
         <span class="pre__what">Steam build</span>
@@ -109,7 +115,13 @@ const modsLine = computed(() => {
           >I've tested it</RiftButton
         >
       </li>
-      <li v-if="ref_" class="pre__row" data-check="reframework" :class="`is-${ref_.installed ? 'ok' : 'error'}`">
+      <li
+        v-if="ref_"
+        class="pre__row"
+        data-check="reframework"
+        tabindex="-1"
+        :class="`is-${ref_.installed ? 'ok' : 'error'}`"
+      >
         <span class="pre__glyph">{{ GLYPH[ref_.installed ? "ok" : "error"].glyph }}</span>
         <span class="pre__word rs-mono">{{ GLYPH[ref_.installed ? "ok" : "error"].word }}</span>
         <span class="pre__what">REFramework</span>
@@ -120,7 +132,13 @@ const modsLine = computed(() => {
         }}</span>
         <RiftButton v-if="!ref_.installed" size="sm" @click="preflight.openUrl(REFRAMEWORK_URL)">Get it</RiftButton>
       </li>
-      <li v-if="ref_?.installed" class="pre__row" data-check="pakdir" :class="`is-${switchLevel(ref_.pakDirectory)}`">
+      <li
+        v-if="ref_?.installed"
+        class="pre__row"
+        data-check="pakdir"
+        tabindex="-1"
+        :class="`is-${switchLevel(ref_.pakDirectory)}`"
+      >
         <span class="pre__glyph">{{ GLYPH[switchLevel(ref_.pakDirectory)].glyph }}</span>
         <span class="pre__word rs-mono">{{ switchWord(ref_.pakDirectory) }}</span>
         <span class="pre__what">Alternate PAK Folder</span>
@@ -137,7 +155,13 @@ const modsLine = computed(() => {
           >Turn it on</RiftButton
         >
       </li>
-      <li v-if="ref_?.installed" class="pre__row" data-check="loose" :class="`is-${switchLevel(ref_.looseFileLoader)}`">
+      <li
+        v-if="ref_?.installed"
+        class="pre__row"
+        data-check="loose"
+        tabindex="-1"
+        :class="`is-${switchLevel(ref_.looseFileLoader)}`"
+      >
         <span class="pre__glyph">{{ GLYPH[switchLevel(ref_.looseFileLoader)].glyph }}</span>
         <span class="pre__word rs-mono">{{ switchWord(ref_.looseFileLoader) }}</span>
         <span class="pre__what">Loose File Loader</span>
@@ -162,29 +186,46 @@ const modsLine = computed(() => {
         <span class="pre__what">Faulty files</span>
         <span class="pre__val rs-mono">REFramework flagged {{ ref_.faultyFiles.join(", ") }}</span>
       </li>
-      <li v-if="o" class="pre__row pre__row--mods" data-check="mods" :class="`is-${modsLevel}`">
+      <li v-if="o" class="pre__row pre__row--mods" data-check="mods" tabindex="-1" :class="`is-${modsLevel}`">
         <span class="pre__glyph">{{ GLYPH[modsLevel].glyph }}</span>
         <span class="pre__word rs-mono">{{ GLYPH[modsLevel].word }}</span>
         <span class="pre__what">Mods folder</span>
-        <span class="pre__val"
-          ><span class="rs-mono">{{ o.mods.path }}</span> · {{ modsLine
-          }}<template v-if="stone.modsCheck.value?.detail">
-            <span class="pre__detail">{{ stone.modsCheck.value.detail }}</span></template
-          ></span
-        >
+        <!-- R16.25: the path ellipsized from the LEFT (the folder's own name stays
+             in view, the whole path in title), the count faint, the check's
+             detail on a line of its own -->
+        <span class="pre__val pre__val--mods">
+          <span class="pre__path rs-mono" :title="o.mods.path"
+            ><bdi>{{ o.mods.path }}</bdi></span
+          >
+          <span class="pre__count" :class="{ 'is-ember': modsLevel === 'error' }">{{ modsLine }}</span>
+          <span v-if="stone.modsCheck.value?.detail" class="pre__detail">{{ stone.modsCheck.value.detail }}</span>
+        </span>
         <span class="pre__acts">
           <RiftButton
-            v-if="o.mods.exists"
+            v-if="openDrawn"
             size="sm"
-            :variant="modsLevel === 'ok' ? 'secondary' : 'primary'"
+            :variant="stone.modsWantOpen.value ? 'primary' : 'secondary'"
             :busy="preflight.busy.value === 'mods'"
             @click="preflight.openModsFolder()"
             >Open mods folder</RiftButton
           >
-          <RiftButton size="sm" :busy="stone.scanning.value" @click="preflight.rescan()">Scan</RiftButton>
+          <RiftButton
+            size="sm"
+            :variant="stone.modsWantOpen.value ? 'secondary' : 'primary'"
+            :busy="stone.scanning.value"
+            @click="preflight.rescan()"
+            >{{ o.mods.exists ? "Scan" : "Scan again" }}</RiftButton
+          >
         </span>
       </li>
-      <li v-for="c in spineChecks" :key="c.id" class="pre__row" :data-check="c.id" :class="`is-${c.level}`">
+      <li
+        v-for="c in spineChecks"
+        :key="c.id"
+        class="pre__row"
+        :data-check="c.id"
+        tabindex="-1"
+        :class="`is-${c.level}`"
+      >
         <span class="pre__glyph">{{ GLYPH[c.level].glyph }}</span>
         <span class="pre__word rs-mono">{{ GLYPH[c.level].word }}</span>
         <span class="pre__what">{{ c.title }}</span>
@@ -330,6 +371,37 @@ const modsLine = computed(() => {
   min-width: 0;
   color: var(--rs-muted);
   overflow-wrap: anywhere;
+}
+.pre__val--mods {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--rs-space-3);
+}
+.pre__path {
+  display: block;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--rs-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+  overflow-wrap: normal;
+}
+.pre__count {
+  flex: none;
+  color: var(--rs-faint);
+}
+.pre__count.is-ember {
+  flex: 1 1 100%;
+  color: var(--rs-ember);
+}
+.pre__val--mods .pre__detail {
+  flex: 1 1 100%;
 }
 /* v0.3 — the Mods folder row: the path, its count or the check's title, and
    the check's detail on a line of its own; two buttons share the last column. */

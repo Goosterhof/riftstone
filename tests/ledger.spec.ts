@@ -3,14 +3,14 @@
 // count the spine returns is said out loud, a zero says nothing, and THE
 // RETURN's heading counts only the rows that move a file: "already gone" is
 // its own clause, never a file that "leaves your game".
-// v0.3: Play's route and warnings, and what a download came to.
+// v0.3: Play's warnings, and what a download came to.
 
 import { afterEach, describe, expect, it } from "vitest";
 import type { DownloadView, RemovalAction, UninstallResultView } from "@/types/rift";
 import {
   downloadName,
   landedLine,
-  launchedLine,
+  launchWarningLine,
   parkedRestoreSummary,
   recoverySentence,
   removalWords,
@@ -190,16 +190,20 @@ describe("the other v0.2 sentences", () => {
 });
 
 describe("the v0.3 sentences", () => {
-  it("should say how the game is starting and carry every warning Play found, none of them a blocker", () => {
-    expect(launchedLine("steam", [])).toBe("Dragon's Dogma 2 is starting through Steam.");
+  it("should say each warning Play carries in the §9 sentence for the same condition, none of them a blocker (R16.14)", () => {
     expect(
-      launchedLine("exe", [
-        { kind: "pakFolderOff", paks: 1 },
-        { kind: "buildChanged", recorded: "25290080", now: "25391144" },
-      ]),
-    ).toBe(
-      "Dragon's Dogma 2 is starting from its game folder. REFramework's Alternate PAK Folder is off, so 1 installed pak won't load. Steam updated the game from build 25290080 to 25391144 since your newest install: script mods are the first to break.",
-    );
+      [
+        { kind: "reframeworkMissing" as const, paks: 2 },
+        { kind: "pakFolderOff" as const, paks: 1 },
+        { kind: "looseLoaderOff" as const, files: 3 },
+        { kind: "buildChanged" as const, recorded: "25290080", now: "25391144" },
+      ].map(launchWarningLine),
+    ).toStrictEqual([
+      "REFramework isn't in your game folder, so script and loose-file mods won't load. PAK mods won't either: the Alternate PAK Folder lives in REFramework.",
+      "Your PAK mods won't load: REFramework's Alternate PAK Folder is off.",
+      "Loose-file mods won't load: REFramework's Loose File Loader is off.",
+      "Dragon's Dogma 2 updated from build 25290080 to 25391144 since your mods were installed. Most still work; script mods and REFramework are the first to break.",
+    ]);
   });
 
   const landed: DownloadView = {
@@ -223,12 +227,25 @@ describe("the v0.3 sentences", () => {
   };
 
   it("should say where a download landed, or that the mods folder had it already", () => {
-    expect(landedLine(landed)).toBe(
-      "Lantern Glow Recolor landed in your mods folder as Lantern Glow Recolor-412-2-2-1791234567.zip. Install it from the Rift.",
-    );
+    expect(landedLine(landed)).toBe("Lantern Glow Recolor is in your mods folder. Install it from the Rift.");
     expect(landedLine({ ...landed, alreadyHad: true })).toBe(
-      "Lantern Glow Recolor was in your mods folder already, so nothing new was written.",
+      "The same file was already in your mods folder. The stone wrote nothing new.",
     );
     expect(downloadName({ ...landed, fileName: null, modName: null })).toBe("Nexus mod 412, file 2391");
+  });
+
+  it("should say a landed file that is no archive is in the mods folder, but never send it to the Rift", () => {
+    const raw = { ...landed, landedAs: "Lantern Glow Recolor 2.2.pak", packageId: null };
+    expect(landedLine(raw)).toBe(
+      "Lantern Glow Recolor is in your mods folder, but it is no archive, so the Rift does not list it.",
+    );
+    expect(landedLine(raw)).not.toContain("Install it from the Rift");
+    // without the mod's name, the file's Nexus name speaks
+    expect(landedLine({ ...raw, modName: null })).toBe(
+      "Lantern Glow Recolor is in your mods folder, but it is no archive, so the Rift does not list it.",
+    );
+    expect(landedLine({ ...raw, modName: null, fileName: null })).toBe(
+      "Nexus mod 412, file 2391 is in your mods folder, but it is no archive, so the Rift does not list it.",
+    );
   });
 });

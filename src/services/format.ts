@@ -1,6 +1,14 @@
 // Small, pure formatting helpers the window shares. No Vue, no backend.
 
-import type { DeployKind, PayloadKinds } from "@/types/rift";
+import type { DeployKind, PackageFormat, PayloadKinds } from "@/types/rift";
+
+/** A package's format as R16.2 draws it: a word, never the wire's enum. */
+export const FORMAT_LABEL: Record<PackageFormat, string> = {
+  zip: "ZIP",
+  sevenZip: "7Z",
+  rar: "RAR",
+  folder: "FOLDER",
+};
 
 const UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
 

@@ -9,14 +9,17 @@ const seenOpen = new Set<string>();
 // them. The WAI-ARIA tree (R16.6): one tab stop with a roving tabindex,
 // ↑ ↓ ← → Home End, Enter opens an option in Your World or toggles a branch,
 // Space zooms an option's screenshot (else acts as Enter), * opens every
-// sibling branch. No type-ahead: a letter typed here goes to the stone's well
-// and becomes a search (Bold Choice 10). Expanding never fires the seam.
+// sibling branch (WINDOW-CONTRACT § v0.3 "The library tree"). No type-ahead:
+// EVERY letter typed here goes to the stone's well and becomes a search
+// (Bold Choice 10) — `l` and `i` too, or "lantern" would open a lookbook and
+// "iron" plan an install. Expanding never fires the seam.
 import { computed, nextTick, onMounted, ref } from "vue";
 import { useLibrary, type LibraryRow } from "@/composables/useLibrary";
 import { useSearch } from "@/composables/useSearch";
 import { useStone } from "@/composables/useStone";
 import { useWorld } from "@/composables/useWorld";
 import { useNavigation } from "@/composables/useNavigation";
+import { troubleProblem } from "@/services/voice";
 import LibraryBranch from "./LibraryBranch.vue";
 
 const library = useLibrary();
@@ -27,6 +30,8 @@ const nav = useNavigation();
 
 const root = ref<HTMLElement | null>(null);
 const drawn = ref<ReadonlySet<string>>(new Set());
+/** Longer than --rs-dur-quick: the rails' first draw is over by then. */
+const DRAWN_FOR_MS = 600;
 
 /** Visible rows by parent key; the top level under "". */
 const kids = computed(() => {
@@ -62,6 +67,12 @@ function opened(row: LibraryRow): void {
   if (row.kind !== "package" || seenOpen.has(row.key)) return;
   seenOpen.add(row.key);
   drawn.value = new Set([...drawn.value, row.key]);
+  // §16.7: the light runs once. Past the draw (--rs-dur-quick) the package
+  // leaves `drawn`, so a later re-open finds its rails already lit.
+  const key = row.key;
+  setTimeout(() => {
+    drawn.value = new Set([...drawn.value].filter((k) => k !== key));
+  }, DRAWN_FOR_MS);
 }
 
 function setOpen(row: LibraryRow, open: boolean): void {
@@ -91,7 +102,7 @@ function activate(row: LibraryRow): void {
     setOpen(row, !row.expanded);
     return;
   }
-  if (row.pkg.package.problems.length) void toTrouble(row);
+  if (troubleProblem(row.pkg.package)) void toTrouble(row);
 }
 
 function press(row: LibraryRow): void {
@@ -104,8 +115,10 @@ function chevron(row: LibraryRow): void {
   setOpen(row, !row.expanded);
 }
 
-/** The keys the window's hotkeys own (rooms, the lookbook, plan install, search). */
-const PASS_THROUGH = new Set(["1", "2", "3", "4", "l", "i", "/"]);
+/** The only printable keys the tree lets through to the window's hotkeys: the
+ *  rooms and "/" (search). Every letter starts a word, so a letter is never a
+ *  hotkey here: the lookbook stays on Ctrl+L, and Install… on the open option. */
+const PASS_THROUGH = new Set(["1", "2", "3", "4", "/"]);
 
 async function typeIntoWell(char: string): Promise<void> {
   const input = document.getElementById("rift-search");

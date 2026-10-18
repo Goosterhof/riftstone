@@ -18,7 +18,9 @@ const launch = useLaunch();
 const stone = useStone();
 const nav = useNavigation();
 
+const slab = ref<HTMLElement | null>(null);
 const playButton = ref<HTMLButtonElement | null>(null);
+const awakeLine = ref<HTMLElement | null>(null);
 const anyway = ref<InstanceType<typeof RiftButton> | null>(null);
 /** From the press until launch_game answered (R16.13 Launching). */
 const pressing = ref(false);
@@ -26,10 +28,11 @@ const pressing = ref(false);
 const confirming = ref<LaunchWarning[] | null>(null);
 
 const game = computed(() => stone.overview.value?.game ?? null);
-/** The sentence that refuses Play now; the running game is its own state. */
+/** The sentence that refuses Play now; the running game is its own state, and
+ *  a plan read while it ran says nothing once it stopped (useLaunch.planStale). */
 const refused = computed(() => {
   if (launch.running.value) return null;
-  const sentence = launch.plan.value?.refused ?? null;
+  const sentence = launch.planStale.value ? null : (launch.plan.value?.refused ?? null);
   if (sentence) return sentence;
   // the plan carries the stone's own sentence; until it is read, a failed read speaks
   if (!game.value && launch.failure.value) return voicedLine(launch.failure.value);
@@ -82,6 +85,10 @@ const CHECK_OF: Record<LaunchWarning["kind"], string> = {
   buildChanged: "build",
 };
 
+/** Fix it: PREFLIGHT, scrolled to the first warned row, with the keyboard on
+ *  that row's own way out ("Turn it on", "Get it" …), else on the row itself:
+ *  the press's button leaves with the slab's confirm, and the focus must not
+ *  drop to <body>. */
 async function fixIt(): Promise<void> {
   const first = confirming.value?.[0];
   confirming.value = null;
@@ -89,7 +96,10 @@ async function fixIt(): Promise<void> {
   if (!first) return;
   await nextTick();
   const row = document.querySelector<HTMLElement>(`[data-check="${CHECK_OF[first.kind]}"]`);
-  row?.scrollIntoView?.({ block: "center" });
+  if (!row) return;
+  row.scrollIntoView?.({ block: "center" });
+  const door = row.querySelector<HTMLElement>("button:not([disabled])");
+  (door ?? row).focus({ preventScroll: true });
 }
 
 async function backOut(event: KeyboardEvent): Promise<void> {
@@ -107,18 +117,25 @@ watch(
   () => [game.value === null, stone.phase.value] as const,
   () => void launch.refreshPlan(),
 );
+// The game starts: Play leaves under the focus, so the carved line takes it;
+// the game stops: the line leaves, so Play takes it back. Only a focus that was
+// on the slab moves: the stone never pulls the keyboard from anywhere else.
 watch(
   () => launch.running.value,
-  (on) => {
+  async (on) => {
     if (on) confirming.value = null;
+    const held = slab.value?.contains(document.activeElement) ?? false;
+    await nextTick();
+    if (!held) return;
+    (on ? awakeLine.value : playButton.value)?.focus({ preventScroll: true });
   },
 );
 </script>
 
 <template>
-  <section class="play" :class="{ 'is-awake': launch.running.value }" aria-label="Play" aria-live="polite">
+  <section ref="slab" class="play" :class="{ 'is-awake': launch.running.value }" aria-label="Play" aria-live="polite">
     <template v-if="launch.running.value">
-      <p class="play__carved play__carved--awake rs-inscription">THE WORLD IS AWAKE</p>
+      <p ref="awakeLine" class="play__carved play__carved--awake rs-inscription" tabindex="-1">THE WORLD IS AWAKE</p>
       <p v-if="since" class="play__since rs-mono">since {{ since }}</p>
     </template>
 

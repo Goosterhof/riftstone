@@ -5,15 +5,25 @@
 // install crosses into your world. A landing only swaps the phase word and the
 // button (§16.7: a cousin of THE CROSSING, never its twin). The bar is flat
 // and determinate, drawn only while the total is known: no indeterminate loop.
+// A failed row offers the ways out its reason's voice offers (§9, R16.18):
+// Try again only where a second try can land, the key's door where the key is
+// what failed, and the file's Nexus page on every failed row.
 import { computed } from "vue";
 import type { DownloadPhase, DownloadView } from "@/types/rift";
-import { shareDone, useDownloads } from "@/composables/useDownloads";
+import { filePageUrl, landedPath, shareDone, useDownloads } from "@/composables/useDownloads";
+import { usePreflight } from "@/composables/usePreflight";
+import { useNxmHandler } from "@/composables/useNxmHandler";
+import { useToasts } from "@/composables/useToasts";
 import { asRiftFailure } from "@/services/rift";
-import { voice } from "@/services/voice";
+import { failureDetails, voice, type Recovery, type RecoveryKind } from "@/services/voice";
 import { formatBytes } from "@/services/format";
 import RiftButton from "./RiftButton.vue";
 
+const emit = defineEmits<{ replaceKey: [] }>();
+
 const dl = useDownloads();
+const preflight = usePreflight();
+const nxm = useNxmHandler();
 
 const PHASE: Record<DownloadPhase, string> = {
   waiting: "Waiting for Nexus",
@@ -32,7 +42,8 @@ const phaseWord = (d: DownloadView): string =>
 /** Line 1: mod · file · v{version}; unknown parts are omitted, never "null". */
 function title(d: DownloadView): string[] {
   const parts: string[] = [];
-  if (d.fileName) parts.push(d.fileName);
+  // a file named like its mod is said once: never "Lantern Glow Recolor · Lantern Glow Recolor"
+  if (d.fileName && d.fileName.toLowerCase() !== (d.modName ?? "").toLowerCase()) parts.push(d.fileName);
   if (d.version) parts.push(`v${d.version.replace(/^v/i, "")}`);
   return parts;
 }
@@ -41,16 +52,48 @@ function title(d: DownloadView): string[] {
 function bytesLine(d: DownloadView): string | null {
   if (d.phase !== "downloading" && d.phase !== "verifying") return null;
   if (d.bytesTotal === null || d.bytesTotal <= 0) return `${formatBytes(d.bytesDone)} so far`;
-  const total = formatBytes(d.bytesTotal);
-  const [, unit = "B"] = total.split(" ");
+  // both numbers in the total's unit at one decimal, so done never reads past the total
+  const [, unit = "B"] = formatBytes(d.bytesTotal).split(" ");
   const scale = 1024 ** Math.max(0, ["B", "KB", "MB", "GB", "TB"].indexOf(unit));
-  return `${(d.bytesDone / scale).toFixed(1)} / ${total}`;
+  const done = Math.min(d.bytesDone, d.bytesTotal);
+  return `${(done / scale).toFixed(1)} / ${(d.bytesTotal / scale).toFixed(1)} ${unit}`;
 }
 
 const barOf = (d: DownloadView): number | null =>
   d.phase === "downloading" || d.phase === "verifying" ? shareDone(d) : null;
 
 const failureOf = (d: DownloadView) => (d.failure ? voice(asRiftFailure(d.failure), "download") : null);
+
+/** §9's door for a failed row, named as §9 names it. */
+const OPEN_ON_NEXUS: Recovery = { kind: "openNexusPage", label: "Open on Nexus" };
+/** The recoveries a shelf row can act on; Dismiss is the header's Clear finished. */
+const ON_THE_SHELF: ReadonlySet<RecoveryKind> = new Set(["retry", "replaceKey", "openNexusPage", "copyDetails"]);
+
+/** A failed row's ways out: its voice's recoveries in their order (the first is
+ *  primary), the Nexus page among them once, under §9's name. */
+function waysOut(d: DownloadView): Recovery[] {
+  const offered = (failureOf(d)?.recovery ?? [])
+    .filter((r) => ON_THE_SHELF.has(r.kind))
+    .map((r) => (r.kind === "openNexusPage" ? OPEN_ON_NEXUS : r));
+  return offered.some((r) => r.kind === "openNexusPage") ? offered : [...offered, OPEN_ON_NEXUS];
+}
+
+async function copyDetails(d: DownloadView): Promise<void> {
+  const text = d.failure ? failureDetails(asRiftFailure(d.failure), "download") : "";
+  try {
+    await navigator.clipboard.writeText(text);
+    useToasts().push("rift", "The details are on your clipboard.");
+  } catch {
+    useToasts().push("warn", "The clipboard refused; the details are in the log instead.");
+  }
+}
+
+async function recover(d: DownloadView, kind: RecoveryKind): Promise<void> {
+  if (kind === "retry") await dl.start(d.modId, d.fileId, d.forPackageId);
+  else if (kind === "openNexusPage") await preflight.openUrl(filePageUrl(d));
+  else if (kind === "replaceKey") emit("replaceKey");
+  else if (kind === "copyDetails") await copyDetails(d);
+}
 
 const anyFinished = computed(() => dl.finished.value.length > 0);
 </script>
@@ -89,14 +132,21 @@ const anyFinished = computed(() => dl.finished.value.length > 0);
               @click="dl.showInRift(d.packageId)"
               >Show in the Rift</RiftButton
             >
-            <RiftButton
-              v-if="d.phase === 'failed'"
-              size="sm"
-              variant="primary"
-              :busy="dl.busy.value === `start:${d.modId}:${d.fileId}`"
-              @click="dl.start(d.modId, d.fileId, d.forPackageId)"
-              >Try again</RiftButton
+            <!-- a landed file that is no archive has no package: Explorer finds it, the Rift never lists it -->
+            <RiftButton v-else-if="d.phase === 'landed' && landedPath(d)" size="sm" @click="dl.showInFolder(d)"
+              >Show in folder</RiftButton
             >
+            <template v-if="d.phase === 'failed'">
+              <RiftButton
+                v-for="(r, i) in waysOut(d)"
+                :key="r.kind"
+                size="sm"
+                :variant="i === 0 ? 'primary' : 'secondary'"
+                :busy="r.kind === 'retry' && dl.busy.value === `start:${d.modId}:${d.fileId}`"
+                @click="recover(d, r.kind)"
+                >{{ r.label }}</RiftButton
+              >
+            </template>
             <RiftButton
               v-if="d.phase === 'waiting' && d.nexusPageUrl"
               size="sm"
@@ -126,10 +176,30 @@ const anyFinished = computed(() => dl.finished.value.length > 0);
         >
           <span class="shelf__fill" :style="{ width: `${((barOf(d) ?? 0) * 100).toFixed(2)}%` }" />
         </div>
-        <p v-if="d.phase === 'waiting'" class="shelf__press">Press Mod Manager Download on Nexus.</p>
-        <p v-if="d.phase === 'failed' && failureOf(d)" class="shelf__fail">
-          {{ failureOf(d)?.voice }} {{ failureOf(d)?.empathy }}
+        <p v-if="d.phase === 'waiting' && !nxm.silent.value" class="shelf__press">
+          Press Mod Manager Download on Nexus. Nexus sends a free account's downloads through its own button, and the
+          stone picks them up from there.
         </p>
+        <!-- the site's button reaches the stone only while the stone answers it:
+             say so where the press is asked for, with the switch's own act -->
+        <p v-else-if="d.phase === 'waiting'" class="shelf__press shelf__press--off">
+          Nothing hands Nexus's button to the stone now. Let the stone answer it first, then press Mod Manager Download
+          on Nexus.
+          <RiftButton size="sm" variant="primary" :busy="nxm.busy.value" @click="nxm.set(true)"
+            >Answer Nexus's button</RiftButton
+          >
+        </p>
+        <p v-if="d.phase === 'landed' && d.alreadyHad" class="shelf__gone">
+          The same file was already in your mods folder. The stone wrote nothing new.
+        </p>
+        <p v-else-if="d.phase === 'landed' && !d.packageId" class="shelf__gone">
+          It is no archive, so the Rift does not list it.
+        </p>
+        <p v-if="d.phase === 'failed' && failureOf(d)" class="shelf__fail">
+          The download of {{ d.modName ?? d.fileName ?? "this file" }} stopped. {{ failureOf(d)?.voice }}
+          {{ failureOf(d)?.empathy }}
+        </p>
+        <p v-if="d.phase === 'cancelled'" class="shelf__gone">Cancelled. The partial file is gone.</p>
       </li>
     </ul>
   </section>
@@ -209,7 +279,8 @@ const anyFinished = computed(() => dl.finished.value.length > 0);
   transition: width var(--rs-dur-quick) ease-out;
 }
 .shelf__press,
-.shelf__fail {
+.shelf__fail,
+.shelf__gone {
   margin: var(--rs-space-1) 0 0;
   font-size: var(--rs-text-sm);
 }
@@ -218,5 +289,8 @@ const anyFinished = computed(() => dl.finished.value.length > 0);
 }
 .shelf__fail {
   color: var(--rs-muted);
+}
+.shelf__gone {
+  color: var(--rs-faint);
 }
 </style>

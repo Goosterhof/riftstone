@@ -10,7 +10,7 @@ import { useInstalled } from "@/composables/useInstalled";
 import { useStone } from "@/composables/useStone";
 import { usePreflight, REFRAMEWORK_URL } from "@/composables/usePreflight";
 import { formatBytes, formatDate, kindsPresent, plural } from "@/services/format";
-import { missingPackageTitle } from "@/services/voice";
+import { ADOPTED_TITLE, PACKAGE_GONE_LINE, missingPackageTitle } from "@/services/voice";
 import {
   PARKED_OCCUPIED_LINE,
   parkedMeta,
@@ -198,8 +198,10 @@ async function putBack(store: string, index: number): Promise<void> {
             <span class="home__name">{{ r.name }}</span>
             <KindBadge v-for="k in kindsPresent(r.kinds)" :key="k" :kind="k" />
             <span class="rs-mono home__dim">{{ plural(r.fileCount, "file") }}</span>
-            <span v-if="r.origin === 'adopted'" class="rs-mono home__dim">adopted</span>
-            <span v-if="r.packageMissing" class="rs-mono is-warn" :title="missingPackageTitle(r)">no package</span>
+            <span v-if="r.origin === 'adopted'" class="rs-mono home__dim" :title="ADOPTED_TITLE">adopted</span>
+            <span v-if="r.packageMissing" class="home__dim home__gone" :title="missingPackageTitle(r)">{{
+              PACKAGE_GONE_LINE
+            }}</span>
             <RiftButton
               size="sm"
               variant="danger"

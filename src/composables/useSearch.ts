@@ -234,6 +234,24 @@ function refacet(apply: () => void): void {
   void run(false);
 }
 
+/** v0.3: back to the idle Rift, the library tree: no words, and no facet
+ *  narrowing (state All, menu-only off, no label chips), the answers read
+ *  again. Resolves once the tree can show. For a door that must find one
+ *  package on the tree (Show in the Rift, R16.18): a narrowing that stayed
+ *  would hide the tree and the package with it. The tree's expansion is the
+ *  library's, so it stays as the player left it. */
+async function clearAll(): Promise<void> {
+  if (timer) clearTimeout(timer);
+  timer = null;
+  text.value = "";
+  activeIndex.value = -1;
+  stateFacet.value = "all";
+  includeMenuOnly.value = false;
+  categories.value = [];
+  tags.value = [];
+  await run(false);
+}
+
 export function useSearch() {
   return {
     text,
@@ -260,6 +278,7 @@ export function useSearch() {
     activeIndex,
     setText,
     clearText,
+    clearAll,
     run,
     setStateFacet: (facet: StateFacet) => refacet(() => (stateFacet.value = facet)),
     setMenuOnly: (on: boolean) => refacet(() => (includeMenuOnly.value = on)),

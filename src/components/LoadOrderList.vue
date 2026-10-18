@@ -12,7 +12,7 @@ import { computed, nextTick, ref } from "vue";
 import type { InstalledRow, PakLoadState } from "@/types/rift";
 import { useInstalled } from "@/composables/useInstalled";
 import { pakPrefix, plural } from "@/services/format";
-import { missingPackageTitle } from "@/services/voice";
+import { ADOPTED_TITLE, PACKAGE_GONE_LINE, missingPackageTitle } from "@/services/voice";
 import KindBadge from "./KindBadge.vue";
 import RiftButton from "./RiftButton.vue";
 
@@ -165,10 +165,11 @@ function onPointerUp(): void {
             :title="proofTitle(pak.load)"
             >{{ PROOF[pak.load.kind].glyph }} {{ proofText(pak.load) }}</span
           >
-          <span v-if="row.origin === 'adopted'" class="lrow__mark rs-mono">adopted</span>
-          <span v-if="row.packageMissing" class="lrow__mark rs-mono is-warn" :title="missingPackageTitle(row)"
-            >no package</span
-          >
+          <!-- R16.26: provenance, not state: words and a title, no chip, no colour -->
+          <span v-if="row.origin === 'adopted'" class="lrow__mark rs-mono" :title="ADOPTED_TITLE">adopted</span>
+          <span v-if="row.packageMissing" class="lrow__mark lrow__gone" :title="missingPackageTitle(row)">{{
+            PACKAGE_GONE_LINE
+          }}</span>
         </span>
         <RiftButton
           class="lrow__door"
@@ -294,6 +295,17 @@ function onPointerUp(): void {
 .lrow__door {
   grid-area: door;
   align-self: center;
+}
+/* R16.26: the door is 28 × 28, the loose rows' door */
+.lrow__door.rs-btn {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+}
+.lrow__gone {
+  font: 400 var(--rs-text-sm) var(--rs-font-sans);
 }
 .is-warn {
   color: var(--rs-warn);

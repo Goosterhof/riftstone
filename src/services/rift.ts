@@ -149,7 +149,9 @@ export interface RiftBackend {
   /** v0.3 (key): fetch one file of a mod into the mods folder. A free account's
    *  download waits for the site's link (phase "waiting", `nexusPageUrl` to open). */
   startDownload(modId: number, fileId: number, forPackageId: string | null): Promise<DownloadView>;
-  /** v0.3: stop a waiting, queued, linking or downloading download; nothing is left behind. */
+  /** v0.3: stop a waiting, queued, linking, downloading or verifying download;
+   *  nothing is left behind. Refused once the landing commits (the archive is
+   *  being put in place), and for a row that is over or no longer listed. */
   cancelDownload(id: string): Promise<void>;
   /** v0.3: forget the landed, failed and cancelled rows. */
   clearDownloads(): Promise<void>;

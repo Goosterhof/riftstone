@@ -16,14 +16,14 @@
 // that sends: a press the player did not make must never send a name.
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import type { NexusCandidate, NexusFileView, UpdateRow } from "@/types/rift";
-import { useDownloads } from "@/composables/useDownloads";
+import { HELD_WHILE_DOWNLOADING, landedPath, useDownloads } from "@/composables/useDownloads";
 import { useNexusAccount } from "@/composables/useNexusAccount";
 import { candidateLine, linkedNow, useFarWorld, type FindState } from "@/composables/useFarWorld";
 import { useStone } from "@/composables/useStone";
 import { usePreflight, NEXUS_KEY_URL } from "@/composables/usePreflight";
 import { keyStateOf, type NexusKeyState } from "@/services/pending";
 import type { RecoveryKind } from "@/services/voice";
-import { formatAgo, formatClock, formatDate, plural } from "@/services/format";
+import { formatAgo, formatDate, plural } from "@/services/format";
 import FailureNotice from "@/components/FailureNotice.vue";
 import HitText from "@/components/HitText.vue";
 import RiftButton from "@/components/RiftButton.vue";
@@ -34,6 +34,7 @@ import DownloadShelf from "@/components/DownloadShelf.vue";
 import FarModCard from "@/components/FarModCard.vue";
 import ModFiles from "@/components/ModFiles.vue";
 import NexusBrowse from "@/components/NexusBrowse.vue";
+import NxmSwitch from "@/components/NxmSwitch.vue";
 import StandingControls from "@/components/StandingControls.vue";
 
 const far = useFarWorld();
@@ -58,13 +59,19 @@ const checkNotice = computed(() => {
 
 const lastCheck = computed(() => {
   const ms = far.updates.value?.lastCheckMs ?? null;
-  return ms === null ? "Never checked" : `Last checked ${formatAgo(ms)}`;
+  return ms === null ? "updates never checked" : `updates checked ${formatAgo(ms)}`;
 });
 
 const summary = computed(() => stone.overview.value?.nexus ?? null);
+/** What the chip says: the spine's standing, and on top of it what Nexus said
+ *  about this session's paste. Only a paste Nexus refused reads REJECTED; one
+ *  that never reached Nexus reads OFFLINE, and a rationed one changes nothing
+ *  (the spine stored nothing and kept the key it held). */
 const keyState = computed<NexusKeyState>(() =>
-  summary.value ? keyStateOf(summary.value, far.keyFailure.value !== null, far.offline.value) : "none",
+  summary.value ? keyStateOf(summary.value, far.keyRefused.value, far.offline.value || far.keyUnreached.value) : "none",
 );
+/** The spine holds a key (whatever Nexus last said of it): there is one to check, replace or remove. */
+const keyStored = computed(() => (summary.value?.key ?? "none") !== "none");
 
 const KEY_CHIP: Record<NexusKeyState, string> = {
   connected: "CONNECTED",
@@ -87,16 +94,15 @@ const quotaLine = computed(() => {
   return `hourly ${q.hourlyRemaining}/${q.hourlyLimit} · daily ${q.dailyRemaining.toLocaleString("en-GB")}/${q.dailyLimit.toLocaleString("en-GB")}`;
 });
 
+/** The key's v1 budget, running low. It governs only the key's own calls:
+ *  the anonymous update check never waits on it (WINDOW-CONTRACT
+ *  get_nexus_quota), so nothing here gates Check now. */
 const quotaLow = computed(() => {
   const q = far.quota.value;
   if (!q || q.hourlyRemaining > 20) return null;
-  const meanwhile = q.hourlyResetMs
-    ? ` Checks resume at ${formatClock(q.hourlyResetMs)}; until then the stone re-checks only the mods you open.`
-    : " Until the hour turns, the stone re-checks only the mods you open.";
-  return `${q.hourlyRemaining} requests left this hour.${meanwhile}`;
+  const left = q.hourlyRemaining === 0 ? "No requests" : plural(q.hourlyRemaining, "request");
+  return `${left} left this hour for downloads, tracking and endorsing; update checks don't use them.`;
 });
-
-const quotaSpent = computed(() => far.quota.value?.hourlyRemaining === 0);
 
 function latest(row: UpdateRow): string {
   const s = row.state;
@@ -221,21 +227,48 @@ const sections = computed(() =>
   ].filter((s) => s.on),
 );
 const current = ref("far-account");
+/** The section a jump went to: kept marked while its head is on screen, even
+ *  when the scroll cannot bring that head to the top (the last sections). */
+let jumpedTo: string | null = null;
 
 function jump(id: string): void {
   current.value = id;
+  jumpedTo = id;
   document.getElementById(id)?.scrollIntoView?.({ block: "start" });
 }
 
-/** The section whose head has passed the top of the scroll is the current one. */
-function onScroll(): void {
-  const top = (scroller.value?.getBoundingClientRect().top ?? 0) + 48;
+/** A section's head is inside the scroll's window. */
+function headInView(id: string, view: DOMRect): boolean {
+  const top = document.getElementById(id)?.getBoundingClientRect().top;
+  return top !== undefined && top >= view.top - 1 && top < view.bottom;
+}
+
+/** The scroll stands at its very end: the last section is the one being read. */
+const atBottom = (box: HTMLElement): boolean =>
+  box.scrollHeight > box.clientHeight + 1 && box.scrollTop + box.clientHeight >= box.scrollHeight - 1;
+
+/** The last section whose head has passed `line`. */
+function passed(line: number): string {
   let at = sections.value[0]?.id ?? "far-account";
   for (const s of sections.value) {
     const el = document.getElementById(s.id);
-    if (el && el.getBoundingClientRect().top <= top) at = s.id;
+    if (el && el.getBoundingClientRect().top <= line) at = s.id;
   }
-  current.value = at;
+  return at;
+}
+
+/** The current section: the one a jump went to while its head shows; at the
+ *  end of the scroll, the last; else the last whose head passed the top. */
+function onScroll(): void {
+  const box = scroller.value;
+  if (!box) return;
+  const view = box.getBoundingClientRect();
+  if (jumpedTo && headInView(jumpedTo, view)) {
+    current.value = jumpedTo;
+    return;
+  }
+  jumpedTo = null;
+  current.value = atBottom(box) ? (sections.value.at(-1)?.id ?? "far-account") : passed(view.top + 48);
 }
 
 /** R16.21: a mod's files replace the scroll; back returns to the exact place. */
@@ -272,16 +305,28 @@ async function downloadUpdate(row: UpdateRow, newer: NexusFileView): Promise<voi
   await dl.start(row.link.modId, newer.fileId, row.packageId);
 }
 
+/** Chaos D2: the row's own download (or one of the same file) is on its way.
+ *  The spine would answer a press with that same row, so the door is held:
+ *  drawn, reachable, its reason said (RiftButton refused), never hidden. */
+function heldFor(row: UpdateRow, newer: NexusFileView): boolean {
+  return row.link !== null && dl.unfinishedFor(row.packageId, row.link.modId, newer.fileId) !== null;
+}
+
 /** The update row's own download, once landed: its line and its door. */
 function landedFor(row: UpdateRow) {
   const d = dl.forPackage(row.packageId);
   return d && d.phase === "landed" ? d : null;
 }
 
+/** R16.23's landed line; a file that is no archive (no package) is in the
+ *  mods folder too, but the Rift never lists it, so it is never sent there. */
 function landedLine(row: UpdateRow): string {
   const d = landedFor(row);
   const v = d?.version ?? newerOf(row)?.version ?? null;
-  return `${v ? `v${v.replace(/^v/i, "")}` : "The new file"} is in your mods folder. Install it from the Rift.`;
+  const what = v ? `v${v.replace(/^v/i, "")}` : "The new file";
+  if (d && d.packageId === null)
+    return `${what} is in your mods folder, but it is no archive, so the Rift does not list it.`;
+  return `${what} is in your mods folder. Install it from the Rift.`;
 }
 
 async function removeKey(): Promise<void> {
@@ -295,17 +340,42 @@ async function replaceKey(): Promise<void> {
   document.querySelector<HTMLInputElement>("#far-account input[type=password]")?.focus();
 }
 
+// The standings are the connected account's: a key that changes hands (even
+// from one connected account to another) forgets the old account's and reads
+// the new one's; none are shown without a connected key.
 watch(
-  () => nexus.connected.value,
-  (on) => {
-    if (on) void nexus.loadStandings();
+  () => nexus.owner.value,
+  () => void nexus.followAccount(),
+);
+
+/** The ACCOUNT card is on the page (it carries the nxm switch as its last row). */
+const cardShown = computed(
+  () => !far.keyFailure.value && keyState.value === "connected" && nexus.account.value !== null,
+);
+
+// R16.22: an untrack in TRACKED takes its card away under the focus. The focus
+// goes on to the next card's toggle, else the previous card's, else the
+// section's head; a focus that was anywhere else stays where it was.
+watch(
+  () => nexus.standings.value?.tracked.map((c) => c.modId) ?? [],
+  async (now, before) => {
+    const gone = before.findIndex((id) => !now.includes(id));
+    if (gone < 0) return;
+    const active = document.activeElement;
+    const held = active instanceof HTMLElement && active.closest(`#far-tracked [data-mod="${before[gone]}"]`) !== null;
+    await nextTick();
+    if (!held) return;
+    const cards = [...document.querySelectorAll<HTMLElement>("#far-tracked [data-mod]")];
+    const card = cards.at(gone) ?? (gone > 0 ? cards.at(gone - 1) : undefined);
+    const toggle = card?.querySelector<HTMLElement>("[aria-pressed]");
+    (toggle ?? document.getElementById("far-h-tracked"))?.focus({ preventScroll: true });
   },
 );
 
 onMounted(() => {
   void far.load();
   void dl.load();
-  if (nexus.connected.value) void nexus.loadStandings();
+  void nexus.followAccount();
 });
 </script>
 
@@ -315,7 +385,8 @@ onMounted(() => {
       <div>
         <h1 class="far__title rs-inscription">THE FAR WORLD</h1>
         <p class="far__sub">
-          Nexus Mods updates · <span class="rs-mono">{{ lastCheck }}</span>
+          Your account, downloads, updates, tracked mods and Find on Nexus ·
+          <span class="rs-mono">{{ lastCheck }}</span>
           <template v-if="far.checking.value">
             · <span class="rs-mono far__busy">{{ progressLine }}</span></template
           >
@@ -323,14 +394,8 @@ onMounted(() => {
       </div>
       <div class="far__acts">
         <StateChip v-if="far.updateCount.value" state="update" />
-        <RiftButton
-          variant="primary"
-          :busy="far.checking.value"
-          :disabled="quotaSpent"
-          reason="Nexus's hourly quota is spent; checks resume when it refills."
-          @click="far.check()"
-          >Check now</RiftButton
-        >
+        <!-- anonymous: never gated by the key's v1 quota (WINDOW-CONTRACT get_nexus_quota) -->
+        <RiftButton variant="primary" :busy="far.checking.value" @click="far.check()">Check now</RiftButton>
       </div>
     </header>
 
@@ -370,12 +435,7 @@ onMounted(() => {
           <span v-if="quotaLine && keyState !== 'connected'" class="far__dim rs-mono">{{ quotaLine }}</span>
         </header>
 
-        <p v-if="quotaLow" class="far__warn">
-          {{ quotaLow }}
-          <RiftButton size="sm" :disabled="quotaSpent" reason="No requests left this hour." @click="far.check()"
-            >Check now anyway</RiftButton
-          >
-        </p>
+        <p v-if="quotaLow" class="far__warn">{{ quotaLow }}</p>
 
         <FailureNotice v-if="far.keyFailure.value" :voiced="far.keyFailure.value" @recover="replaceKey()" />
         <AccountCard v-else-if="keyState === 'connected'" @replace-key="replaceKey()" @remove-key="removeKey()" />
@@ -402,9 +462,11 @@ onMounted(() => {
           @recover="(kind) => (kind === 'replaceKey' ? replaceKey() : void nexus.refreshAccount())"
         />
 
+        <!-- what the spine STORES decides the doors: a paste that never reached
+             Nexus stored nothing, so there is nothing to check, replace or remove -->
         <div v-if="keyState !== 'connected'" class="far__acts">
           <RiftButton
-            v-if="keyState === 'unchecked' || keyState === 'offline'"
+            v-if="keyStored && (keyState === 'unchecked' || keyState === 'offline')"
             size="sm"
             variant="primary"
             :busy="nexus.refreshing.value"
@@ -414,12 +476,12 @@ onMounted(() => {
           <RiftButton
             v-if="!keyOpen"
             size="sm"
-            :variant="keyState === 'none' || keyState === 'rejected' ? 'primary' : 'secondary'"
+            :variant="!keyStored || keyState === 'rejected' ? 'primary' : 'secondary'"
             @click="replaceKey()"
-            >{{ keyState === "none" ? "Paste key…" : "Replace key…" }}</RiftButton
+            >{{ keyStored ? "Replace key…" : "Paste key…" }}</RiftButton
           >
           <RiftButton size="sm" @click="preflight.openUrl(NEXUS_KEY_URL)">Where do I find it?</RiftButton>
-          <RiftButton v-if="keyState !== 'none'" size="sm" variant="danger" @click="removeKey()">Remove key</RiftButton>
+          <RiftButton v-if="keyStored" size="sm" variant="danger" @click="removeKey()">Remove key</RiftButton>
         </div>
         <form v-if="keyOpen" class="far__link" @submit.prevent="saveKey">
           <label class="far__field">
@@ -437,9 +499,13 @@ onMounted(() => {
           >
           <RiftButton size="sm" @click="keyOpen = false">Cancel</RiftButton>
         </form>
+        <!-- Without the ACCOUNT card the switch stays in the section: while the
+             stone answers nxm:// links, turning it off must stay within reach
+             whatever the key's standing (ruling 5: the protocol is given back). -->
+        <NxmSwitch v-if="!cardShown" />
       </section>
 
-      <DownloadShelf class="far__sec" />
+      <DownloadShelf class="far__sec" @replace-key="replaceKey()" />
 
       <section id="far-updates" class="far__sec">
         <h2 class="far__h rs-inscription">UPDATES</h2>
@@ -471,31 +537,36 @@ onMounted(() => {
                 </td>
                 <td><StateChip v-if="row.state.kind === 'updateAvailable'" state="update" /></td>
                 <td class="far__end">
-                  <template v-for="newer in [newerOf(row)]" :key="newer?.fileId ?? 0">
+                  <div class="far__doors">
+                    <template v-for="newer in [newerOf(row)]" :key="newer?.fileId ?? 0">
+                      <RiftButton
+                        v-if="newer && row.link && nexus.connected.value && !landedFor(row)"
+                        size="sm"
+                        variant="primary"
+                        :busy="dl.busy.value === `start:${row.link.modId}:${newer.fileId}`"
+                        :refused="heldFor(row, newer)"
+                        :reason="heldFor(row, newer) ? HELD_WHILE_DOWNLOADING : null"
+                        :data-update-download="row.packageId"
+                        @click="downloadUpdate(row, newer)"
+                        >{{ downloadLabel(newer) }}</RiftButton
+                      >
+                    </template>
                     <RiftButton
-                      v-if="newer && row.link && nexus.connected.value && !landedFor(row)"
+                      v-if="row.link"
                       size="sm"
-                      variant="primary"
-                      :busy="dl.busy.value === `start:${row.link.modId}:${newer.fileId}`"
-                      :data-update-download="row.packageId"
-                      @click="downloadUpdate(row, newer)"
-                      >{{ downloadLabel(newer) }}</RiftButton
+                      :aria-label="`Files of ${row.packageName} on Nexus`"
+                      @click="openFiles(row.link.modId, row.modName ?? row.packageName, row.packageId)"
+                      >Files</RiftButton
                     >
-                  </template>
-                  <RiftButton
-                    v-if="row.link"
-                    size="sm"
-                    :aria-label="`Files of ${row.packageName} on Nexus`"
-                    @click="openFiles(row.link.modId, row.modName ?? row.packageName, row.packageId)"
-                    >Files</RiftButton
-                  >
-                  <RiftButton v-if="row.pageUrl" size="sm" @click="preflight.openUrl(row.pageUrl)"
-                    >Open on Nexus</RiftButton
-                  >
-                  <RiftButton size="sm" @click="far.unlink(row.packageId)">Unlink</RiftButton>
+                    <RiftButton v-if="row.pageUrl" size="sm" @click="preflight.openUrl(row.pageUrl)"
+                      >Open on Nexus</RiftButton
+                    >
+                    <RiftButton size="sm" @click="far.unlink(row.packageId)">Unlink</RiftButton>
+                  </div>
                 </td>
               </tr>
-              <tr v-if="landedFor(row) || (nexus.connected.value && row.link)" class="far__subrow">
+              <!-- R16.22: Endorse / Abstain live in the mod's FILES, never on its update row -->
+              <tr v-if="landedFor(row)" class="far__subrow">
                 <td colspan="5">
                   <p v-if="landedFor(row)" class="far__landed">
                     {{ landedLine(row) }}
@@ -506,13 +577,13 @@ onMounted(() => {
                       @click="dl.showInRift(landedFor(row)?.packageId ?? '')"
                       >Show in the Rift</RiftButton
                     >
+                    <RiftButton
+                      v-else-if="landedPath({ landedAs: landedFor(row)?.landedAs ?? null })"
+                      size="sm"
+                      @click="dl.showInFolder({ landedAs: landedFor(row)?.landedAs ?? null })"
+                      >Show in folder</RiftButton
+                    >
                   </p>
-                  <StandingControls
-                    v-if="row.link"
-                    :mod-id="row.link.modId"
-                    :name="row.modName ?? row.packageName"
-                    :track="false"
-                  />
                 </td>
               </tr>
             </template>
@@ -682,7 +753,7 @@ onMounted(() => {
       </section>
 
       <section v-if="nexus.connected.value" id="far-tracked" class="far__sec">
-        <h2 class="far__h rs-inscription">TRACKED ON NEXUS</h2>
+        <h2 id="far-h-tracked" class="far__h rs-inscription" tabindex="-1">TRACKED ON NEXUS</h2>
         <FailureNotice
           v-if="nexus.standingsFailure.value"
           :voiced="nexus.standingsFailure.value"
@@ -795,10 +866,21 @@ onMounted(() => {
 }
 .far__end {
   text-align: right;
+}
+/* the row's doors: one line at the wide posture, wrapping at the narrow one
+   (1024x680) so the table gives its width to the names, never sideways */
+.far__doors {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--rs-space-2);
+}
+.far__doors :deep(.rs-btn) {
   white-space: nowrap;
 }
-.far__end :deep(.rs-btn + .rs-btn) {
-  margin-left: var(--rs-space-2);
+@media (max-width: 1199px) {
+  .far__doors {
+    flex-wrap: wrap;
+  }
 }
 .is-update {
   color: var(--rs-verdant);

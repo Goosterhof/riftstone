@@ -109,10 +109,33 @@ describe("voice()", () => {
       expect(voiced.voice).toMatch(/^Nexus has rationed the stone for now/);
     });
 
-    it("should read anything else as out of reach, and keep the offline promise", () => {
+    it("should read an outage in the words as out of reach, and keep the offline promise", () => {
       const voiced = voice(fail("nexus", { detail: "connection refused" }), "nexusCheck");
       expect(voiced.inscription).toBe("THE FAR WORLD IS OUT OF REACH");
       expect(voiced.empathy).toContain("Everything else works offline.");
+    });
+
+    it("should say Nexus answered when a failure carries no reason and its words name no outage", () => {
+      // the spine's two reasonless sentences: no mirror offered (downloads.rs), and a
+      // 401/403 on a key that works (rift-nexus error.rs http_sentence). Nexus answered both.
+      for (const detail of [
+        "Nexus Mods offered no download link for this file. Try again later.",
+        "Nexus Mods would not serve this request. Try again in a few minutes; if it keeps happening, look at the account on the Nexus Mods site.",
+      ]) {
+        for (const context of ["download", "standings", "nexusAccount"] as const) {
+          const voiced = voice(fail("nexus", { detail }), context);
+          expect({ context, inscription: voiced.inscription, voice: voiced.voice }).toStrictEqual({
+            context,
+            inscription: null,
+            voice: "Nexus answered, but the stone could not read its answer.",
+          });
+          expect(voiced.empathy).not.toContain("works offline");
+        }
+      }
+      // the spine's own offline sentence, were it ever to come without its reason, is still an outage
+      expect(
+        voice(fail("nexus", { detail: "Nexus Mods could not be reached (timed out)." }), "download").inscription,
+      ).toBe("THE FAR WORLD IS OUT OF REACH");
     });
 
     it("should read a bad link as a link problem while linking", () => {

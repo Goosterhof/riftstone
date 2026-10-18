@@ -10,6 +10,12 @@
 // Nexus again. Tracking and endorsing answer with the new standings. Every
 // one of these is a metered v1 call, so nothing here runs without a press or
 // a screen that shows it.
+//
+// Standings belong to ONE account. A key that changes hands (Replace key…
+// with another account's key) starts over, as the spine does (account.rs
+// key_changed): the old account's tracked mods, endorsements and refusals are
+// forgotten, an answer that began under it is never applied, and the new
+// account's are read (followAccount).
 
 import { computed, ref } from "vue";
 import type { EndorseStatus, NexusKeyStanding, NexusStandings } from "@/types/rift";
@@ -30,6 +36,10 @@ const standingBusy = ref<number | null>(null);
  *  the sentence stays beside the press that earned it until the next press. */
 const standingRefusals = ref<Record<number, Voiced>>({});
 let requestSeq = 0;
+/** Bumps when the standings change hands: a press's answer from before never lands. */
+let epoch = 0;
+/** The account the standings on hand belong to (null: none read yet). */
+let heldFor: string | null = null;
 
 const summary = computed(() => useStone().overview.value?.nexus ?? null);
 const standing = computed<NexusKeyStanding>(() => summary.value?.key ?? "none");
@@ -37,6 +47,8 @@ const account = computed(() => summary.value?.account ?? null);
 const premium = computed(() => account.value?.premium ?? false);
 /** The key works now: the extras (downloads, tracking, endorsing) can be asked for. */
 const connected = computed(() => standing.value === "connected");
+/** Whose standings the window may show now: the connected account's name, else nobody. */
+const owner = computed(() => (connected.value ? (account.value?.name ?? null) : null));
 
 const trackedIds = computed(() => new Set((standings.value?.tracked ?? []).map((c) => c.modId)));
 const endorsements = computed(
@@ -91,19 +103,46 @@ function refuse(modId: number, refusal: Voiced | null): void {
   standingRefusals.value = next;
 }
 
+/** The key changed hands: forget the old account's standings and the
+ *  sentences its presses left, and let no answer from before land. */
+function forgetStandings(): void {
+  epoch += 1;
+  requestSeq += 1;
+  standings.value = null;
+  standingsLoading.value = false;
+  standingsFailure.value = null;
+  standingBusy.value = null;
+  standingRefusals.value = {};
+}
+
+/** Keep the standings on hand the connected account's: a new owner (another
+ *  account's key, or none) forgets the old one's first; a connected owner's
+ *  are read (the spine's session cache, or Nexus when the key is new). */
+async function followAccount(): Promise<void> {
+  const now = owner.value;
+  if (now !== heldFor) {
+    forgetStandings();
+    heldFor = now;
+  }
+  if (now) await loadStandings();
+}
+
 async function change(modId: number, act: () => Promise<NexusStandings>): Promise<boolean> {
+  const mine = epoch;
   standingBusy.value = modId;
   refuse(modId, null);
   try {
-    standings.value = await act();
+    const next = await act();
+    if (mine !== epoch) return false;
+    standings.value = next;
     requestSeq += 1;
     standingsFailure.value = null;
     return true;
   } catch (raw) {
-    refuse(modId, voice(asRiftFailure(raw), "standings"));
+    if (mine === epoch) refuse(modId, voice(asRiftFailure(raw), "standings"));
     return false;
   } finally {
-    standingBusy.value = null;
+    if (mine === epoch) standingBusy.value = null;
     await useFarWorld().refreshQuota();
   }
 }
@@ -137,7 +176,9 @@ export function useNexusAccount() {
     refusalOf: (modId: number): Voiced | null => standingRefusals.value[modId] ?? null,
     dismissRefusal: (modId: number) => refuse(modId, null),
     trackedIds,
+    owner,
     loadStandings,
+    followAccount,
     setTracked,
     setEndorsement,
     isTracked: (modId: number) => trackedIds.value.has(modId),
@@ -148,6 +189,8 @@ export function useNexusAccount() {
 
 export function resetNexusAccount(): void {
   requestSeq = 0;
+  epoch = 0;
+  heldFor = null;
   refreshing.value = false;
   accountFailure.value = null;
   standings.value = null;

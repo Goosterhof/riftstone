@@ -148,7 +148,7 @@ const IO_VOICES: Partial<Record<VoiceContext, (why: string) => Voiced>> = {
     kind: "io",
     inscription: null,
     voice: `The stone couldn't write the download into your mods folder: ${why}.`,
-    empathy: "Its partial file was removed; nothing else in your mods folder was touched.",
+    empathy: "The stone removed the partial file; your mods folder is as it was.",
     recovery: [RETRY, COPY],
   }),
   modsFolder: (why) => ({
@@ -360,12 +360,19 @@ const NEXUS_REFUSED = /\b(401|403)\b|reject|invalid key|unauthori[sz]ed|forbidde
 const NEXUS_QUOTA = /\b429\b|quota|rate limit/i;
 /** An answer the spine could not use means Nexus WAS reached: not offline. */
 const NEXUS_UNREADABLE = /could not use|not graphql|unexpected shape|HTTP status \d{3}/i;
+/** Words that say Nexus was never reached (v0.2's offline sentences carried no code). */
+const NEXUS_UNREACHED =
+  /could not be reached|can(?:no|')t reach|connection|timed? ?out|unreachable|offline|\bdns\b|network/i;
 
 /** Every way the far world can fail: a reason code, an answer the stone could
  *  not read, or (linking only) a link that leads nowhere. */
-type FarCase = NexusReason | "odd" | "badLink";
+export type FarCase = NexusReason | "odd" | "badLink";
 
-/** The code when one came; else what the sentence's words say (the v0.2 voice). */
+/** The code when one came; else what the sentence's words say (the v0.2
+ *  voice). Without a code, "out of reach" needs words that say so: since v0.3
+ *  the spine codes every outage `offline`, so a failure with no code and no
+ *  such words is one where Nexus answered (no mirror offered, a 401/403 on a
+ *  working key) — never THE FAR WORLD IS OUT OF REACH. */
 function farCase(d: Detail, context: VoiceContext): FarCase {
   const coded = nexusReasonOf(d);
   if (coded) return coded;
@@ -373,7 +380,15 @@ function farCase(d: Detail, context: VoiceContext): FarCase {
   if (NEXUS_QUOTA.test(raw)) return "rateLimited";
   if (NEXUS_REFUSED.test(raw)) return "keyRejected";
   if (NEXUS_UNREADABLE.test(raw)) return "odd";
-  return context === "nexusLink" ? "badLink" : "offline";
+  if (NEXUS_UNREACHED.test(raw)) return "offline";
+  return context === "nexusLink" ? "badLink" : "odd";
+}
+
+/** The far-world case a nexus failure is voiced by: its reason code, else
+ *  what its words say. Null for a failure of another kind. A page reads it to
+ *  tell a key Nexus refused from a Nexus it could not reach. */
+export function farCaseOf(failure: Pick<RiftFailure, "kind" | "detail">, context: VoiceContext): FarCase | null {
+  return failure.kind === "nexus" ? farCase(failure.detail, context) : null;
 }
 
 /** What a far-world failure left as it was, by what was being done. */
@@ -422,7 +437,10 @@ const FAR_VOICES: Record<Exclude<FarCase, "badLink">, FarVoice> = {
   noKey: (_d, c) =>
     far(
       null,
-      "That needs your Nexus personal API key, and the stone holds none.",
+      // §9: a download or an arriving link says what the key is for here
+      c === "download" || c === "nxm"
+        ? "The stone needs your Nexus key before it can take a download."
+        : "That needs your Nexus personal API key, and the stone holds none.",
       `${unchanged(c)} Update checks, browsing and patch notes work without one.`,
       [ADD_KEY],
     ),
@@ -433,8 +451,8 @@ const FAR_VOICES: Record<Exclude<FarCase, "badLink">, FarVoice> = {
   premiumRequired: (_d, c) =>
     far(
       null,
-      "Nexus lets only premium accounts download from inside the stone.",
-      `${unchanged(c)} Press Mod Manager Download on the file's Nexus page instead: while the stone answers nxm:// links, the file comes here.`,
+      "Nexus lets only premium accounts download straight into a mod manager.",
+      `${unchanged(c)} Press Mod Manager Download on the file's Nexus page and the stone takes it from there, while it answers Nexus's button.`,
       [OPEN_PAGE],
     ),
   linkExpired: (_d, c) =>
@@ -442,7 +460,7 @@ const FAR_VOICES: Record<Exclude<FarCase, "badLink">, FarVoice> = {
   linkNotYours: (_d, c) =>
     far(
       null,
-      "That link was made for another Nexus account than the one whose key the stone holds.",
+      "That link was made for a different Nexus account than the key in the stone.",
       `${unchanged(c)} Sign in to Nexus with that key's account, or replace the key, then press Mod Manager Download again.`,
       [OPEN_PAGE, REPLACE_KEY],
     ),
@@ -607,14 +625,23 @@ export interface TroubleLine {
   line: string;
 }
 
-/** The problem a trouble card speaks for: the first of TROUBLE_KINDS the
- * package carries, else its first problem at all. */
-export function leadProblem(pkg: Pick<PackageSummary, "problems">): Problem | null {
+/** The trouble that puts a package on the trouble list: the first of
+ * TROUBLE_KINDS it carries, or null when it carries none of them (a missing
+ * menu parent, say, is the option's business, not a verdict on the package).
+ * The library tree's package rows read their verdict here, so a row and the
+ * fold never disagree (R16.2). */
+export function troubleProblem(pkg: Pick<PackageSummary, "problems">): Problem | null {
   for (const kind of TROUBLE_KINDS) {
     const found = pkg.problems.find((problem) => problem.kind === kind);
     if (found) return found;
   }
-  return pkg.problems.at(0) ?? null;
+  return null;
+}
+
+/** The problem a trouble card speaks for: the first of TROUBLE_KINDS the
+ * package carries, else its first problem at all. */
+export function leadProblem(pkg: Pick<PackageSummary, "problems">): Problem | null {
+  return troubleProblem(pkg) ?? pkg.problems.at(0) ?? null;
 }
 
 const lowerFirst = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
@@ -652,6 +679,11 @@ export function troubleLine(pkg: Pick<PackageSummary, "fileName" | "problems">, 
   const why = message || (problem.kind === "nothingToInstall" ? "no mod files inside." : "");
   return { kind: problem.kind, ember: false, line: why ? `${name} ${verdict}: ${why}` : `${name} ${verdict}.` };
 }
+
+/** R16.26: provenance, said in words and a title, never a chip or a colour. */
+export const ADOPTED_TITLE = "The stone took this install over from files that were already in your game.";
+/** R16.26: an install whose package left the mods folder. */
+export const PACKAGE_GONE_LINE = "its package isn't in your mods folder";
 
 /** Why an installed row has no package, worded for the two ways that happens:
  *  an adopted install that no package in the mods folder matches, or an

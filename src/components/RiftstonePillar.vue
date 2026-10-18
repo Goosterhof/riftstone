@@ -138,6 +138,17 @@ defineExpose({ focusSearch: () => well.value?.focus() });
     </button>
 
     <div class="pillar__facets" :class="{ 'is-dark': !awake }" :inert="!awake">
+      <!-- Q16.1, measured at 1024×680: the pinned Play slab leaves the facet block
+           too short, so §8.0's named fallback holds: Show menu-only above STATE,
+           where the fold never cuts it -->
+      <label class="facet facet--lead">
+        <input
+          type="checkbox"
+          :checked="search.includeMenuOnly.value"
+          @change="search.setMenuOnly(!search.includeMenuOnly.value)"
+        />
+        <span class="facet__label">Show menu-only</span>
+      </label>
       <h2 class="pillar__head rs-inscription">STATE</h2>
       <div role="radiogroup" aria-label="State">
         <label v-for="s in STATES" :key="s.id" class="facet">
@@ -150,14 +161,6 @@ defineExpose({ focusSearch: () => well.value?.focus() });
           <span class="facet__label">{{ s.label }}</span>
         </label>
       </div>
-      <label class="facet facet--gap">
-        <input
-          type="checkbox"
-          :checked="search.includeMenuOnly.value"
-          @change="search.setMenuOnly(!search.includeMenuOnly.value)"
-        />
-        <span class="facet__label">Show menu-only</span>
-      </label>
 
       <FarWorldLabels />
     </div>
@@ -326,8 +329,8 @@ defineExpose({ focusSearch: () => well.value?.focus() });
   color: var(--rs-text);
   cursor: pointer;
 }
-.facet--gap {
-  margin-top: var(--rs-space-2);
+.facet--lead {
+  margin-bottom: var(--rs-space-2);
 }
 .facet input {
   flex: none;
@@ -409,8 +412,9 @@ defineExpose({ focusSearch: () => well.value?.focus() });
   font: 12px var(--rs-font-mono);
   white-space: nowrap;
 }
+/* §7.1 the foot is faint mono; R16.12: the stone's only gold is THE WORLD IS AWAKE */
 .is-ok {
-  color: var(--rs-world);
+  color: var(--rs-faint);
 }
 .is-warn {
   color: var(--rs-warn);

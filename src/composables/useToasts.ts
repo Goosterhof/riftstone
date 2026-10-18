@@ -17,6 +17,8 @@ export interface Toast {
   line: string;
   actions: ToastAction[];
   ttlMs: number | null;
+  /** A carved line above the sentence (§9's inscription column), or null. */
+  inscription: string | null;
 }
 
 const toasts = ref<Toast[]>([]);
@@ -35,10 +37,19 @@ function defaultTtl(tone: ToastTone, actions: ToastAction[]): number | null {
   return actions.length ? 8_000 : 5_000;
 }
 
-function push(tone: ToastTone, line: string, actions: ToastAction[] = [], ttlMs?: number | null): number {
+/** What a toast may carry beyond its tone, sentence and doors. */
+export interface ToastOptions {
+  /** How long it stays: null keeps it until dismissed; left out, the tone's own (above). */
+  ttlMs?: number | null;
+  /** A carved line above the sentence (§9's inscription column). */
+  inscription?: string | null;
+}
+
+function push(tone: ToastTone, line: string, actions: ToastAction[] = [], options: ToastOptions = {}): number {
   const id = nextId++;
-  const ttl = ttlMs === undefined ? defaultTtl(tone, actions) : ttlMs;
-  toasts.value = [...toasts.value.slice(-2), { id, tone, line, actions, ttlMs: ttl }];
+  const ttl = options.ttlMs === undefined ? defaultTtl(tone, actions) : options.ttlMs;
+  const inscription = options.inscription ?? null;
+  toasts.value = [...toasts.value.slice(-2), { id, tone, line, actions, ttlMs: ttl, inscription }];
   if (ttl !== null)
     timers.set(
       id,

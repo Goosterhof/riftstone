@@ -29,15 +29,17 @@ const partOf = (row: Element, part: string): string =>
   textOf(must(row.querySelector(`.pre__${part}`), part))
     .replace(/\s+/g, " ")
     .trim();
-/** The row's measured value without the check's detail line under it. */
-function lineOf(row: Element): string {
-  const value = must(row.querySelector(".pre__val"), "value").cloneNode(true);
-  if (!(value instanceof HTMLElement)) throw new Error("The value is not an element");
-  value.querySelector(".pre__detail")?.remove();
-  return textOf(value).replace(/\s+/g, " ").trim();
-}
 const labelsIn = (el: Element): string[] =>
   [...el.querySelectorAll(".rs-btn__label")].map((l) => textOf(l).trim()).filter(Boolean);
+/** Each button of the row's last column: its label, and whether it is the row's Primary. */
+const actsIn = (row: Element): [string, boolean][] =>
+  [...row.querySelectorAll<HTMLElement>(".pre__acts button")].map((b) => [
+    textOf(b.querySelector(".rs-btn__label") ?? b).trim(),
+    b.classList.contains("rs-btn--primary"),
+  ]);
+/** The spine's overview.rs `mods` sentences for a folder that is not there, word for word. */
+const UNMADE_DETAIL = `The Riftstone keeps your mods in ${MOCK_MODS_DIR}, and that folder could not be made (access is denied). Make it by hand, or install the Riftstone where it may write, then start it again.`;
+const GONE_DETAIL = `${MOCK_MODS_DIR} was moved or deleted while the Riftstone ran, and it reads mods from nowhere else. Open mods folder makes it again, empty, and watches it; then put your mods back in it.`;
 const toastLines = (): string[] => useToasts().toasts.value.map((t) => t.line);
 
 async function openPreflight(): Promise<HTMLElement> {
@@ -51,8 +53,15 @@ describe("the Mods folder row on PREFLIGHT", () => {
     await wakeOn();
     const row = await openPreflight();
     expect([partOf(row, "glyph"), partOf(row, "word"), partOf(row, "what")]).toStrictEqual(["✓", "OK", "Mods folder"]);
-    expect(partOf(row, "val")).toBe(`${MOCK_MODS_DIR} · 11 packages`);
-    expect(labelsIn(row)).toStrictEqual(["Open mods folder", "Scan"]);
+    // R16.25: the path in a left-ellipsized box with the whole path in title, the count faint beside it
+    expect(textOf(must(row.querySelector<HTMLElement>(".pre__path"), "path")).trim()).toBe(MOCK_MODS_DIR);
+    expect(row.querySelector<HTMLElement>(".pre__path")?.title).toBe(MOCK_MODS_DIR);
+    expect(textOf(must(row.querySelector(".pre__count"), "count")).trim()).toBe("11 packages");
+    // R16.25: with nothing to say, Scan is the row's Primary and Open mods folder its Secondary
+    expect(actsIn(row)).toStrictEqual([
+      ["Open mods folder", false],
+      ["Scan", true],
+    ]);
     expect(row.dataset.check).toBe("mods");
     // a folder that holds packages has nothing to say: the spine sends no `mods` check
     expect(useStone().modsCheck.value).toBeNull();
@@ -130,11 +139,55 @@ describe("the Mods folder row on PREFLIGHT", () => {
     const row = await openPreflight();
     expect([partOf(row, "glyph"), partOf(row, "word")]).toStrictEqual(["✗", "MISSING"]);
     // the check's title in place of the count, its detail on a line of its own
-    expect(lineOf(row)).toBe(`${MOCK_MODS_DIR} · The mods folder is missing`);
+    expect(textOf(must(row.querySelector(".pre__count"), "count")).trim()).toBe("The mods folder is missing");
     expect(partOf(row, "detail")).toBe(`${MOCK_MODS_DIR} could not be made: access is denied.`);
-    expect(labelsIn(row)).toStrictEqual(["Scan"]);
+    expect(labelsIn(row)).toStrictEqual(["Scan again"]);
     // the check is the row's own: it is not listed again below
     expect(text().split("The mods folder is missing").length - 1).toBe(1);
+  });
+
+  it("should draw the spine's Error for a folder that could not be made at launch, and offer only Scan again", async () => {
+    await wakeOn("nofloor");
+    const row = await openPreflight();
+    expect([partOf(row, "glyph"), partOf(row, "word")]).toStrictEqual(["✗", "MISSING"]);
+    expect(textOf(must(row.querySelector(".pre__count"), "count")).trim()).toBe("The mods folder is missing");
+    expect(partOf(row, "detail")).toBe(UNMADE_DETAIL);
+    // the check carries no action: nothing to open, only a scan that looks again
+    expect(useStone().modsCheck.value?.action).toBeNull();
+    expect(actsIn(row)).toStrictEqual([["Scan again", true]]);
+    // never the empty folder's note over a folder that is not there
+    expect(text()).not.toContain("The mods folder is empty");
+  });
+
+  it("should draw the spine's Warn for a folder that went while the stone ran, and make it again with Open mods folder", async () => {
+    await wakeOn("gonemods");
+    const row = await openPreflight();
+    expect([partOf(row, "glyph"), partOf(row, "word")]).toStrictEqual(["⚠", "CHECK"]);
+    expect(textOf(must(row.querySelector(".pre__count"), "count")).trim()).toBe("The mods folder is gone");
+    expect(partOf(row, "detail")).toBe(GONE_DETAIL);
+    // the detail points at Open mods folder: it is drawn, and it leads (a scan never makes the folder)
+    expect(actsIn(row)).toStrictEqual([
+      ["Open mods folder", true],
+      ["Scan again", false],
+    ]);
+    expect(text().split("The mods folder is gone").length - 1).toBe(1);
+
+    const opened = vi.spyOn(spine(), "openModsFolder");
+    must(
+      [...row.querySelectorAll<HTMLButtonElement>("button")].find((b) => textOf(b).trim() === "Open mods folder"),
+      "Open mods folder",
+    ).click();
+    await until(() => opened.mock.calls.length === 1, "the folder made again");
+    // made again, empty: the row reads the empty folder's note, and the folder is there
+    await until(() => useStone().modsCheck.value?.title === "The mods folder is empty", "the empty folder's note");
+    const after = must(modsRow(), "Mods folder row");
+    expect([partOf(after, "glyph"), partOf(after, "word")]).toStrictEqual(["·", "NOTE"]);
+    expect(useStone().modsFolder.value?.exists).toBe(true);
+    expect(actsIn(after)).toStrictEqual([
+      ["Open mods folder", true],
+      ["Scan", false],
+    ]);
+    expect(toastLines()).toStrictEqual([]);
   });
 });
 
@@ -143,13 +196,13 @@ describe("an emptied mods folder", () => {
     await wakeOn("emptymods");
     await until(() => text().includes("THE RIFT IS QUIET"), "the quiet Rift");
     expect(textAt(".rs-ins__body")).toBe(
-      "No mods in your mods folder yet. Put a mod's zip, 7z, rar or folder in it, and the stone reads it.",
+      `Your mods folder is empty. Put a mod's zip, 7z or rar, or its unpacked folder, in ${MOCK_MODS_DIR}, or download one from the far world. The stone reads it when you scan.`,
     );
     expect(document.getElementById("rift-tree")).toBeNull();
     expect(document.getElementById("rift-answers")).toBeNull();
     expect(textAt(".pillar__count")).toBe("0 PACKAGES · 0 OPTIONS");
     const actions = must(document.querySelector(".rs-ins__actions"), "inscription actions");
-    expect(labelsIn(actions)).toStrictEqual(["Open mods folder"]);
+    expect(labelsIn(actions)).toStrictEqual(["Open mods folder", "Scan", "Find on Nexus"]);
     const door = must(actions.querySelector<HTMLButtonElement>("button"), "Open mods folder");
     expect(door.classList.contains("rs-btn--primary")).toBe(true);
 

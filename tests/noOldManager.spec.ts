@@ -1,15 +1,31 @@
 // v0.3 (BUILD-SPEC § v0.3, ruling 1): the stone stands alone. The mod manager
-// it once lived beside is named nowhere in the window or its specs: not in
-// code, comments, identifiers, test names, fixtures or strings. This sweep
+// it once lived beside is named nowhere in the repo's text: not in code,
+// comments, identifiers, test names, fixtures, strings or docs. This sweep
 // reads every source file of the window (src/), every spec and the bench they
 // stand on (tests/), the page around them (index.html) and its style config,
-// and it builds the words it looks for from their letters' codes, so the
-// guard never becomes the reference it forbids.
+// the docs (docs/, README.md, CLAUDE.md), the privacy sweep (scripts/) and
+// every Rust file of the spine and the crates, so CI and a fresh clone check
+// what the machine-local sweep checks. It builds the words it looks for from
+// their letters' codes, so the guard never becomes the reference it forbids.
+// Pictures are text-blind here, as in every gate (CLAUDE.md, Privacy).
 
 import { describe, expect, it } from "vitest";
 
 const SOURCES = import.meta.glob<string>(
-  ["../src/**/*.ts", "../src/**/*.vue", "../src/**/*.css", "../tests/**/*.ts", "../index.html", "../uno.config.ts"],
+  [
+    "../src/**/*.ts",
+    "../src/**/*.vue",
+    "../src/**/*.css",
+    "../tests/**/*.ts",
+    "../index.html",
+    "../uno.config.ts",
+    "../docs/**/*.{md,html,ts}",
+    "../README.md",
+    "../CLAUDE.md",
+    "../scripts/**/*.py",
+    "../src-tauri/**/*.rs",
+    "../crates/**/*.rs",
+  ],
   { query: "?raw", import: "default", eager: true },
 );
 
@@ -42,7 +58,7 @@ function hitsIn(sources: Record<string, string>): string[] {
 }
 
 describe("the stone stands alone", () => {
-  it("should read the whole window, every spec and the page around them", () => {
+  it("should read the whole window, every spec, the page around them, the docs, the sweep and the Rust", () => {
     const files = Object.keys(SOURCES).map(pathOf);
     for (const file of [
       "src/App.vue",
@@ -58,11 +74,27 @@ describe("the stone stands alone", () => {
       "tests/tree.spec.ts",
       "index.html",
       "uno.config.ts",
+      "docs/BUILD-SPEC.md",
+      "docs/WINDOW-CONTRACT.md",
+      "docs/design/audition.html",
+      "docs/design/tokens.uno.ts",
+      "README.md",
+      "CLAUDE.md",
+      "scripts/privacy-sweep.py",
+      "src-tauri/src/lib.rs",
+      "src-tauri/src/commands/overview.rs",
+      "crates/rift-core/src/lib.rs",
+      "crates/rift-deploy/src/journal.rs",
+      "crates/rift-nexus/src/lib.rs",
     ]) {
       expect(files).toContain(file);
     }
     expect(files.filter((f) => f.endsWith(".vue")).length).toBeGreaterThan(40);
     expect(files.filter((f) => f.startsWith("tests/")).length).toBeGreaterThan(20);
+    expect(files.filter((f) => f.startsWith("src-tauri/") && f.endsWith(".rs")).length).toBeGreaterThan(20);
+    expect(files.filter((f) => f.startsWith("crates/") && f.endsWith(".rs")).length).toBeGreaterThan(40);
+    // the args file holds this machine's private paths: the sweep never reads it, nor anything outside these globs
+    expect(files.some((f) => f.startsWith("scripts/") && !f.endsWith(".py"))).toBe(false);
   });
 
   it("should name the old manager nowhere: neither its name nor its initials, on any line", () => {

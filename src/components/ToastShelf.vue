@@ -9,7 +9,10 @@ const { toasts, dismiss, act } = useToasts();
 <template>
   <div class="shelf" aria-live="polite" role="status">
     <div v-for="t in toasts" :key="t.id" class="toast" :class="`is-${t.tone}`">
-      <p class="toast__line">{{ t.line }}</p>
+      <p class="toast__line">
+        <span v-if="t.inscription" class="toast__ins rs-inscription">{{ t.inscription }}</span
+        >{{ t.line }}
+      </p>
       <div class="toast__acts">
         <button v-for="a in t.actions" :key="a.label" type="button" class="toast__act" @click="act(t, a)">
           {{ a.label }}
@@ -100,5 +103,12 @@ const { toasts, dismiss, act } = useToasts();
   color: var(--rs-faint);
   font-size: 18px;
   cursor: pointer;
+}
+.toast__ins {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--rs-muted);
+  font-size: var(--rs-text-xs);
+  letter-spacing: 0.12em;
 }
 </style>

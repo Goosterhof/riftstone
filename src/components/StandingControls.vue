@@ -2,7 +2,9 @@
 // R16.22 — Track / Untrack, Endorse / Abstain: plain words, toggle buttons
 // with aria-pressed, no hearts, no stars, no counts. A refusal Nexus gives
 // (endorseNotDownloaded, endorseTooSoon, endorseOwnMod …) is the §9 sentence
-// under the pair, never a toast. Shown only with a connected key.
+// under the pair, never a toast. Shown only with a connected key. While Nexus
+// answers a press all three are busy (aria-disabled, §6.3), never disabled: a
+// disabled button drops the keyboard to <body> on every endorsement.
 import { computed } from "vue";
 import { useNexusAccount } from "@/composables/useNexusAccount";
 import RiftButton from "./RiftButton.vue";
@@ -48,16 +50,14 @@ const decidedLine = computed(() => {
         <RiftButton
           size="sm"
           :aria-pressed="decided === 'endorsed'"
-          :disabled="busy"
-          reason="Nexus is answering your last press."
+          :busy="busy"
           @click="nexus.setEndorsement(modId, 'endorsed')"
           >Endorse</RiftButton
         >
         <RiftButton
           size="sm"
           :aria-pressed="decided === 'abstained'"
-          :disabled="busy"
-          reason="Nexus is answering your last press."
+          :busy="busy"
           @click="nexus.setEndorsement(modId, 'abstained')"
           >Abstain</RiftButton
         >

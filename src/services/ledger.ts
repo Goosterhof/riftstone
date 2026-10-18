@@ -3,13 +3,12 @@
 // undone. Every count the spine returns is said out loud — a number the
 // window received and kept quiet about is a lie by omission. Pure: no Vue,
 // no backend, so the specs read the exact copy.
-// v0.3: what Play is about to do (its route and its warnings, which never
-// block), and what a download into the mods folder came to.
+// v0.3: the warnings Play carries (which never block), and what a download
+// into the mods folder came to.
 
 import type {
   DownloadPhase,
   DownloadView,
-  LaunchRoute,
   LaunchWarning,
   NexusLabels,
   ParkedFileView,
@@ -222,28 +221,21 @@ export function veils(mode: VeilMode, adultness: Adultness): boolean {
 // ---------------------------------------------------------------------------
 
 /** One warning Play carries (WINDOW-CONTRACT § v0.3 Play): never a blocker,
- *  always the reason the player may not see a mod in the game. */
+ *  always the reason the player may not see a mod in the game. PlayStone's
+ *  inline confirm says each before the press (R16.14); no toast repeats them
+ *  after it, and the slab, not a toast, says the game is starting. */
 export function launchWarningLine(warning: LaunchWarning): string {
   switch (warning.kind) {
+    // R16.14: each warning is the §9 sentence for the same condition, one per condition
     case "reframeworkMissing":
-      return `REFramework is missing from the game folder, so ${plural(warning.paks, "installed pak")} won't load.`;
+      return "REFramework isn't in your game folder, so script and loose-file mods won't load. PAK mods won't either: the Alternate PAK Folder lives in REFramework.";
     case "pakFolderOff":
-      return `REFramework's Alternate PAK Folder is off, so ${plural(warning.paks, "installed pak")} won't load.`;
+      return "Your PAK mods won't load: REFramework's Alternate PAK Folder is off.";
     case "looseLoaderOff":
-      return `The Loose File Loader is off, so ${plural(warning.files, "installed loose file")} won't load.`;
+      return "Loose-file mods won't load: REFramework's Loose File Loader is off.";
     case "buildChanged":
-      return `Steam updated the game from build ${warning.recorded} to ${warning.now} since your newest install: script mods are the first to break.`;
+      return `Dragon's Dogma 2 updated from build ${warning.recorded} to ${warning.now} since your mods were installed. Most still work; script mods and REFramework are the first to break.`;
   }
-}
-
-const LAUNCH_ROUTE: Record<LaunchRoute, string> = {
-  steam: "through Steam",
-  exe: "from its game folder",
-};
-
-/** After launch_game: how the game is starting, then every warning it carries. */
-export function launchedLine(route: LaunchRoute, warnings: readonly LaunchWarning[]): string {
-  return [`Dragon's Dogma 2 is starting ${LAUNCH_ROUTE[route]}.`, ...warnings.map(launchWarningLine)].join(" ");
 }
 
 // ---------------------------------------------------------------------------
@@ -267,12 +259,16 @@ export function downloadName(d: Pick<DownloadView, "fileName" | "modName" | "mod
   return d.fileName ?? d.modName ?? `Nexus mod ${d.modId}, file ${d.fileId}`;
 }
 
-/** What a download came to once it landed. */
+/** What a download came to once it landed (§9 Download landed / already had):
+ *  the mod by its name, never the archive's file name. A file that is no
+ *  archive (a raw .pak, an .exe: no package) lands too, but the scan never
+ *  lists it, so it is never sent to the Rift. */
 export function landedLine(d: DownloadView): string {
-  const name = downloadName(d);
-  if (d.alreadyHad) return `${name} was in your mods folder already, so nothing new was written.`;
-  const as = d.landedAs ? ` as ${d.landedAs}` : "";
-  return `${name} landed in your mods folder${as}. Install it from the Rift.`;
+  if (d.alreadyHad) return "The same file was already in your mods folder. The stone wrote nothing new.";
+  const name = d.modName ?? downloadName(d);
+  if (d.packageId === null)
+    return `${name} is in your mods folder, but it is no archive, so the Rift does not list it.`;
+  return `${name} is in your mods folder. Install it from the Rift.`;
 }
 
 function sentenceCase(text: string): string {

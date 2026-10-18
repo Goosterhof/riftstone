@@ -60,12 +60,35 @@ const answers = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>(
 /** The Rift's header line, its whitespace read as a reader hears it. */
 const echo = (): string => (textAt(".rift__echo") ?? "").replace(/\s+/g, " ");
 
+/** A node's text as a reader hears it: aria-hidden parts (the ⚔ glyph) are skipped. */
+function spoken(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return textOf(node);
+  if (!(node instanceof Element) || node.getAttribute("aria-hidden") === "true") return "";
+  return [...node.childNodes].map(spoken).join("");
+}
+
+/** The text of the elements an id-reference attribute points at, as a reader hears it. */
+function referenced(item: Element, attribute: "aria-labelledby" | "aria-describedby"): string {
+  return (item.getAttribute(attribute) ?? "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((id) => spoken(must(document.getElementById(id), `#${id} (${attribute})`)))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** A treeitem's accessible name: its own label, never the rows nested inside it (R16.2). */
+const nameOf = (item: Element): string => referenced(item, "aria-labelledby");
+/** A treeitem's description: the state its row shows (counts, verdict, chips, the hidden "conflict"). */
+const descriptionOf = (item: Element): string => referenced(item, "aria-describedby");
+
 /** Every visible row, in reading order, as `level:label`. */
-const visible = (): string[] => rows().map((r) => `${r.getAttribute("aria-level")}:${r.getAttribute("aria-label")}`);
+const visible = (): string[] => rows().map((r) => `${r.getAttribute("aria-level")}:${nameOf(r)}`);
 
 /** The visible row with this label at this level (a package and its one option share a name). */
 const row = (label: string, level = 1): HTMLElement | undefined =>
-  rows().find((r) => r.getAttribute("aria-label") === label && r.getAttribute("aria-level") === String(level));
+  rows().find((r) => nameOf(r) === label && r.getAttribute("aria-level") === String(level));
 
 /** A row's own line, not the group of children nested inside its treeitem. */
 const lineOf = (item: HTMLElement): HTMLElement =>
@@ -79,16 +102,20 @@ const chipOf = (item: HTMLElement): string | null => {
   return chip ? textOf(chip).trim() : null;
 };
 
+/** How many kind-badge groups the visible row with this label at this level carries on its own line. */
+const badges = (label: string, level: number): number =>
+  lineOf(must(row(label, level), label)).querySelectorAll(".ltr__badges, .ltr__kinds").length;
+
 const focusedRow = (): string | null => {
   const active = document.activeElement;
   if (!(active instanceof HTMLElement) || active.getAttribute("role") !== "treeitem") return null;
-  return `${active.getAttribute("aria-level")}:${active.getAttribute("aria-label")}`;
+  return `${active.getAttribute("aria-level")}:${nameOf(active)}`;
 };
 
 /** Put the keyboard on a row, the way a click or a Tab does. */
 async function focusRow(item: HTMLElement): Promise<void> {
   item.focus();
-  await until(() => document.activeElement === item, `the focus on ${item.getAttribute("aria-label")}`);
+  await until(() => document.activeElement === item, `the focus on ${nameOf(item)}`);
 }
 
 /** Press a key on the focused row and wait for the focus to land on `expected` (`level:label`). */
@@ -131,10 +158,10 @@ describe("the library tree: the Rift's idle view", () => {
     await wakeOnTree();
     expect(must(tree(), "tree").getAttribute("role")).toBe("tree");
     expect(document.getElementById("rift-answers")).toBeNull();
-    expect(topRows().map((r) => r.getAttribute("aria-label"))).toStrictEqual(SHELF);
+    expect(topRows().map(nameOf)).toStrictEqual(SHELF);
     expect(rows()).toHaveLength(SHELF.length);
     // a package with options is a closed branch; the two that yielded none have nothing to open
-    expect(topRows().map((r) => [r.getAttribute("aria-label"), r.getAttribute("aria-expanded")])).toStrictEqual(
+    expect(topRows().map((r) => [nameOf(r), r.getAttribute("aria-expanded")])).toStrictEqual(
       SHELF.map((name) => [name, ["Corrupted Download", "Readme Only"].includes(name) ? null : "false"]),
     );
     expect(topRows().map((r) => [r.getAttribute("aria-setsize"), r.getAttribute("aria-posinset")])).toStrictEqual(
@@ -226,6 +253,65 @@ describe("the library tree: the Rift's idle view", () => {
     ]);
     press("ArrowUp");
     await until(() => document.activeElement?.id === "rift-search", "the well");
+  });
+
+  it("should name each row by its label alone and describe it by the state it shows (WCAG 1.3.1, 4.1.2)", async () => {
+    await wakeOnTree();
+    // no aria-label: it would replace the row's state words with its label
+    expect(rows().filter((r) => r.hasAttribute("aria-label"))).toStrictEqual([]);
+    // a package: its format, its counts or verdict, its UPDATE chip and the hidden "conflict"
+    expect(descriptionOf(must(row("Brine Water Clarity"), "Brine"))).toBe("ZIP 1 option · 1 in your world conflict");
+    expect(descriptionOf(must(row("Lantern Glow Recolor"), "Lantern"))).toBe("ZIP 1 option UPDATE");
+    expect(descriptionOf(must(row("Corrupted Download"), "Corrupted Download"))).toBe("7Z won't open");
+    // the name never pulls in the rows nested under an open package
+    const lantern = must(row("Lantern Glow Recolor"), "Lantern");
+    lineOf(lantern).click();
+    await until(() => row("Lantern Glow Recolor", 2) !== undefined, "Lantern open");
+    expect(nameOf(lantern)).toBe("Lantern Glow Recolor");
+    // a leaf: its kind badges and its state chip
+    const leaf = must(row("Lantern Glow Recolor", 2), "Lantern's option");
+    expect(nameOf(leaf)).toBe("Lantern Glow Recolor");
+    expect(descriptionOf(leaf)).toMatch(/NOT INSTALLED$/);
+    // a conflicted leaf says so in words
+    lineOf(must(row("Brine Water Clarity"), "Brine")).click();
+    await until(() => row("Brine Water Clarity", 2) !== undefined, "Brine open");
+    expect(descriptionOf(must(row("Brine Water Clarity", 2), "Brine's option"))).toMatch(/CONFLICT$/);
+  });
+
+  it("should zoom an option's screenshot on Space, as the answers do, and act as Enter on a row without one", async () => {
+    // WINDOW-CONTRACT § v0.3 "The library tree": Space zooms as it does in the answers (§8.1)
+    await wakeOnTree();
+    const sun = must(row("Battahli Sun Bleach"), "Battahli");
+    await focusRow(sun);
+    press(" ");
+    await until(() => sun.getAttribute("aria-expanded") === "true", "Space on a package opens it, as Enter does");
+    await step("ArrowDown", "2:Battahli Sun Bleach");
+    press(" ");
+    await until(() => useNavigation().lightbox.value !== null, "the screenshot zoomed");
+    expect(useNavigation().lightbox.value?.name).toBe("Battahli Sun Bleach");
+    expect(useSearch().text.value).toBe("");
+    press("Escape");
+    // the lightbox hands the keyboard back to the row that zoomed it
+    await until(() => focusedRow() === "2:Battahli Sun Bleach", "the focus back on the leaf");
+  });
+
+  it("should open every sibling branch of the focused row on *, as the APG's tree does", async () => {
+    // WINDOW-CONTRACT § v0.3 "The library tree"; never a search, never a jump
+    await wakeOnTree();
+    await focusRow(must(row("Battahli Sun Bleach"), "Battahli"));
+    press("*");
+    await until(
+      () => must(row("Vernworth Wardrobe Collection"), "Vernworth").getAttribute("aria-expanded") === "true",
+      "every sibling open",
+    );
+    // every package with something to open is open; the two with nothing stay as they were
+    expect(
+      topRows()
+        .filter((r) => r.getAttribute("aria-expanded") === "true")
+        .map(nameOf),
+    ).toStrictEqual(SHELF.filter((name) => !["Corrupted Download", "Readme Only"].includes(name)));
+    expect(focusedRow()).toBe("1:Battahli Sun Bleach");
+    expect(useSearch().text.value).toBe("");
   });
 
   it("should open an option in YOUR WORLD on Enter, and mark it selected", async () => {
@@ -339,6 +425,40 @@ describe("the tree and the answers", () => {
     expect(document.activeElement?.id).toBe("rift-search");
   });
 
+  it("should send l and i to the well like any letter: 'lantern' searches, never opens the lookbook, and 'iron' plans no install", async () => {
+    // R16.6 and Bold Choice 10: every word typed in the tree becomes a search
+    await wakeOnTree();
+    const planned = vi.spyOn(spine(), "planInstall");
+    await focusRow(must(row("Lantern Glow Recolor"), "Lantern"));
+    const l = press("l");
+    expect(l.defaultPrevented).toBe(true);
+    expect(useSearch().text.value).toBe("l");
+    expect(document.activeElement?.id).toBe("rift-search");
+    expect(useNavigation().riftMode.value).toBe("results");
+    useSearch().clearText();
+    await until(() => tree() !== null && useSearch().settledText.value === "", "the tree again");
+
+    // a leaf: "i" (either case) starts "iron", and nothing is planned for the row under the keyboard
+    lineOf(must(row("Lantern Glow Recolor"), "Lantern")).click();
+    await until(() => row("Lantern Glow Recolor", 2) !== undefined, "Lantern open");
+    await focusRow(must(row("Lantern Glow Recolor", 2), "Lantern's option"));
+    press("I");
+    expect(useSearch().text.value).toBe("I");
+    expect(document.activeElement?.id).toBe("rift-search");
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(planned).not.toHaveBeenCalled();
+    expect(useWorld().selectedId.value).toBeNull();
+    expect(useNavigation().riftMode.value).toBe("results");
+  });
+
+  it("should still pass the room keys and / through the tree", async () => {
+    await wakeOnTree();
+    await focusRow(must(row("Brine Water Clarity"), "Brine"));
+    press("3");
+    await until(() => useNavigation().page.value === "nexus", "THE FAR WORLD on 3");
+    expect(useSearch().text.value).toBe("");
+  });
+
   it("should never open an option nobody sees on Enter in an empty well", async () => {
     await wakeOnTree();
     await until(() => useSearch().results.value.length > 0, "the idle answers behind the tree");
@@ -383,6 +503,49 @@ describe("the tree beside the trouble and the crossing", () => {
     expect(textOf(must(card.querySelector(".trouble__name"), "card name")).trim()).toBe("Corrupted Download");
   });
 
+  it("should give a package row the trouble fold's verdict only for a trouble the fold lists, and its counts otherwise", async () => {
+    // R16.2: the same verdict as the fold, never a second one. A problem the fold never lists (a missing
+    // menu parent, a missing requirement, a garbled modinfo.ini) is no verdict of the row's.
+    await wakeOnTree();
+    const real = await spine().getLibrary();
+    const sunId = must(
+      real.packages.find((p) => p.package.displayName === "Battahli Sun Bleach"),
+      "Battahli in the library",
+    ).package.id;
+    const parentless = {
+      ...real,
+      packages: real.packages.map((p) =>
+        p.package.id === sunId
+          ? {
+              ...p,
+              package: {
+                ...p.package,
+                problems: [
+                  {
+                    kind: "missingParent" as const,
+                    message:
+                      'Its menu sits under "Sun Bleach Presets", which is not in the mods folder. Add the mod that provides "Sun Bleach Presets" to the mods folder to restore the menu.',
+                  },
+                ],
+              },
+            }
+          : p,
+      ),
+    };
+    vi.spyOn(spine(), "getLibrary").mockResolvedValue(parentless);
+    await useLibrary().load();
+    const count = (): string =>
+      textOf(must(lineOf(must(row("Battahli Sun Bleach"), "Battahli")).querySelector(".ltr__count"), "count"))
+        .replace(/\s+/g, " ")
+        .trim();
+    await until(() => count() === "1 option", "the counts, not a verdict nothing explains");
+    expect(descriptionOf(must(row("Battahli Sun Bleach"), "Battahli"))).not.toContain("warning");
+    // the fold's own troubles keep their verdicts
+    expect(textOf(must(lineOf(must(row("Readme Only"), "Readme")).querySelector(".ltr__count"), "count")).trim()).toBe(
+      "opens with a warning",
+    );
+  });
+
   it("should turn an option row's marker gold when it is installed", async () => {
     await wakeOnTree();
     const pkg = must(row("Lantern Glow Recolor"), "Lantern");
@@ -408,5 +571,27 @@ describe("the tree beside the trouble and the crossing", () => {
     ).toBe("1 option · 1 in your world");
     expect(lineOf(pkg).classList.contains("rail--world")).toBe(true);
     expect(text()).toContain("Lantern Glow Recolor is in your world.");
+  });
+});
+
+describe("the library tree's rows as R16.2–R16.4 and §16.7 draw them", () => {
+  it("should write a package's format as a word, 7Z for a 7z, never the wire's SEVENZIP", async () => {
+    await wakeOnTree();
+    const formats = topRows().map((r) => textOf(must(lineOf(r).querySelector(".ltr__fmt"), "format")).trim());
+    expect(formats).toContain("7Z");
+    expect(formats.every((f) => ["ZIP", "7Z", "RAR", "FOLDER"].includes(f))).toBe(true);
+  });
+
+  it("should give menu and bundle nodes no kind badges, since they install nothing (R16.3)", async () => {
+    await wakeOnTree();
+    await openHoods();
+    await step("ArrowDown", "4:Pilgrim Hood - Variation 1");
+    await step("ArrowDown", "4:Pilgrim Hood - Variation 2");
+    await step("ArrowDown", "4:Pilgrim Hood - Southern Dyes");
+    press("ArrowRight");
+    await until(() => row("Pilgrim Hood - Variation 4", 5) !== undefined, "the bundle open");
+    expect(badges("Pilgrim Hood - Southern Dyes", 4)).toBe(0);
+    expect(badges("Hoods", 2)).toBe(0);
+    expect(badges("Pilgrim Hood - Variation 3", 5)).toBeGreaterThan(0);
   });
 });

@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import type { NexusReason, ProblemKind, RiftError } from "@/types/rift";
 import { RiftFailure } from "@/services/rift";
 import { TROUBLE_KINDS, VOICE_CONTEXTS, troubleLine, voice } from "@/services/voice";
-import { askNexusToast, landedLine, launchedLine, recoverySentence } from "@/services/ledger";
+import { askNexusToast, landedLine, launchWarningLine, recoverySentence } from "@/services/ledger";
 
 /** The words a support desk speaks in. "US" (capitals) is a country, not a desk. */
 const DESK = /\b(?:[Ww]e|[Ww]e're|[Ww]e'll|[Ww]e've|[Uu]s|[Oo]ur|[Oo]urs)\b/;
@@ -85,12 +85,12 @@ function everyLine(): string[] {
   const offline = voice(new RiftFailure({ kind: "nexus", detail: { detail: "connection refused" } }), "nexusCheck");
   lines.push(askNexusToast({ before: 4, after: 4, hadLabels: false, failure: offline }).line);
   lines.push(
-    launchedLine("steam", [
-      { kind: "reframeworkMissing", paks: 2 },
-      { kind: "pakFolderOff", paks: 1 },
-      { kind: "looseLoaderOff", files: 3 },
-      { kind: "buildChanged", recorded: "25290080", now: "25391144" },
-    ]),
+    ...[
+      { kind: "reframeworkMissing" as const, paks: 2 },
+      { kind: "pakFolderOff" as const, paks: 1 },
+      { kind: "looseLoaderOff" as const, files: 3 },
+      { kind: "buildChanged" as const, recorded: "25290080", now: "25391144" },
+    ].map(launchWarningLine),
   );
   const download = {
     id: "download-1",
@@ -104,14 +104,19 @@ function everyLine(): string[] {
     bytesDone: 1,
     bytesTotal: 1,
     landedAs: "Lantern Glow Recolor-412-2-2-1791234567.zip",
-    packageId: null,
+    packageId: "pkg" as string | null,
     alreadyHad: false,
     failure: null,
     nexusPageUrl: null,
     startedMs: 0,
     finishedMs: 1,
   };
-  lines.push(landedLine(download), landedLine({ ...download, alreadyHad: true }));
+  lines.push(
+    landedLine(download),
+    landedLine({ ...download, alreadyHad: true }),
+    // a file that is no archive lands without a package
+    landedLine({ ...download, landedAs: "Lantern Glow Recolor.pak", packageId: null }),
+  );
   return lines;
 }
 

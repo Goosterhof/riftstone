@@ -4,11 +4,18 @@
 // page's query string, comma-separated to combine:
 //   ?mock=empty | emptymods | nogame | scanning | refoff | patched | offline |
 //         fresh | firstrun | key | premium | rejected | quotalow | running |
-//         nxmother | nocreations
+//         nxmother | nocreations | nofloor | gonemods
 // - empty: an empty mods folder and an untouched game (nothing installed,
 //   nothing parked).
 // - emptymods: the mods folder exists and holds nothing, while the game keeps
 //   every install the journal knows (each row then has no package).
+// - nofloor: the mods folder was missing at launch and could not be made (§9
+//   THE RIFT HAS NO FLOOR): no packages, mods.exists false, and the spine's
+//   `mods` Error with no action.
+// - gonemods: the mods folder was made at launch and went while the stone ran
+//   (moved or deleted): no packages, mods.exists false, and the spine's `mods`
+//   Warn whose action, Open mods folder, makes it again, empty, and scans it.
+//   The game keeps every install, as under emptymods.
 // - firstrun: nothing scanned yet, so the stone wakes on YOUR WORLD IS FOUND.
 // - key: a free Nexus account, "Arisen of Vernworth"; premium: the same account,
 //   premium; rejected: Nexus refused the stored key; quotalow implies key.
@@ -45,8 +52,11 @@
 // files, as the journal does, so an install outlives its package. Play plans
 // and launches; the game starts 0.7 s after a launch and stops through the
 // dev hook below. Downloads run queued → linking → downloading (progress
-// events) → verifying → landed, adding an invented package to the library; a
-// free account's download waits for an nxm:// link. Dev hooks, on the backend
+// events) → verifying → landed in the spine's order (the archive linked first,
+// rift://updates-changed; the row landed; then a scan shelves the invented
+// package, rift://library-changed); a free account's download waits for an
+// nxm:// link, which is read and refused as the spine reads and refuses it.
+// The spine's own sentences are used wherever the window shows them. Dev hooks, on the backend
 // and, in `npm run dev`, on `window.riftMock` (from the browser console):
 //   closeGame()        the game watcher sees Dragon's Dogma 2 stop;
 //   deliverNxm(link)   Windows hands the stone an nxm:// link.
@@ -168,6 +178,33 @@ const nexusError = (detail: string, reason?: NexusReason): RiftError => ({
 });
 const nexusFailure = (detail: string, reason?: NexusReason) => new RiftFailure(nexusError(detail, reason));
 const OFFLINE_SENTENCE = "Nexus Mods could not be reached (connection refused).";
+
+/** rift-nexus error.rs, word for word: the sentences beside the reason codes. */
+const NO_KEY_SENTENCE =
+  "This needs a Nexus Mods personal API key and none is set. Update checks work without one; add a key in Settings only for the extras.";
+const KEY_REJECTED_SENTENCE =
+  "Nexus Mods rejected the API key. Paste a fresh personal API key from your Nexus Mods account (Site preferences, API Keys); update checks keep working without one.";
+const LINK_EXPIRED_SENTENCE =
+  "The download link from Nexus Mods has expired. Press Mod Manager Download on the file's Nexus Mods page again for a fresh one.";
+/** rift-nexus nxm.rs NxmRefusal and the spine's nxm.rs NOT_YOURS, word for word. */
+const NXM_OTHER_GAME = "That Nexus Mods link is for another game. The Riftstone handles Dragon's Dogma 2 mods only.";
+const NXM_COLLECTION =
+  "That Nexus Mods link opens a collection. The Riftstone downloads single mod files: download the collection's mods from their own pages.";
+const NXM_UNREADABLE =
+  "That nxm link could not be read. Press Mod Manager Download on the file's Nexus Mods page again.";
+const NXM_NOT_YOURS =
+  "That Mod Manager Download link was made for another Nexus Mods account than the one whose API key the Riftstone holds. Sign in on the site with that key's account, then press Mod Manager Download again.";
+/** The spine's downloads.rs cancel refusals, word for word. */
+const CANCEL_NOT_LISTED = "That download is not in this session's list any more. Look again at the downloads.";
+const CANCEL_OVER = "That download is already over (landed, failed or cancelled), so there is nothing to cancel.";
+const CANCEL_LANDING =
+  "That download is being put in the mods folder right now and can no longer be stopped. It lands in a moment; remove the archive in Explorer if you do not want it.";
+/** How long the scan that shelves a landed download takes. */
+const LANDING_SCAN_MS = 150;
+/** Why the nofloor scene's mods folder could not be made (the spine passes the OS's words). */
+const MODS_UNMADE_WHY = "access is denied";
+/** The largest id Nexus's GraphQL Int carries (nxm.rs LARGEST_ID). */
+const LARGEST_NEXUS_ID = 2_147_483_647;
 
 /** rift-deploy's running-game sentences, word for word. */
 const RUNNING_REINSTALL = (name: string) =>
@@ -333,8 +370,16 @@ export function createMockBackend(): MockBackend {
   if (!scene.has("empty") && ermineLoose[1]) changedPaths.add(ermineLoose[1]);
 
   // emptymods: the folder is emptied AFTER the journal was written, so every
-  // install stays in the game with no package in the mods folder.
-  if (scene.has("emptymods")) packages = [];
+  // install stays in the game with no package in the mods folder (and so do
+  // nofloor's and gonemods', whose folder is not there at all).
+  if (scene.has("emptymods") || scene.has("nofloor") || scene.has("gonemods")) packages = [];
+
+  /** The mods folder itself (the spine's mods_folder_state): on disk; missing
+   *  at launch and never made (nofloor); or made at launch and gone since
+   *  (gonemods), until Open mods folder makes it again. */
+  let folder: "there" | "unmade" | "gone" = "there";
+  if (scene.has("nofloor")) folder = "unmade";
+  else if (scene.has("gonemods")) folder = "gone";
 
   type PayloadTarget = PayloadFile["target"];
   function removalAction(target: PayloadTarget): RemovalAction {
@@ -537,7 +582,38 @@ export function createMockBackend(): MockBackend {
     };
   }
 
-  const modsFolder = (): ModsFolderView => ({ path: MOCK_MODS_DIR, exists: true });
+  const modsFolder = (): ModsFolderView => ({ path: MOCK_MODS_DIR, exists: folder === "there" });
+
+  /** The spine's overview.rs `mods` check, word for word: absent while the
+   *  folder holds packages. */
+  function modsCheck(): Check | null {
+    if (folder === "unmade") {
+      return {
+        id: "mods",
+        level: "error",
+        title: "The mods folder is missing",
+        detail: `The Riftstone keeps your mods in ${MOCK_MODS_DIR}, and that folder could not be made (${MODS_UNMADE_WHY}). Make it by hand, or install the Riftstone where it may write, then start it again.`,
+        action: null,
+      };
+    }
+    if (folder === "gone") {
+      return {
+        id: "mods",
+        level: "warn",
+        title: "The mods folder is gone",
+        detail: `${MOCK_MODS_DIR} was moved or deleted while the Riftstone ran, and it reads mods from nowhere else. Open mods folder makes it again, empty, and watches it; then put your mods back in it.`,
+        action: { kind: "openModsFolder" },
+      };
+    }
+    if (packages.length) return null;
+    return {
+      id: "mods",
+      level: "info",
+      title: "The mods folder is empty",
+      detail: `Put each mod's zip, 7z or rar, or its unpacked folder, directly in ${MOCK_MODS_DIR}. The Riftstone reads it, never changes what is there, and sees new mods by itself.`,
+      action: { kind: "openModsFolder" },
+    };
+  }
 
   function gameChecks(): Check[] {
     const list: Check[] = [
@@ -605,15 +681,8 @@ export function createMockBackend(): MockBackend {
       ];
     }
     const list = gameChecks();
-    if (!packages.length) {
-      list.push({
-        id: "mods",
-        level: "info",
-        title: "The mods folder is empty",
-        detail: "Put a mod's zip, 7z, rar or folder in it, and the stone reads it.",
-        action: { kind: "openModsFolder" },
-      });
-    }
+    const mods = modsCheck();
+    if (mods) list.push(mods);
     if (parked.length) {
       list.push({
         id: "parkedBackups",
@@ -1059,14 +1128,37 @@ export function createMockBackend(): MockBackend {
   // --- the far world with a key ----------------------------------------------
   /** Why a key call cannot go out now; null when it can. */
   function keyRefusal(): RiftFailure | null {
-    if (keyStanding === "none") return nexusFailure("No Nexus personal API key is stored.", "noKey");
-    if (keyStanding === "rejected") return nexusFailure("Nexus refused the stored key (HTTP 401).", "keyRejected");
+    if (keyStanding === "none") return nexusFailure(NO_KEY_SENTENCE, "noKey");
+    if (keyStanding === "rejected") return nexusFailure(KEY_REJECTED_SENTENCE, "keyRejected");
     if (scene.has("offline")) return nexusFailure(OFFLINE_SENTENCE, "offline");
     return null;
   }
 
   const pageUrlOf = (modId: number) => `https://www.nexusmods.com/dragonsdogma2/mods/${modId}`;
   const linkedCount = (modId: number) => packages.filter((p) => p.summary.nexus?.modId === modId).length;
+
+  /** A mod the account tracks, as the spine's dto.rs `NexusCandidate::of_tracked`
+   *  makes its card: named through the batched v2 mod lookup (name, version,
+   *  category, adult flag, last update) and nothing else, so the author, the
+   *  counts and the summary stay unknown. A mod the lookup does not know keeps
+   *  a card, so it can be untracked. */
+  function trackedCard(modId: number): NexusCandidate {
+    const known = candidateFor(modId);
+    return {
+      modId,
+      name: known?.name ?? `Nexus mod ${modId}`,
+      author: null,
+      version: known?.version ?? null,
+      category: known?.category ?? null,
+      adult: known?.adult ?? false,
+      downloads: null,
+      endorsements: null,
+      summary: null,
+      updatedMs: known?.updatedMs ?? null,
+      pageUrl: pageUrlOf(modId),
+      linkedPackages: linkedCount(modId),
+    };
+  }
 
   /** A mod as a card: from the library's own link, else the finds, else browsing. */
   function candidateFor(modId: number): NexusCandidate | null {
@@ -1121,7 +1213,7 @@ export function createMockBackend(): MockBackend {
 
   function standings(): NexusStandings {
     return {
-      tracked: [...tracked].flatMap((modId) => candidateFor(modId) ?? []),
+      tracked: [...tracked].map(trackedCard),
       endorsements: [...endorsed].map(([modId, status]) => ({ modId, status })),
       checkedMs: standingsCheckedMs,
     };
@@ -1145,6 +1237,8 @@ export function createMockBackend(): MockBackend {
   const queue: string[] = [];
   /** Downloads an nxm link's key and expiry may fetch (a free account's). */
   const granted = new Set<string>();
+  /** Downloads being put in place in the mods folder: a cancel is refused now. */
+  const committed = new Set<string>();
   let working = false;
 
   function setPhase(row: DownloadView, phase: DownloadPhase): void {
@@ -1165,17 +1259,36 @@ export function createMockBackend(): MockBackend {
     return `${stem}-${row.modId}-${version}-${Math.floor(uploadedMs / 1000)}.zip`;
   }
 
+  /** The landing, in the spine's order (downloads.rs fetch → pre_link): the
+   *  archive's package is linked to the exact file BEFORE any scan shelves it
+   *  (rift://updates-changed, while get_updates cannot list it yet), the row
+   *  lands (rift://downloads-changed), and then a scan shelves the package
+   *  (rift://library-changed). A file that was there already is linked and told
+   *  just the same, and nothing new is scanned. */
   function land(row: DownloadView): void {
     const file = filesOf(row.modId)?.files.find((f) => f.fileId === row.fileId);
     const uploadedMs = file?.uploadedMs ?? MOCK_NOW;
     const archive = archiveName(row, uploadedMs);
     const existing = packages.find((p) => p.summary.fileName.toLowerCase() === archive.toLowerCase());
+    let arriving: MockPackage | null = null;
     if (existing) {
+      // pre_link: the package the same bytes already are takes the exact link
+      if (existing.summary.nexus?.modId !== row.modId) unjudged.add(existing.summary.id);
+      existing.summary.nexus = {
+        modId: row.modId,
+        fileId: row.fileId,
+        groupId: null,
+        sqid: null,
+        version: row.version,
+        uploadedMs,
+        source: "download",
+      };
       row.alreadyHad = true;
       row.landedAs = existing.summary.fileName;
       row.packageId = existing.summary.id;
     } else {
-      const pkg = downloadedPackage({
+      // pre_link: the link waits in nexus.json for the package the scan will find
+      arriving = downloadedPackage({
         fileName: archive,
         displayName: row.modName ?? `Nexus mod ${row.modId}`,
         size: row.bytesTotal ?? 1_048_576,
@@ -1186,17 +1299,21 @@ export function createMockBackend(): MockBackend {
         uploadedMs,
         author: candidateFor(row.modId)?.author ?? null,
       });
-      packages = [...packages, pkg];
-      unjudged.add(pkg.summary.id);
       row.landedAs = archive;
-      row.packageId = pkg.summary.id;
+      row.packageId = arriving.summary.id;
     }
     landedAt.set(row.modId, Date.now());
+    emit(EVENTS.updatesChanged, {});
+    committed.delete(row.id);
     setPhase(row, "landed");
-    if (!row.alreadyHad) {
+    if (!arriving) return;
+    const shelved = arriving;
+    // request_scan: the mods folder's new archive is shelved by the next scan
+    setTimeout(() => {
+      packages = [...packages, shelved];
+      unjudged.add(shelved.summary.id);
       emit(EVENTS.libraryChanged, {});
-      emit(EVENTS.updatesChanged, {});
-    }
+    }, LANDING_SCAN_MS);
   }
 
   async function runDownload(row: DownloadView): Promise<void> {
@@ -1209,7 +1326,13 @@ export function createMockBackend(): MockBackend {
       return;
     }
     if (!premium && !granted.has(row.id)) {
-      failDownload(row, nexusError("Only premium accounts may ask for a download link.", "premiumRequired"));
+      failDownload(
+        row,
+        nexusError(
+          "Nexus Mods lets only premium accounts download straight from the Riftstone. Press Mod Manager Download on the file's Nexus Mods page instead; the Riftstone takes the download over from there.",
+          "premiumRequired",
+        ),
+      );
       return;
     }
     quotaSpent += 1;
@@ -1224,8 +1347,11 @@ export function createMockBackend(): MockBackend {
       emit(EVENTS.downloadProgress, { id: row.id, phase: "downloading", bytesDone: row.bytesDone, bytesTotal: total });
     }
     setPhase(row, "verifying");
-    await wait(250);
+    await wait(250); // the size, then the MD5 round trip
     if (phaseOf(row) !== "verifying") return;
+    // the landing commits: from here a cancel is refused (downloads.rs commit)
+    committed.add(row.id);
+    await wait(60);
     land(row);
   }
 
@@ -1284,74 +1410,126 @@ export function createMockBackend(): MockBackend {
     ? { state: "other", other: otherAtStart, givesBackTo: null }
     : { state: "none", other: null, givesBackTo: null };
 
-  const NXM_FILE = /^nxm:\/\/([^/?]+)\/mods\/(\d+)\/files\/(\d+)(?:\?(.*))?$/i;
+  /** What an nxm:// link says, read the way rift-nexus nxm.rs parse_nxm reads
+   *  it: a refusal before any check (another game, a collection, a link that
+   *  cannot be read) carries no ids. */
+  type NxmRead =
+    | { premium: true }
+    | { refused: string }
+    | { modId: number; fileId: number; grant: { expiresS: number } | null; userId: number | null };
 
-  /** Why an arriving link is refused, or the mod and file it names. */
-  function readNxm(
-    link: string,
-  ): { refusal: RiftError } | { modId: number; fileId: number; refusal: RiftError | null } {
-    const text = link.trim();
-    if (/^nxm:\/\/[^/]+\/collections\//i.test(text)) {
-      return {
-        refusal: {
-          kind: "refused",
-          detail: { reason: "That link is for a collection: the stone takes one file at a time." },
-        },
-      };
+  const nxmId = (text: string | undefined): number | null => {
+    if (!text || !/^\d+$/.test(text)) return null;
+    const id = Number(text);
+    return id >= 1 && id <= LARGEST_NEXUS_ID ? id : null;
+  };
+
+  /** key, expires and user_id, the first of each, blank values ignored; null: unreadable. */
+  function nxmParams(query: string): Map<string, string> | null {
+    const params = new Map<string, string>();
+    for (const pair of query.split("&").filter(Boolean)) {
+      const at = pair.indexOf("=");
+      let name: string;
+      let value: string;
+      try {
+        name = decodeURIComponent(at < 0 ? pair : pair.slice(0, at)).toLowerCase();
+        value = decodeURIComponent(at < 0 ? "" : pair.slice(at + 1)).trim();
+      } catch {
+        return null;
+      }
+      if (["key", "expires", "user_id"].includes(name) && value && !params.has(name)) params.set(name, value);
     }
-    const m = NXM_FILE.exec(text);
-    if (!m) return { refusal: { kind: "refused", detail: { reason: "That nxm:// link could not be read." } } };
-    const [, domain, mod, file, query] = m;
-    const modId = Number(mod);
-    const fileId = Number(file);
-    if (domain.toLowerCase() !== "dragonsdogma2") {
-      return {
-        modId,
-        fileId,
-        refusal: {
-          kind: "refused",
-          detail: { reason: "That link is for another game: the stone fetches Dragon's Dogma 2 mods only." },
-        },
-      };
+    return params;
+  }
+
+  /** The grant and the account a file link names; null when they make it unreadable. */
+  function nxmGrant(query: string): Pick<Extract<NxmRead, { modId: number }>, "grant" | "userId"> | null {
+    const params = nxmParams(query);
+    if (!params) return null;
+    const key = params.get("key");
+    const expires = params.get("expires");
+    // a key without its expiry, or the other way round, is no grant at all
+    if ((key === undefined) !== (expires === undefined)) return null;
+    if (key !== undefined && !/^[\x21-\x7e]{1,512}$/.test(key)) return null;
+    if (expires !== undefined && !/^\d+$/.test(expires)) return null;
+    const user = params.get("user_id");
+    const userId = user === undefined ? null : nxmId(user);
+    if (user !== undefined && userId === null) return null;
+    return { grant: expires === undefined ? null : { expiresS: Number(expires) }, userId };
+  }
+
+  function readNxm(link: string): NxmRead {
+    const text = link
+      .trim()
+      .replace(/^[<>"']+|[<>"']+$/g, "")
+      .trim();
+    const m = /^nxm:\/\/([^/?#]*)([^?#]*)(?:\?([^#]*))?/i.exec(text);
+    if (!m) return { refused: NXM_UNREADABLE };
+    // host, path, query: the query group may not take part at all
+    const groups: (string | undefined)[] = [...m];
+    const host = (groups[1] ?? "").toLowerCase();
+    if (!/^[a-z0-9_-]+$/.test(host)) return { refused: NXM_UNREADABLE };
+    if (host === "premium") return { premium: true };
+    if (host !== "dragonsdogma2") return { refused: NXM_OTHER_GAME };
+    const segments = (groups[2] ?? "")
+      .split("/")
+      .filter(Boolean)
+      .map((s) => s.toLowerCase());
+    if (segments[0] === "collections") return { refused: NXM_COLLECTION };
+    const [mods, mod, files, file, ...rest] = segments;
+    const modId = nxmId(mod);
+    const fileId = nxmId(file);
+    const grant = nxmGrant(groups[3] ?? "");
+    if (mods !== "mods" || files !== "files" || rest.length || modId === null || fileId === null || !grant) {
+      return { refused: NXM_UNREADABLE };
     }
-    // an absent query group is undefined at run time: URLSearchParams reads it as empty
-    const params = new URLSearchParams(query);
-    const expires = Number(params.get("expires") ?? Number.NaN);
-    const userId = params.get("user_id");
-    if (keyStanding === "none")
-      return { modId, fileId, refusal: nexusError("No Nexus personal API key is stored.", "noKey") };
-    if (Number.isFinite(expires) && expires * 1000 < Date.now()) {
-      return { modId, fileId, refusal: nexusError("The Mod Manager Download link has expired.", "linkExpired") };
-    }
-    if (userId !== null && Number(userId) !== MOCK_USER_ID) {
-      return { modId, fileId, refusal: nexusError("The link was made for another Nexus account.", "linkNotYours") };
-    }
-    return { modId, fileId, refusal: null };
+    return { modId, fileId, ...grant };
+  }
+
+  /** The spine's nxm.rs receive, its checks in its order: what refuses a file link. */
+  function nxmRefusal(read: Extract<NxmRead, { modId: number }>): RiftError | null {
+    if (keyStanding === "none") return nexusError(NO_KEY_SENTENCE, "noKey");
+    if (keyStanding === "rejected") return nexusError(KEY_REJECTED_SENTENCE, "keyRejected");
+    // the site's button always sends its grant: a link without one is not the button's
+    if (!read.grant) return { kind: "refused", detail: { reason: NXM_UNREADABLE } };
+    if (Math.floor(Date.now() / 1000) >= read.grant.expiresS) return nexusError(LINK_EXPIRED_SENTENCE, "linkExpired");
+    if (read.userId !== null && read.userId !== MOCK_USER_ID) return nexusError(NXM_NOT_YOURS, "linkNotYours");
+    return null;
   }
 
   function receiveNxm(link: string): void {
-    if (/^nxm:\/\/premium\/?$/i.test(link.trim())) {
-      accountCheckedMs = Date.now();
+    const read = readNxm(link);
+    if ("premium" in read) {
+      if (keyStanding !== "none") accountCheckedMs = Date.now();
       emit(EVENTS.updatesChanged, {});
       emit(EVENTS.nxmReceived, { modId: null, fileId: null, accepted: false, downloadId: null, refusal: null });
       return;
     }
-    const read = readNxm(link);
-    const ids = "modId" in read ? { modId: read.modId, fileId: read.fileId } : { modId: null, fileId: null };
-    if (read.refusal || !("modId" in read)) {
-      emit(EVENTS.nxmReceived, { ...ids, accepted: false, downloadId: null, refusal: read.refusal });
+    if ("refused" in read) {
+      const refusal: RiftError = { kind: "refused", detail: { reason: read.refused } };
+      emit(EVENTS.nxmReceived, { modId: null, fileId: null, accepted: false, downloadId: null, refusal });
       return;
     }
-    let row = downloads.find((d) => d.modId === read.modId && d.fileId === read.fileId && d.phase === "waiting");
+    const ids = { modId: read.modId, fileId: read.fileId };
+    const refusal = nxmRefusal(read);
+    if (refusal) {
+      emit(EVENTS.nxmReceived, { ...ids, accepted: false, downloadId: null, refusal });
+      return;
+    }
+    // the waiting download of this file resumes; one already on its way takes the link; else a new one
+    const same = (d: DownloadView) => d.modId === read.modId && d.fileId === read.fileId;
+    const waiting = downloads.find((d) => same(d) && d.phase === "waiting");
+    const onItsWay = downloads.find((d) => same(d) && !OVER.has(d.phase));
+    let row: DownloadView;
     try {
-      row ??= newDownload(read.modId, read.fileId, null);
+      row = waiting ?? onItsWay ?? newDownload(read.modId, read.fileId, null);
     } catch (raw) {
       const failure = raw instanceof RiftFailure ? { kind: raw.kind, detail: raw.detail } : null;
       emit(EVENTS.nxmReceived, { ...ids, accepted: false, downloadId: null, refusal: failure });
       return;
     }
     granted.add(row.id);
-    enqueue(row);
+    if (row.phase === "waiting") enqueue(row);
     emit(EVENTS.nxmReceived, { ...ids, accepted: true, downloadId: row.id, refusal: null });
   }
 
@@ -1643,13 +1821,28 @@ export function createMockBackend(): MockBackend {
       return game() as GameSummary;
     },
     async openModsFolder() {
-      // the spine opens Explorer; the mock has nothing to open
       await wait(30);
+      // the spine's open_mods_folder_impl: a missing folder is made first (a
+      // folder that could not be made at launch fails again the same way)...
+      if (folder === "unmade") {
+        throw new RiftFailure({
+          kind: "io",
+          detail: { detail: `could not make the mods folder ${MOCK_MODS_DIR}: ${MODS_UNMADE_WHY}` },
+        });
+      }
+      if (folder === "gone") {
+        // ...then watched afresh and scanned: the new folder is empty, so the
+        // scan shelves nothing and says so (rift://library-changed)
+        folder = "there";
+        setTimeout(() => emit(EVENTS.libraryChanged, {}), LANDING_SCAN_MS);
+      }
+      // ...and Explorer opens it; the mock has nothing to open
     },
     async planLaunch() {
       await wait(40);
       const plan: LaunchPlanView = {
-        launch: game()?.launch ?? "steam",
+        // no game: the spine's commands/play.rs no_game() plans the exe route
+        launch: game()?.launch ?? "exe",
         warnings: launchWarnings(),
         refused: launchRefusal(),
       };
@@ -1661,7 +1854,7 @@ export function createMockBackend(): MockBackend {
       if (refusal) throw refusedWith(refusal);
       // the watcher sees DD2.exe a moment after Steam or Windows starts it
       setTimeout(() => setRunning(true), 700);
-      return { launch: game()?.launch ?? "steam", launchedMs: Date.now() };
+      return { launch: game()?.launch ?? "exe", launchedMs: Date.now() };
     },
     async getUpdates() {
       await wait(30);
@@ -1760,9 +1953,12 @@ export function createMockBackend(): MockBackend {
         keyStanding = "none";
         return nexusSummary();
       }
-      // dev: a key with "reject" in it plays the key Nexus refuses; nothing is stored
-      if (/reject/i.test(key)) throw nexusFailure("Nexus refused the key (HTTP 401).", "keyRejected");
-      keyStanding = scene.has("offline") ? "unchecked" : "connected";
+      // validate.json first: a key Nexus refuses, or one it could not be asked
+      // about, is not stored (the spine's set_nexus_key; the old key stays)
+      if (scene.has("offline")) throw nexusFailure(OFFLINE_SENTENCE, "offline");
+      // dev: a key with "reject" in it plays the key Nexus refuses
+      if (/reject/i.test(key)) throw nexusFailure(KEY_REJECTED_SENTENCE, "keyRejected");
+      keyStanding = "connected";
       accountCheckedMs = Date.now();
       return nexusSummary();
     },
@@ -1854,6 +2050,12 @@ export function createMockBackend(): MockBackend {
     },
     async startDownload(modId, fileId, forPackageId) {
       await wait(60);
+      // the spine's downloads.rs start, its checks in its order: no key, then a
+      // download of this file already on its way answers as it is (no second
+      // row, no event), then the key's standing, then the file on Nexus
+      if (keyStanding === "none") throw nexusFailure(NO_KEY_SENTENCE, "noKey");
+      const onItsWay = downloads.find((d) => d.modId === modId && d.fileId === fileId && !OVER.has(d.phase));
+      if (onItsWay) return structuredClone(onItsWay);
       const refusal = keyRefusal();
       if (refusal) throw refusal;
       const row = newDownload(modId, fileId, forPackageId);
@@ -1864,18 +2066,23 @@ export function createMockBackend(): MockBackend {
     },
     async cancelDownload(id) {
       await wait(40);
+      // the spine's downloads.rs cancel: its refusals word for word; the bytes stay as they were
       const row = downloads.find((d) => d.id === id);
-      if (!row) throw refusedWith("That download is not in this session's list any more.");
-      if (OVER.has(row.phase)) throw refusedWith("That download is already over, so there is nothing to cancel.");
+      if (!row) throw refusedWith(CANCEL_NOT_LISTED);
+      if (OVER.has(row.phase)) throw refusedWith(CANCEL_OVER);
+      if (committed.has(id)) throw refusedWith(CANCEL_LANDING);
       const at = queue.indexOf(id);
       if (at >= 0) queue.splice(at, 1);
-      row.bytesDone = 0;
+      granted.delete(id);
+      row.nexusPageUrl = null;
       setPhase(row, "cancelled");
     },
     async clearDownloads() {
       await wait(30);
+      const before = downloads.length;
       downloads = downloads.filter((d) => !OVER.has(d.phase));
-      emit(EVENTS.downloadsChanged, {});
+      // the spine tells the window only when a row went
+      if (downloads.length !== before) emit(EVENTS.downloadsChanged, {});
     },
     async getNxmHandler() {
       await wait(30);

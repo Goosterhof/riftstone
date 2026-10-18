@@ -29,8 +29,9 @@ export interface MockPackage {
   entries: ArchiveEntry[];
 }
 
-/** The one library: an invented folder beside an invented install. */
-export const MOCK_MODS_DIR = "C:\\Games\\Stone Bench\\mods";
+/** The one library: an invented folder beside an invented install, written as
+ *  R16.25 rules for mocks and screenshots (`<install dir>\\mods`), never a real path. */
+export const MOCK_MODS_DIR = "<install dir>\\mods";
 
 function fnv(text: string): string {
   let hash = 0xcbf29ce484222325n;

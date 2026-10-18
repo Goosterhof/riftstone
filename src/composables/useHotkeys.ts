@@ -85,13 +85,17 @@ function worldIsOverlay(): boolean {
   );
 }
 
+/** Esc closes the innermost thing ON SCREEN. Your World's pane is drawn on THE
+ *  RIFT only: elsewhere its selection is not a thing on screen, so Esc leaves
+ *  it alone and goes to the page's own Esc (a mod's files returns, R16.21). */
 function escape(): boolean {
   const nav = useNavigation();
   const world = useWorld();
+  const inRift = nav.page.value === "rift";
   if (nav.lightbox.value) nav.closeLightbox();
   else if (worldIsOverlay()) world.close();
-  else if (nav.page.value === "rift" && nav.riftMode.value !== "results") nav.backToResults();
-  else if (world.selectedId.value) world.close();
+  else if (inRift && nav.riftMode.value !== "results") nav.backToResults();
+  else if (inRift && world.selectedId.value) world.close();
   else return false;
   return true;
 }

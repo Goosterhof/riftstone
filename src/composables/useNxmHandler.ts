@@ -19,6 +19,10 @@ const failure = ref<Voiced | null>(null);
 const answering = computed(() => handler.value?.state === "ours");
 /** This PC can change the handler at all (Windows; the bench answers "unsupported"). */
 const supported = computed(() => handler.value !== null && handler.value.state !== "unsupported");
+/** Nexus's Mod Manager Download button would not reach the stone now (nothing
+ *  answers it, or another program does), and the switch could change that.
+ *  A handler not read yet, or off Windows, is never called silent. */
+const silent = computed(() => supported.value && !answering.value);
 
 async function load(): Promise<void> {
   try {
@@ -58,7 +62,7 @@ async function set(on: boolean): Promise<boolean> {
 }
 
 export function useNxmHandler() {
-  return { handler, busy, failure, answering, supported, load, set };
+  return { handler, busy, failure, answering, supported, silent, load, set };
 }
 
 export function resetNxmHandler(): void {

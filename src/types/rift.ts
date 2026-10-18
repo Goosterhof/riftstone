@@ -21,11 +21,15 @@ export interface PayloadKinds {
 /** v0.3: the one library. Every zip, 7z, rar or folder directly inside it is
  *  one package. It sits beside the installed riftstone.exe (`<install dir>\mods`);
  *  a bench may point it elsewhere with RIFTSTONE_MODS_DIR. The spine creates it
- *  at launch. The stone adds downloads to it and never changes, renames or
+ *  at launch, and again when Open mods folder (open_mods_folder) finds it
+ *  missing. The stone adds downloads to it and never changes, renames or
  *  deletes what is already there (RS-2). */
 export interface ModsFolderView {
   path: string;
-  /** False only when the folder is missing and could not be made. */
+  /** False whenever the folder is not there at the moment of the read (it
+   *  could not be made at launch, or it was moved or deleted since). The
+   *  `mods` check says which: an Error with no action, or a Warn whose action
+   *  (openModsFolder) makes it again. */
   exists: boolean;
 }
 
@@ -917,7 +921,9 @@ export interface DownloadView {
   bytesTotal: number | null;
   /** The archive's file name in the mods folder once landed. */
   landedAs: string | null;
-  /** The new package's id once landed. */
+  /** The new package's id once landed. Null also for a landed file that is no
+   *  archive (a raw .pak, an .exe): it sits in the mods folder under
+   *  `landedAs`, but the scan never lists it, so no package carries it. */
   packageId: string | null;
   /** The same file was in the mods folder already: nothing new was written. */
   alreadyHad: boolean;
@@ -1032,7 +1038,9 @@ export interface DownloadProgressEvent {
 /** v0.3: an nxm:// link reached the stone (the site's Mod Manager Download
  *  button, through Windows). `accepted`: a download was started or a waiting
  *  one resumed (`downloadId`); otherwise `refusal` says why (an expired link,
- *  another account's link, another game, no key). The window brings itself
+ *  another account's link, another game, no key). `nxm://premium` answers
+ *  `accepted: false` with `refusal: null`: nothing was refused, while the
+ *  account is validated again in the background. The window brings itself
  *  forward on THE FAR WORLD. Ids are null when the link could not be read. */
 export interface NxmReceivedEvent {
   modId: number | null;

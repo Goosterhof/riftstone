@@ -55,8 +55,12 @@ describe("the load order's doors", () => {
       "Sacred Arbor Fog Removal",
     ]);
     const stand = must(orderRow("Pawn Banter Quieter"), "the adopted stand-in");
-    expect(marksOf(stand)).toStrictEqual(["adopted", "no package"]);
-    expect(must(stand.querySelector(".lrow__mark.is-warn"), "no-package mark").getAttribute("title")).toBe(
+    expect(marksOf(stand)).toStrictEqual(["adopted", "its package isn't in your mods folder"]);
+    // R16.26: adopted is provenance, explained in its title, never coloured as a state
+    const adopted = must(stand.querySelector<HTMLElement>(".lrow__mark"), "adopted mark");
+    expect(adopted.title).toBe("The stone took this install over from files that were already in your game.");
+    expect(stand.querySelector(".is-warn")).toBeNull();
+    expect(must(stand.querySelector(".lrow__gone"), "no-package mark").getAttribute("title")).toBe(
       "Adopted: no package in your mods folder matches it. Uninstall still works: the journal knows every file.",
     );
     // a package-less install stays one press from leaving: every row has its door
@@ -100,12 +104,12 @@ describe("an emptied mods folder", () => {
   it("should keep a door on every install, and uninstall one whose package left the folder", async () => {
     await openYourWorld("emptymods");
     expect(loadOrder().map((r) => [nameOf(r), marksOf(r)])).toStrictEqual([
-      ["Pawn Banter Quieter", ["adopted", "no package"]],
-      ["Brine Water Clarity", ["no package"]],
-      ["Sacred Arbor Fog Removal", ["no package"]],
+      ["Pawn Banter Quieter", ["adopted", "its package isn't in your mods folder"]],
+      ["Brine Water Clarity", ["its package isn't in your mods folder"]],
+      ["Sacred Arbor Fog Removal", ["its package isn't in your mods folder"]],
     ]);
     const brine = must(orderRow("Brine Water Clarity"), "Brine Water Clarity");
-    expect(must(brine.querySelector(".lrow__mark.is-warn"), "no-package mark").getAttribute("title")).toBe(
+    expect(must(brine.querySelector(".lrow__gone"), "no-package mark").getAttribute("title")).toBe(
       "The package is no longer in your mods folder. Uninstall still works: the journal knows every file.",
     );
 

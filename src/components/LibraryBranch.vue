@@ -5,8 +5,16 @@
 // Package rows are slabs on --rs-mist with the card's 4 px state rail; option
 // rows lie on the void with a 2 px rail (R16.2–R16.4). Labels are not drawn
 // on a row: a row is a line, not a card (Bold Choice 11).
+//
+// A treeitem is NAMED by its own label (aria-labelledby) and DESCRIBED by the
+// state its row shows (aria-describedby): the format, the counts or the
+// verdict, the UPDATE chip, the hidden "conflict", a leaf's kinds and state
+// chip. Never aria-label, which would replace the state with the label, and
+// never a name from the content, which would pull in the nested group.
+import { useId } from "vue";
 import type { LibraryRow } from "@/composables/useLibrary";
-import { kindsPresent, plural } from "@/services/format";
+import { FORMAT_LABEL, kindsPresent, plural } from "@/services/format";
+import { troubleProblem } from "@/services/voice";
 import KindBadge from "./KindBadge.vue";
 import StateChip from "./StateChip.vue";
 
@@ -27,6 +35,12 @@ const {
   drawn: ReadonlySet<string>;
 }>();
 const emit = defineEmits<{ press: [row: LibraryRow]; chevron: [row: LibraryRow] }>();
+
+/** R16.4: the level guide sits under its parent's chevron centre: the row's
+ *  1 px border, 12 px padding, half the 10 px chevron. Every row has the same
+ *  1 px border (a package's 4 px rail is drawn, not a border), so one indent
+ *  step is 16 px from the package's text start. */
+const GUIDE_AT = 1 + 12 + 5;
 
 /** R16.4 + R16.10: 16 px per level, 8 px from the fifth level down. */
 function indentOf(level: number): number {
@@ -49,6 +63,10 @@ function railOf(row: LibraryRow): Tone {
   return node.installed ? "world" : "rift";
 }
 
+/** A row that installs something: a leaf option, never a menu or a bundle. */
+const installsOn = (row: LibraryRow): boolean =>
+  row.optionId !== null && !!row.node && row.node.kind !== "bundle" && !row.node.menuOnly;
+
 function chipOf(row: LibraryRow): "menu" | "conflict" | "installed" | "notInstalled" | null {
   const node = row.node;
   if (!node || node.kind === "bundle") return null;
@@ -57,19 +75,35 @@ function chipOf(row: LibraryRow): "menu" | "conflict" | "installed" | "notInstal
   return node.installed ? "installed" : "notInstalled";
 }
 
-/** The package's lead problem, in the trouble fold's own verdict (R16.2). */
+/** The trouble fold's own verdict (R16.2): only for a trouble the fold lists
+ *  (services/voice.ts TROUBLE_KINDS), read in its order, never problems[0]
+ *  blindly. A package whose problems the fold does not list keeps its counts. */
 function problemOf(row: LibraryRow): { text: string; ember: boolean } | null {
-  const lead = row.pkg.package.problems[0];
+  const lead = troubleProblem(row.pkg.package);
   if (!lead) return null;
   return lead.kind === "unreadable"
     ? { text: "won't open", ember: true }
     : { text: "opens with a warning", ember: false };
 }
+
+/** Ids for one row's parts: one LibraryBranch per level, so its own prefix and
+ *  the row's place in it make them unique in the document. */
+const uid = useId();
+const idOf = (i: number, part: string): string => `${uid}-${i}-${part}`;
+
+/** What describes a row: the parts of its line that carry its state. */
+function stateIds(row: LibraryRow, i: number): string | undefined {
+  if (row.kind !== "package") return row.node ? idOf(i, "meta") : undefined;
+  const parts = ["fmt", "count"];
+  if (row.pkg.update === "available") parts.push("update");
+  if (row.pkg.conflicted) parts.push("conflict");
+  return parts.map((part) => idOf(i, part)).join(" ");
+}
 </script>
 
 <template>
   <li
-    v-for="row in items"
+    v-for="(row, i) in items"
     :key="row.key"
     role="treeitem"
     class="ltr__item"
@@ -80,7 +114,8 @@ function problemOf(row: LibraryRow): { text: string; ember: boolean } | null {
     :aria-posinset="row.position"
     :aria-expanded="row.branch ? (row.expanded ? 'true' : 'false') : undefined"
     :aria-selected="row.optionId ? (row.optionId === selectedId ? 'true' : 'false') : undefined"
-    :aria-label="row.label"
+    :aria-labelledby="idOf(i, 'name')"
+    :aria-describedby="stateIds(row, i)"
     :tabindex="row.key === stop ? 0 : -1"
   >
     <div
@@ -101,31 +136,36 @@ function problemOf(row: LibraryRow): { text: string; ember: boolean } | null {
       <span class="ltr__chev" aria-hidden="true" @click.stop="row.branch ? emit('chevron', row) : emit('press', row)">{{
         row.branch ? (row.expanded ? "▾" : "▸") : "·"
       }}</span>
-      <span class="ltr__label" :title="row.label">{{ row.label }}</span>
+      <span :id="idOf(i, 'name')" class="ltr__label" :title="row.label">{{ row.label }}</span>
       <template v-if="row.kind === 'package'">
-        <span class="ltr__fmt">{{ row.pkg.package.format.toUpperCase() }}</span>
-        <span v-if="problemOf(row)" class="ltr__count" :class="problemOf(row)?.ember ? 'is-ember' : 'is-muted'">{{
-          problemOf(row)?.text
-        }}</span>
-        <span v-else class="ltr__count"
+        <span :id="idOf(i, 'fmt')" class="ltr__fmt">{{ FORMAT_LABEL[row.pkg.package.format] }}</span>
+        <span
+          v-if="problemOf(row)"
+          :id="idOf(i, 'count')"
+          class="ltr__count"
+          :class="problemOf(row)?.ember ? 'is-ember' : 'is-muted'"
+          >{{ problemOf(row)?.text }}</span
+        >
+        <span v-else :id="idOf(i, 'count')" class="ltr__count"
           >{{ plural(row.pkg.installable, "option")
           }}<span v-if="row.pkg.installed > 0" class="is-world"> · {{ row.pkg.installed }} in your world</span></span
         >
-        <StateChip v-if="row.pkg.update === 'available'" state="update" />
-        <span v-if="row.pkg.conflicted" class="ltr__sword"
+        <StateChip v-if="row.pkg.update === 'available'" :id="idOf(i, 'update')" state="update" />
+        <span v-if="row.pkg.conflicted" :id="idOf(i, 'conflict')" class="ltr__sword"
           ><span aria-hidden="true">⚔</span><span class="rs-sr-only">conflict</span></span
         >
       </template>
-      <span v-else-if="row.node" class="ltr__meta">
+      <span v-else-if="row.node" :id="idOf(i, 'meta')" class="ltr__meta">
+        <!-- R16.3: menu and bundle nodes install nothing, so they carry no badges -->
         <span
-          v-if="kindsPresent(row.node.kinds).length"
+          v-if="installsOn(row) && kindsPresent(row.node.kinds).length"
           class="ltr__badges"
           :data-kinds="kindsPresent(row.node.kinds).length"
         >
           <KindBadge v-for="k in kindsPresent(row.node.kinds)" :key="k" :kind="k" />
         </span>
         <span
-          v-if="kindsPresent(row.node.kinds).length > 1"
+          v-if="installsOn(row) && kindsPresent(row.node.kinds).length > 1"
           class="ltr__kinds"
           :title="kindsPresent(row.node.kinds).join(', ')"
           >+{{ kindsPresent(row.node.kinds).length }} kinds</span
@@ -137,7 +177,7 @@ function problemOf(row: LibraryRow): { text: string; ember: boolean } | null {
       v-if="row.expanded && kids.get(row.key)?.length"
       role="group"
       class="ltr__group"
-      :style="{ '--guide-x': `${12 + indentOf(row.level) + 5}px` }"
+      :style="{ '--guide-x': `${GUIDE_AT + indentOf(row.level)}px` }"
     >
       <LibraryBranch
         :items="kids.get(row.key) ?? []"
@@ -190,10 +230,20 @@ function problemOf(row: LibraryRow): { text: string; ember: boolean } | null {
   border-color: var(--rs-edgehi);
 }
 /* the package: one slab on --rs-mist, 40 px, its 4 px state rail */
+/* the rail is drawn, not a border: every row keeps the same 1 px box, so the
+   indent is measured from the same text start (R16.4) */
 .ltr__row.is-pkg {
   height: 40px;
   background: var(--rs-mist);
-  border-left: 4px solid var(--rs-rift);
+}
+.ltr__row.is-pkg::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  left: -1px;
+  width: 4px;
+  background: var(--rs-rift);
 }
 .ltr__row.is-pkg:hover {
   background: var(--rs-misthi);
@@ -204,11 +254,11 @@ function problemOf(row: LibraryRow): { text: string; ember: boolean } | null {
 .ltr__row.is-pkg .ltr__label {
   font-weight: 700;
 }
-.ltr__row.is-pkg.rail--world {
-  border-left-color: var(--rs-world);
+.ltr__row.is-pkg.rail--world::before {
+  background: var(--rs-world);
 }
-.ltr__row.is-pkg.rail--ember {
-  border-left-color: var(--rs-ember);
+.ltr__row.is-pkg.rail--ember::before {
+  background: var(--rs-ember);
 }
 /* an option: on the void, 32 px, a 2 px rail half the package's */
 .ltr__row.is-node {

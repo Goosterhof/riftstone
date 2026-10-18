@@ -24,6 +24,8 @@ export type SceneName =
   | ""
   | "empty"
   | "emptymods"
+  | "nofloor"
+  | "gonemods"
   | "nogame"
   | "scanning"
   | "refoff"

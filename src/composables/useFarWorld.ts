@@ -22,7 +22,7 @@ import type {
 import { asRiftFailure, rift } from "@/services/rift";
 import { quotaProbe, type NexusQuota } from "@/services/pending";
 import { plural } from "@/services/format";
-import { voice, voicedLine, type Voiced } from "@/services/voice";
+import { farCaseOf, voice, voicedLine, type FarCase, type Voiced } from "@/services/voice";
 import { useToasts } from "./useToasts";
 import { useStone } from "./useStone";
 
@@ -31,6 +31,10 @@ const progress = ref<UpdatesProgressEvent | null>(null);
 const checking = ref(false);
 const checkFailure = ref<Voiced | null>(null);
 const keyFailure = ref<Voiced | null>(null);
+/** Why the last key paste failed, as the voice read it: only "keyRejected"
+ *  means Nexus refused the key; "offline" means Nexus was never asked (the
+ *  spine then stores nothing and keeps whatever key it held). */
+const keyFailureCase = ref<FarCase | null>(null);
 const keyBusy = ref(false);
 const quota = ref<NexusQuota | null>(null);
 const linkingId = ref<string | null>(null);
@@ -348,6 +352,7 @@ export function candidateLine(c: NexusCandidate): string {
 async function setKey(key: string | null): Promise<boolean> {
   keyBusy.value = true;
   keyFailure.value = null;
+  keyFailureCase.value = null;
   try {
     const backend = await rift();
     await backend.setNexusKey(key);
@@ -356,12 +361,19 @@ async function setKey(key: string | null): Promise<boolean> {
     await refreshQuota();
     return true;
   } catch (raw) {
-    keyFailure.value = voice(asRiftFailure(raw), "nexusKey");
+    const failure = asRiftFailure(raw);
+    keyFailure.value = voice(failure, "nexusKey");
+    keyFailureCase.value = farCaseOf(failure, "nexusKey");
     return false;
   } finally {
     keyBusy.value = false;
   }
 }
+
+/** The last paste was refused by Nexus itself (the chip reads REJECTED). */
+const keyRefused = computed(() => keyFailureCase.value === "keyRejected");
+/** The last paste never reached Nexus (the chip reads OFFLINE, nothing was stored). */
+const keyUnreached = computed(() => keyFailureCase.value === "offline");
 
 export function useFarWorld() {
   return {
@@ -370,6 +382,8 @@ export function useFarWorld() {
     checking,
     checkFailure,
     keyFailure,
+    keyRefused,
+    keyUnreached,
     keyBusy,
     quota,
     linkingId,
@@ -413,6 +427,7 @@ export function resetFarWorld(): void {
   checking.value = false;
   checkFailure.value = null;
   keyFailure.value = null;
+  keyFailureCase.value = null;
   keyBusy.value = false;
   quota.value = null;
   linkingId.value = null;

@@ -42,7 +42,42 @@ const worldFolded = ref(true);
 
 const query = computed(() => search.settledText.value.trim());
 const library = computed(() => stone.overview.value?.library ?? null);
-const empty = computed(() => library.value !== null && library.value.packages === 0 && !stone.scanning.value);
+/** The mods folder is not there (WINDOW-CONTRACT § Check ids `mods`), and
+ *  why, while no scan is reading: the spine's check tells the two apart. */
+const modsMissing = computed(() => (stone.scanning.value ? null : stone.modsMissing.value));
+/** §9 Mods folder missing (v0.3): the stone could neither find nor make it at
+ *  launch. Nothing to open: only a scan that looks again once it is made. */
+const noFloor = computed(() => modsMissing.value === "unmade");
+/** The folder went while the stone ran (moved or deleted): Open mods folder
+ *  makes it again, empty, and watches it. A scan never makes it. */
+const floorGone = computed(() => modsMissing.value === "gone");
+const empty = computed(
+  () => library.value !== null && library.value.packages === 0 && !stone.scanning.value && modsMissing.value === null,
+);
+/** §9's mods folder as the window knows it; `<install dir>\\mods` before the first overview. */
+const modsPath = computed(() => stone.modsFolder.value?.path ?? "<install dir>\\mods");
+const quietBody = computed(
+  () =>
+    `Your mods folder is empty. Put a mod's zip, 7z or rar, or its unpacked folder, in ${modsPath.value}, or download one from the far world. The stone reads it when you scan.`,
+);
+const noFloorBody = computed(
+  () =>
+    `The stone couldn't find or make its mods folder at ${modsPath.value}. It needs a folder named mods beside riftstone.exe that it may write to.`,
+);
+const floorGoneBody = computed(
+  () =>
+    `Your mods folder at ${modsPath.value} was moved or deleted while the stone ran. Your game keeps every install. Open mods folder makes the folder again, empty, and the stone watches it; then put your mods back in it.`,
+);
+
+/** §9 Empty library's third door: THE FAR WORLD, at FIND ON NEXUS. */
+async function findOnNexus(): Promise<void> {
+  nav.go("nexus");
+  await nextTick();
+  await nextTick();
+  const find = document.getElementById("far-find");
+  find?.scrollIntoView?.({ block: "start" });
+  find?.querySelector<HTMLElement>("input")?.focus();
+}
 /** Trouble cards carry no labels: under a label filter they would lead a
  *  column they do not belong to. */
 const showTroubled = computed(() => !query.value && !search.labelFiltered.value && stone.troubled.value.length > 0);
@@ -206,7 +241,8 @@ defineExpose({ focusCard, focusTree });
               ></template
             >
           </p>
-          <div class="rift__tools">
+          <!-- an empty library has nothing to sort or group -->
+          <div v-if="!empty && !modsMissing" class="rift__tools">
             <label class="rift__sort">
               <span class="rs-sr-only">Sort</span>
               <select v-model="search.sort.value">
@@ -261,14 +297,25 @@ defineExpose({ focusCard, focusTree });
           <!-- §9's Pause waits on a spine command (contract request): no dead button meanwhile. -->
         </RiftInscription>
 
-        <RiftInscription
-          v-if="empty"
-          inscription="THE RIFT IS QUIET"
-          body="No mods in your mods folder yet. Put a mod's zip, 7z, rar or folder in it, and the stone reads it."
-        >
+        <!-- §9 Mods folder missing: nothing to open, only a scan that looks again -->
+        <RiftInscription v-if="noFloor" inscription="THE RIFT HAS NO FLOOR" tone="ember" :body="noFloorBody">
+          <RiftButton variant="primary" :busy="stone.scanning.value" @click="preflight.rescan()">Scan again</RiftButton>
+        </RiftInscription>
+
+        <!-- the folder went while the stone ran: the spine's check offers the
+             press that makes it again; a scan would read nothing -->
+        <RiftInscription v-else-if="floorGone" inscription="THE RIFT LOST ITS FLOOR" tone="warn" :body="floorGoneBody">
           <RiftButton variant="primary" :busy="preflight.busy.value === 'mods'" @click="preflight.openModsFolder()"
             >Open mods folder</RiftButton
           >
+        </RiftInscription>
+
+        <RiftInscription v-else-if="empty" inscription="THE RIFT IS QUIET" :body="quietBody">
+          <RiftButton variant="primary" :busy="preflight.busy.value === 'mods'" @click="preflight.openModsFolder()"
+            >Open mods folder</RiftButton
+          >
+          <RiftButton :busy="stone.scanning.value" @click="preflight.rescan()">Scan</RiftButton>
+          <RiftButton @click="findOnNexus()">Find on Nexus</RiftButton>
         </RiftInscription>
 
         <FailureNotice

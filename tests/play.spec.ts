@@ -7,6 +7,7 @@
 // switches wait, in the engine's own words, until the game closes.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { nextTick } from "vue";
 import { useLaunch } from "@/composables/useLaunch";
 import { useNavigation } from "@/composables/useNavigation";
 import { useStone } from "@/composables/useStone";
@@ -19,6 +20,8 @@ afterEach(() => {
 });
 
 const play = (): HTMLButtonElement | null => document.querySelector<HTMLButtonElement>(".play__btn");
+/** THE WORLD IS AWAKE, carved where Play stood. */
+const awake = (): Element | null => document.querySelector(".play__carved--awake");
 const confirm = (): HTMLElement | null =>
   document.querySelector<HTMLElement>('.play [role="group"][aria-label="Before you play"]');
 const warnings = (): string[] =>
@@ -47,7 +50,7 @@ const RUNNING_REORDER =
   "The stone held back: Dragon's Dogma 2 is running and holds its paks open. Close the game, then change the load order. Nothing was changed. Close Dragon's Dogma 2, then try again.";
 const RUNNING_SWITCH =
   "The stone held back: Dragon's Dogma 2 is running, and REFramework rewrites re2_fw_config.txt when the game closes, so the change would be lost. Close the game, then flip the switch. Nothing was changed. Close Dragon's Dogma 2, then try again.";
-const PAK_FOLDER_OFF = "REFramework's Alternate PAK Folder is off, so 3 installed paks won't load.";
+const PAK_FOLDER_OFF = "Your PAK mods won't load: REFramework's Alternate PAK Folder is off.";
 
 describe("Play on the stone", () => {
   it("should offer Play with a game, read its plan at once, and bind no key that starts it", async () => {
@@ -85,7 +88,8 @@ describe("Play on the stone", () => {
     expect(play()).toBeNull();
     expect(textAt(".play__since")).toBe(since());
     expect(launched).toHaveBeenCalledTimes(1);
-    expect(toastOf("Dragon's Dogma 2 is starting through Steam.")).toBe("world");
+    // the slab says it: no toast repeats THE WORLD STIRS, and no gold is spent on a press
+    expect(toastOf("Dragon's Dogma 2 is starting through Steam.")).toBeUndefined();
     expect(useLaunch().launching.value).toBe(false);
   });
 
@@ -98,7 +102,7 @@ describe("Play on the stone", () => {
     play()?.click();
     await until(() => text().includes("THE WORLD STIRS"), "the world stirring");
     expect(textAt(".play__note")).toBe("The game is starting.");
-    expect(toastOf("Dragon's Dogma 2 is starting from its game folder.")).toBe("world");
+    expect(toastOf("Dragon's Dogma 2 is starting from its game folder.")).toBeUndefined();
     await until(() => text().includes("THE WORLD IS AWAKE"), "the game running");
   });
 
@@ -123,15 +127,17 @@ describe("Play on the stone", () => {
     button("Play anyway").click();
     await until(() => text().includes("THE WORLD IS AWAKE"), "the game running");
     expect(launched).toHaveBeenCalledTimes(1);
-    expect(toastOf(`Dragon's Dogma 2 is starting through Steam. ${PAK_FOLDER_OFF}`)).toBe("warn");
+    // the warning was the confirm's to say: no toast says it again after Play anyway
+    expect(useToasts().toasts.value.some((t) => t.line.includes(PAK_FOLDER_OFF))).toBe(false);
   });
 
-  it("should send Fix it to PREFLIGHT, onto the row of the first warning", async () => {
+  it("should send Fix it to PREFLIGHT, onto the row of the first warning, with the keyboard on its recovery", async () => {
     await wakeOn("refoff");
     await until(() => play() !== null, "Play");
     const scrolled = vi.spyOn(Element.prototype, "scrollIntoView");
     play()?.click();
     await until(() => confirm() !== null, "the confirm on the stone");
+    button("Fix it").focus();
     button("Fix it").click();
     await until(() => useNavigation().page.value === "preflight", "PREFLIGHT");
     const target = (): HTMLElement | undefined =>
@@ -140,8 +146,50 @@ describe("Play on the stone", () => {
         .find((el) => el.dataset.check === "pakdir");
     await until(() => target() !== undefined, "the Alternate PAK Folder row scrolled to");
     expect(textOf(target() ?? document.body)).toContain("Alternate PAK Folder");
+    // the focus never drops to <body>: it lands on the row's own way out
+    await until(() => document.activeElement === button("Turn it on"), "the focus on Turn it on");
+    expect(document.activeElement?.closest("[data-check]")?.getAttribute("data-check")).toBe("pakdir");
     expect(confirm()).toBeNull();
     expect(useLaunch().launching.value).toBe(false);
+  });
+
+  it("should answer a second press while the world stirs: Steam is asked again, so a start that never comes leaves no dead stone", async () => {
+    // R16.13: Play stays pressable under THE WORLD STIRS
+    await wakeOn();
+    await until(() => play() !== null && useLaunch().plan.value !== null, "Play");
+    // Steam is asked, and the game never comes
+    const launched = vi.spyOn(spine(), "launchGame").mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return { launch: "steam", launchedMs: Date.now() };
+    });
+    play()?.click();
+    await until(() => text().includes("THE WORLD STIRS") && play()?.getAttribute("aria-busy") !== "true", "stirring");
+    expect(launched).toHaveBeenCalledTimes(1);
+    expect(play()?.getAttribute("aria-disabled")).toBeNull();
+
+    play()?.click();
+    await until(() => launched.mock.calls.length === 2, "Steam asked again");
+    await until(
+      () => text().includes("THE WORLD STIRS") && play()?.getAttribute("aria-busy") !== "true",
+      "stirring again",
+    );
+    expect(toastLines().filter((l) => l.startsWith("Dragon's Dogma 2 is starting"))).toHaveLength(0);
+    expect(useLaunch().launching.value).toBe(true);
+    expect(text()).not.toContain("THE WORLD IS AWAKE");
+  });
+
+  it("should keep the keyboard on the slab as the game starts and stops: the carved line, then Play", async () => {
+    await wakeOn();
+    await until(() => play() !== null && useLaunch().plan.value !== null, "Play");
+    play()?.focus();
+    play()?.click();
+    await until(() => text().includes("THE WORLD IS AWAKE"), "the game running");
+    // Play left under the focus: the carved line takes it, never <body>
+    await until(() => document.activeElement === awake(), "the focus on THE WORLD IS AWAKE");
+    expect(awake()?.getAttribute("tabindex")).toBe("-1");
+
+    spine().closeGame();
+    await until(() => play() !== null && document.activeElement === play(), "the focus back on Play");
   });
 
   it("should refuse Play without a game: focusable, its sentence linked, and a press starts nothing", async () => {
@@ -163,6 +211,33 @@ describe("Play on the stone", () => {
 });
 
 describe("while the world is awake", () => {
+  it("should never say the game is already running once it has stopped, not even before the plan is read again", async () => {
+    await wakeOn("running");
+    await until(() => text().includes("THE WORLD IS AWAKE"), "the running game");
+    // the plan on hand was read while the game ran: it refuses for that run
+    await until(() => useLaunch().plan.value?.refused?.includes("already running") === true, "the running plan");
+    // every plan read the wake started has landed (the mock answers from the state at its answer)
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(useLaunch().plan.value?.refused).toContain("already running");
+    // the next plan takes its time to arrive
+    const original = spine().planLaunch.bind(spine());
+    vi.spyOn(spine(), "planLaunch").mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      return original();
+    });
+
+    spine().closeGame();
+    await until(() => useStone().overview.value?.game?.running === false, "the overview: the game stopped");
+    await nextTick();
+    // the moment the stone knows the game stopped, Play is Ready: no stale sentence is shown or announced
+    expect(play()).not.toBeNull();
+    expect(play()?.getAttribute("aria-disabled")).toBeNull();
+    expect(textAt("#play-refused")).toBeNull();
+    expect(text()).not.toContain("already running");
+    await until(() => useLaunch().plan.value?.refused === null, "the fresh plan");
+    expect(textAt("#play-refused")).toBeNull();
+  });
+
   it("should refuse a reorder and a switch in the engine's own words, and lift both rules when the game stops", async () => {
     await wakeOn("running,refoff");
     await until(() => text().includes("THE WORLD IS AWAKE"), "the running game");
@@ -191,8 +266,9 @@ describe("while the world is awake", () => {
     // the watcher sees the game stop: Play is back, and the order lands
     spine().closeGame();
     await until(() => play() !== null && !text().includes("THE WORLD IS AWAKE"), "Play back");
-    // the plan read while the game ran is read again: Play is Ready, not refused
+    // the plan read while the game ran is void once it stops, and is read again: Play is Ready, not refused
     await until(() => play()?.getAttribute("aria-disabled") === null, "Play ready");
+    await until(() => !useLaunch().planStale.value, "the plan read again");
     // the switch stayed off while the game ran, so its warning rides along
     expect(useLaunch().plan.value).toStrictEqual({
       launch: "steam",

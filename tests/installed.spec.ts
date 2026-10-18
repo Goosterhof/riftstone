@@ -56,7 +56,7 @@ describe("the load order", () => {
     await until(() => row("Pawn Banter Quieter") !== null, "the adopted stand-in in the load order");
     const stand = row("Pawn Banter Quieter");
     expect(textOf(stand ?? document.body)).toContain("adopted");
-    expect(textOf(stand ?? document.body)).toContain("no package");
+    expect(textOf(stand ?? document.body)).toContain("its package isn't in your mods folder");
 
     door("Pawn Banter Quieter")?.click();
     await until(() => textAt(".home__return .home__h") !== null, "THE RETURN");

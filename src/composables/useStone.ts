@@ -41,11 +41,23 @@ const scanReading = computed<ScanProgressEvent | null>(() => {
 const visibleTroubled = computed(() => troubled.value.filter((p) => !hiddenTroubled.value.includes(p.id)));
 
 /** v0.3: the one library folder (`<install dir>\\mods`), and the spine's
- *  `mods` check on it: absent while the folder holds packages, Info when it
- *  is empty, Warn when it cannot be listed, Error when it is missing and could
- *  not be made (WINDOW-CONTRACT § Check ids). */
+ *  `mods` check on it: absent while the folder holds packages; Info, action
+ *  openModsFolder, when it is empty; Warn, action rescan, when it cannot be
+ *  listed; Warn, action openModsFolder, when it went while the stone ran
+ *  (moved or deleted); Error, no action, when it was missing at launch and
+ *  could not be made (WINDOW-CONTRACT § Check ids). */
 const modsFolder = computed(() => overview.value?.mods ?? null);
 const modsCheck = computed(() => overview.value?.checks.find((c) => c.id === "mods") ?? null);
+/** The `mods` check's own way on is Open mods folder: the folder is empty, or
+ *  it went and the press makes it again, empty, and watches it. */
+const modsWantOpen = computed(() => modsCheck.value?.action?.kind === "openModsFolder");
+/** The folder is not there now, and why: `gone`, it went while the stone ran
+ *  (Open mods folder makes it again); `unmade`, it could not be made at launch
+ *  (nothing to open: the check names the cause). Null while it is there. */
+const modsMissing = computed<"gone" | "unmade" | null>(() => {
+  if (modsFolder.value?.exists !== false) return null;
+  return modsWantOpen.value ? "gone" : "unmade";
+});
 
 /** The last card left: the next trouble of the session arrives folded. */
 function closeIfEmpty(): void {
@@ -101,6 +113,8 @@ export function useStone() {
     troubled: visibleTroubled,
     modsFolder,
     modsCheck,
+    modsWantOpen,
+    modsMissing,
     troubleOpen: readonly(troubleOpen),
     toggleTrouble: () => {
       troubleOpen.value = !troubleOpen.value;
