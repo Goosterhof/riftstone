@@ -117,7 +117,9 @@ describe("THE MUSTER — every state of R17.22", () => {
 
   it("should show THE GAME IS SAVING once, then the party when the save settles", async () => {
     await openMuster("musterwriting", "THE GAME IS SAVING");
-    expect(text()).toContain("The game is writing data009Slot right now.");
+    expect(text()).toContain(
+      "The game is writing data009Slot right now, or another program is holding it for a moment.",
+    );
     expect(hasButton("Read again")).toBe(true);
     expect(document.querySelector(".mstate--warn")).not.toBeNull();
     await until(() => text().includes("Odalric") && !!document.querySelector('[role="tablist"]'), "the party read");
@@ -391,6 +393,34 @@ describe("THE MUSTER — THE RE-CARVING (R17.25)", () => {
     await until(() => !text().includes("CHANGED"), "the marks cleared");
     await pickSlot("data009Slot", "Lv 42");
     expect(text()).not.toContain("CHANGED");
+  });
+
+  it("should keep its ground through a re-read that failed, and carve the next one", async () => {
+    // The General's review of PR #1: a failed `changed` read blanked the sheet,
+    // and the next good read landed with nothing to carve against.
+    await openMuster();
+    const backend = spine();
+    const read = backend.getMuster.bind(backend);
+    let refuse = true;
+    vi.spyOn(backend, "getMuster").mockImplementation(async (slotId) => {
+      if (refuse) {
+        refuse = false;
+        throw new RiftFailure({
+          kind: "save",
+          detail: {
+            detail: `The game is writing ${slotId} right now, or another program is holding it for a moment.`,
+            reason: "beingWritten",
+          },
+        });
+      }
+      return read(slotId);
+    });
+    backend.gameSaved();
+    await until(() => text().includes("THE GAME IS SAVING"), "the refused re-read");
+    backend.gameSaved();
+    await until(() => text().includes("CHANGED"), "the carved count");
+    expect(textAt(".muster__changed")).toBe("5 CHANGED");
+    expect(gearRow("ring1")).toMatch(/•\s*Ring of Embers, changed at the last save, was Ring of Low Tides$/);
   });
 
   it("should show the marks without the light under reduced motion", async () => {

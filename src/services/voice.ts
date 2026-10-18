@@ -626,7 +626,7 @@ const SAVE_VOICES: Record<SaveReason, (file: string) => Voiced> = {
   beingWritten: (file) =>
     save(
       "THE GAME IS SAVING",
-      `The game is writing ${file} right now.`,
+      `The game is writing ${file} right now, or another program is holding it for a moment.`,
       "The stone reads it again as soon as the save settles; nothing was changed.",
       [READ_AGAIN],
     ),

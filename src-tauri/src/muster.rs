@@ -88,14 +88,29 @@ struct Cached {
     read: SlotRead,
 }
 
-/// The Muster's state in the spine. No lock is held across a disk read.
+/// The Muster's state in the spine. No lock on this state is held across a disk read; the
+/// codex build's own gate (`building`) is held across the one read it guards.
 #[derive(Default)]
 pub struct MusterState {
     /// Tests and benches: exactly these save folders, nothing discovered.
     fixed: Mutex<Option<Vec<SaveFolder>>>,
     slots: Mutex<HashMap<PathBuf, Cached>>,
-    codex: Mutex<Option<(PakStamp, Arc<Codex>)>>,
+    /// The names built from a pak, or `None` when building them from it failed: held against
+    /// the pak's size and time either way, so an unchanged pak is never read twice.
+    codex: Mutex<Option<(PakStamp, Option<Arc<Codex>>)>>,
     watchers: Mutex<HashMap<PathBuf, LibraryWatcher>>,
+    /// Held while one caller builds the names from the pak; the only lock held across a read.
+    building: Mutex<()>,
+    /// How many times the names were built from the game's pak since launch.
+    builds: std::sync::atomic::AtomicUsize,
+}
+
+/// How many times the game's names were built from its pak since launch (the tests read it).
+pub fn codex_builds(state: &AppState) -> usize {
+    state
+        .muster
+        .builds
+        .load(std::sync::atomic::Ordering::SeqCst)
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -141,37 +156,87 @@ fn iso(time: Option<SystemTime>) -> String {
     chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
+/// Why one attempt at a slot gave no party.
+#[derive(Debug)]
+enum Miss {
+    /// The file is not there.
+    Gone,
+    /// The file is there and would not be read: another program holds it for a moment (the
+    /// game, Steam Cloud, an antivirus), or this user may not read it.
+    Held,
+    Slot(SlotError),
+}
+
+impl Miss {
+    /// A miss that a second look can heal: a held file, or one the game is writing (a cut file
+    /// or a signature that disagrees).
+    fn passing(&self) -> bool {
+        matches!(
+            self,
+            Miss::Held
+                | Miss::Slot(SlotError::Save(
+                    rift_save::SaveError::Signature | rift_save::SaveError::Truncated
+                ))
+        )
+    }
+}
+
+fn miss_of(err: &std::io::Error) -> Miss {
+    if err.kind() == std::io::ErrorKind::NotFound {
+        Miss::Gone
+    } else {
+        Miss::Held
+    }
+}
+
+/// The file's bytes, read once and whole with the default sharing, holding nothing after. A
+/// file larger than any save is never read: its size says so first.
+fn slot_bytes(path: &Path) -> Result<Vec<u8>, Miss> {
+    use std::io::Read;
+
+    let file = fs::File::open(path).map_err(|e| miss_of(&e))?;
+    let len = file.metadata().map_err(|e| miss_of(&e))?.len();
+    let too_large = |len: u64| Miss::Slot(SlotError::Save(rift_save::SaveError::TooLarge(len)));
+    if len > rift_save::MAX_FILE {
+        return Err(too_large(len));
+    }
+    let mut bytes = Vec::with_capacity(len as usize);
+    file.take(rift_save::MAX_FILE + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| miss_of(&e))?;
+    if bytes.len() as u64 > rift_save::MAX_FILE {
+        return Err(too_large(bytes.len() as u64));
+    }
+    Ok(bytes)
+}
+
 /// Read and parse one slot, trying the folder's own account first, then the others the stone
-/// found. A signature that disagrees is read again once after [`REREAD_AFTER`]: still
-/// disagreeing while the file changed is the game writing it; unchanged, it is damage.
+/// found. A miss a second look can heal is tried once more after [`REREAD_AFTER`]. A file that
+/// still would not be read counts as being written, and so does a cut file or a disagreeing
+/// signature whose file changed meanwhile; unchanged, those are damage. Only a file that is not
+/// there is gone.
 fn read_slot(path: &Path, account: u32, accounts: &[u32]) -> SlotRead {
-    let attempt = || -> Result<Muster, Option<SlotError>> {
-        let bytes = fs::read(path).map_err(|_| None)?;
-        let mut last = None;
+    let attempt = || -> Result<Muster, Miss> {
+        let bytes = slot_bytes(path)?;
+        let mut last = SlotError::Save(rift_save::SaveError::WrongAccount);
         for id in std::iter::once(account).chain(accounts.iter().copied().filter(|&a| a != account))
         {
             match rift_muster::read_slot(&bytes, id) {
                 Ok(m) => return Ok(m),
-                Err(SlotError::Save(rift_save::SaveError::WrongAccount)) => {
-                    last = Some(SlotError::Save(rift_save::SaveError::WrongAccount));
-                }
-                Err(other) => return Err(Some(other)),
+                Err(e @ SlotError::Save(rift_save::SaveError::WrongAccount)) => last = e,
+                Err(other) => return Err(Miss::Slot(other)),
             }
         }
-        Err(last)
+        Err(Miss::Slot(last))
     };
     let stat = || fs::metadata(path).ok().map(|m| (m.len(), modified(&m)));
     let before = stat();
-    let first = attempt();
-    let result = match first {
-        Err(Some(SlotError::Save(
-            rift_save::SaveError::Signature | rift_save::SaveError::Truncated,
-        ))) => {
+    let result = match attempt() {
+        Err(miss) if miss.passing() => {
             std::thread::sleep(REREAD_AFTER);
             match attempt() {
-                Err(Some(SlotError::Save(
-                    rift_save::SaveError::Signature | rift_save::SaveError::Truncated,
-                ))) => {
+                Err(Miss::Held) => return SlotRead::Problem(SaveReason::BeingWritten),
+                Err(miss) if miss.passing() => {
                     return SlotRead::Problem(if stat() == before {
                         SaveReason::Damaged
                     } else {
@@ -185,15 +250,16 @@ fn read_slot(path: &Path, account: u32, accounts: &[u32]) -> SlotRead {
     };
     match result {
         Ok(m) => SlotRead::Party(Arc::new(m)),
-        Err(None) => SlotRead::Problem(SaveReason::Gone),
-        Err(Some(SlotError::Save(rift_save::SaveError::WrongAccount))) => {
+        Err(Miss::Gone) => SlotRead::Problem(SaveReason::Gone),
+        Err(Miss::Held) => SlotRead::Problem(SaveReason::BeingWritten),
+        Err(Miss::Slot(SlotError::Save(rift_save::SaveError::WrongAccount))) => {
             SlotRead::Problem(SaveReason::OtherAccount)
         }
-        Err(Some(SlotError::Muster(MusterError::SystemData))) => SlotRead::NotASlot,
-        Err(Some(SlotError::Muster(MusterError::NoParty))) => {
+        Err(Miss::Slot(SlotError::Muster(MusterError::SystemData))) => SlotRead::NotASlot,
+        Err(Miss::Slot(SlotError::Muster(MusterError::NoParty))) => {
             SlotRead::Problem(SaveReason::NoParty)
         }
-        Err(Some(_)) => SlotRead::Problem(SaveReason::Damaged),
+        Err(Miss::Slot(_)) => SlotRead::Problem(SaveReason::Damaged),
     }
 }
 
@@ -204,9 +270,18 @@ fn read_cached(
     account: u32,
     accounts: &[u32],
 ) -> (Option<SystemTime>, SlotRead) {
-    let Ok(meta) = fs::metadata(path) else {
-        lock(&state.muster.slots).remove(path);
-        return (None, SlotRead::Problem(SaveReason::Gone));
+    let meta = match fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(err) => {
+            return match miss_of(&err) {
+                Miss::Gone => {
+                    lock(&state.muster.slots).remove(path);
+                    (None, SlotRead::Problem(SaveReason::Gone))
+                }
+                // Held for a moment: told as being written, which is never remembered.
+                _ => (None, SlotRead::Problem(SaveReason::BeingWritten)),
+            };
+        }
     };
     let (size, time) = (meta.len(), modified(&meta));
     if let Some(hit) = lock(&state.muster.slots).get(path) {
@@ -232,17 +307,31 @@ fn read_cached(
     (time, read)
 }
 
+/// The names held for this pak, or the failure held for it: `None` when nothing is held for
+/// this exact pak yet.
+fn held_codex(state: &AppState, stamp: PakStamp) -> Option<Result<Arc<Codex>, &'static str>> {
+    lock(&state.muster.codex)
+        .as_ref()
+        .filter(|(held, _)| *held == stamp)
+        .map(|(_, codex)| codex.clone().ok_or(UNREADABLE_NOTE))
+}
+
 /// The game's names: from memory, the cache file, or the game's own pak. `Err` is the
-/// sentence the window shows when they are missing.
+/// sentence the window shows when they are missing. A build that fails is held against the
+/// pak just as a success is, so the pak is not read again until it changes, and one build
+/// runs at a time: a second caller waits for it.
 pub fn codex(state: &AppState) -> Result<Arc<Codex>, &'static str> {
     let world = state.world();
     let game = world.game.as_ref().ok_or(NO_GAME_NOTE)?;
     let pak = child_ci(&game.root, GAME_PAK).ok_or(NO_PAK_NOTE)?;
     let stamp = PakStamp::of(&pak).ok_or(UNREADABLE_NOTE)?;
-    if let Some((held, codex)) = lock(&state.muster.codex).as_ref() {
-        if *held == stamp {
-            return Ok(Arc::clone(codex));
-        }
+    if let Some(held) = held_codex(state, stamp) {
+        return held;
+    }
+    let _building = lock(&state.muster.building);
+    // Another caller may have built them while this one waited at the gate.
+    if let Some(held) = held_codex(state, stamp) {
+        return held;
     }
     let cache = state.config.dirs.cache.join(CODEX_CACHE);
     if let Some(file) = fs::read(&cache)
@@ -251,18 +340,23 @@ pub fn codex(state: &AppState) -> Result<Arc<Codex>, &'static str> {
     {
         if file.stamp == stamp {
             let codex = Arc::new(file.codex);
-            *lock(&state.muster.codex) = Some((stamp, Arc::clone(&codex)));
+            *lock(&state.muster.codex) = Some((stamp, Some(Arc::clone(&codex))));
             return Ok(codex);
         }
     }
     let started = std::time::Instant::now();
+    state
+        .muster
+        .builds
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let built = rift_pak::game::GamePak::open(&pak)
         .map_err(|err| err.to_string())
         .and_then(|p| Codex::from_pak(&p).map_err(|err| err.to_string()));
     let codex = match built {
         Ok(codex) => Arc::new(codex),
         Err(err) => {
-            log::warn!("the game's names could not be read from its pak: {err}");
+            log::warn!("the game's names could not be read from its pak: {err}; the stone tries again when the pak changes");
+            *lock(&state.muster.codex) = Some((stamp, None));
             return Err(UNREADABLE_NOTE);
         }
     };
@@ -273,7 +367,7 @@ pub fn codex(state: &AppState) -> Result<Arc<Codex>, &'static str> {
         started.elapsed()
     );
     let had_older = lock(&state.muster.codex)
-        .replace((stamp, Arc::clone(&codex)))
+        .replace((stamp, Some(Arc::clone(&codex))))
         .is_some();
     let file = CodexFile {
         stamp,
@@ -463,9 +557,10 @@ pub fn view(state: &AppState, slot_id: &str) -> Result<MusterView, RiftError> {
                     "{} belongs to a Steam account the stone did not find on this PC.",
                     l.file.file_name
                 ),
-                SaveReason::BeingWritten => {
-                    format!("The game is writing {} right now.", l.file.file_name)
-                }
+                SaveReason::BeingWritten => format!(
+                    "The game is writing {} right now, or another program is holding it for a moment.",
+                    l.file.file_name
+                ),
                 SaveReason::Damaged => {
                     format!("{} is damaged inside and does not open.", l.file.file_name)
                 }

@@ -552,3 +552,194 @@ fn reading_the_muster_writes_nothing_to_the_save_folder() {
     after.sort();
     assert_eq!(before, after, "the Muster only reads (RS-8)");
 }
+
+// --- The General's review of PR #1 (2026-10-18) --------------------------------
+
+/// The slot's problem in a fresh listing.
+fn listed_problem(state: &AppState, slot: &str) -> Option<SaveReason> {
+    get_muster_slots_impl(state)
+        .slots
+        .into_iter()
+        .find(|s| s.slot_id == slot)
+        .unwrap_or_else(|| panic!("{slot} is listed"))
+        .problem
+}
+
+/// A slot another program holds for a moment (the game, Steam Cloud, an antivirus) is being
+/// written, not gone, and it is read again the next time rather than remembered.
+#[test]
+fn a_slot_that_will_not_be_read_is_being_written_and_read_again() {
+    let (bench, folder) = muster_bench();
+    let slot = folder.join("data009Slot.bin");
+    let (state, _) = open(
+        &bench,
+        vec![SaveFolder {
+            account_id: ACCOUNT,
+            path: folder.clone(),
+        }],
+    );
+    let held = hold(&slot);
+    assert_eq!(
+        listed_problem(&state, "data009Slot"),
+        Some(SaveReason::BeingWritten),
+        "held, not gone"
+    );
+    match get_muster_impl(&state, "data009Slot") {
+        Err(RiftError::Save { reason, .. }) => assert_eq!(reason, SaveReason::BeingWritten),
+        other => panic!("{other:?}"),
+    }
+    drop(held);
+    // Let go at the same size and time: it reads at once, so nothing held was remembered.
+    assert_eq!(listed_problem(&state, "data009Slot"), None);
+    assert!(get_muster_impl(&state, "data009Slot").is_ok());
+}
+
+/// Hold `path` the way another program can: Unix takes the read permission away, Windows opens
+/// it with no sharing.
+#[cfg(unix)]
+fn hold(path: &Path) -> impl Drop {
+    use std::os::unix::fs::PermissionsExt;
+    struct Held(PathBuf);
+    impl Drop for Held {
+        fn drop(&mut self) {
+            fs::set_permissions(&self.0, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(
+        fs::read(path).is_err(),
+        "the bench runs as a user permissions bind (not root)"
+    );
+    Held(path.to_path_buf())
+}
+
+#[cfg(windows)]
+fn hold(path: &Path) -> impl Drop {
+    use std::os::windows::fs::OpenOptionsExt;
+    struct Held(#[allow(dead_code)] fs::File);
+    impl Drop for Held {
+        fn drop(&mut self) {}
+    }
+    Held(
+        fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(path)
+            .unwrap(),
+    )
+}
+
+/// The game empties a slot before it writes the new save: an empty file gets the same second
+/// look as a short one instead of reading as damaged at once.
+#[test]
+fn a_slot_the_game_has_just_emptied_is_read_again_before_it_is_judged() {
+    let (bench, folder) = muster_bench();
+    let (state, _) = open(
+        &bench,
+        vec![SaveFolder {
+            account_id: ACCOUNT,
+            path: folder.clone(),
+        }],
+    );
+    // The names are read first, so the slot's first read starts at once below.
+    get_muster_impl(&state, "data008Slot").unwrap();
+    let slot = folder.join("data009Slot.bin");
+    let full = fs::read(&slot).unwrap();
+    fs::write(&slot, b"").unwrap();
+    let writer = std::thread::spawn({
+        let slot = slot.clone();
+        move || {
+            std::thread::sleep(Duration::from_millis(50));
+            fs::write(&slot, full).unwrap();
+        }
+    });
+    let read = get_muster_impl(&state, "data009Slot");
+    writer.join().unwrap();
+    assert!(read.is_ok(), "read again once it was written: {read:?}");
+}
+
+/// A file far larger than any save is told as damaged from its size alone.
+#[test]
+fn a_file_larger_than_any_save_is_damaged_and_never_read_whole() {
+    let (bench, folder) = muster_bench();
+    let huge = folder.join("data004Slot.bin");
+    // Sparse where the disk allows it: nothing is written.
+    fs::File::create(&huge)
+        .unwrap()
+        .set_len(rift_save::MAX_FILE + 1)
+        .unwrap();
+    let (state, _) = open(
+        &bench,
+        vec![SaveFolder {
+            account_id: ACCOUNT,
+            path: folder.clone(),
+        }],
+    );
+    assert_eq!(
+        listed_problem(&state, "data004Slot"),
+        Some(SaveReason::Damaged)
+    );
+    fs::remove_file(huge).unwrap();
+}
+
+/// A pak whose names will not read is read once per change of the pak, not on every call.
+#[test]
+fn a_pak_whose_names_do_not_read_is_not_read_again_until_it_changes() {
+    let (bench, folder) = muster_bench();
+    let pak = bench.game.join("re_chunk_000.pak");
+    fs::write(&pak, vec![0u8; 4096]).unwrap();
+    let (state, _) = open(
+        &bench,
+        vec![SaveFolder {
+            account_id: ACCOUNT,
+            path: folder,
+        }],
+    );
+    for _ in 0..3 {
+        assert_eq!(get_muster_slots_impl(&state).names, NamesSource::Missing);
+    }
+    assert_eq!(
+        get_muster_impl(&state, "data009Slot").unwrap().names,
+        NamesSource::Missing
+    );
+    assert_eq!(
+        riftstone_lib::muster::codex_builds(&state),
+        1,
+        "the failed build is remembered"
+    );
+    filetime::set_file_mtime(&pak, FileTime::from_unix_time(1_800_000_000, 0)).unwrap();
+    assert_eq!(get_muster_slots_impl(&state).names, NamesSource::Missing);
+    assert_eq!(
+        riftstone_lib::muster::codex_builds(&state),
+        2,
+        "a changed pak is read again"
+    );
+}
+
+/// Two cold reads at once build the names once: the second waits for the first.
+#[test]
+fn two_cold_reads_build_the_names_once() {
+    let (bench, folder) = muster_bench();
+    let (state, _) = open(
+        &bench,
+        vec![SaveFolder {
+            account_id: ACCOUNT,
+            path: folder,
+        }],
+    );
+    let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let readers: Vec<_> = (0..2)
+        .map(|_| {
+            let state = std::sync::Arc::clone(&state);
+            let start = std::sync::Arc::clone(&start);
+            std::thread::spawn(move || {
+                start.wait();
+                riftstone_lib::muster::codex(&state).is_ok()
+            })
+        })
+        .collect();
+    for reader in readers {
+        assert!(reader.join().unwrap());
+    }
+    assert_eq!(riftstone_lib::muster::codex_builds(&state), 1);
+}

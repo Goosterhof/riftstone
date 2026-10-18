@@ -28,6 +28,16 @@ const FOOTER: usize = 0x8C;
 const SIGNATURE_SEED: u32 = 0xFFFF_FFFF;
 /// A payload this stone will inflate at most (the investor's slot inflates to 3.8 MB).
 const MAX_PAYLOAD: u64 = 256 << 20;
+/// The largest file that can still open: the largest payload, a 528-byte header for every
+/// slice (a slice covers at least 16 KiB), one slice of rounding, and the container's own
+/// header and footer. A reader that checks a file's size against this first never reads a
+/// larger file whole.
+pub const MAX_FILE: u64 = MAX_PAYLOAD
+    + (MAX_PAYLOAD / (1 << 14) + 2) * mandarin::SLICE_HEADER as u64
+    + (128 << 10)
+    + (HEADER + FOOTER) as u64;
+// The ceiling stays near the payload's: the size check is a guard, not a second limit.
+const _: () = assert!(MAX_FILE < MAX_PAYLOAD + (16 << 20));
 
 /// Why a save would not open. No variant carries a byte of the file.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -64,7 +74,11 @@ fn u64_at(bytes: &[u8], at: usize) -> u64 {
 /// return its payload: decrypted and, for `0x08` saves, inflated. The payload's stream starts
 /// at file offset 16, which matters for its alignment ([`crate::stream::parse`] knows).
 pub fn open(bytes: &[u8], account_id: u32) -> Result<Vec<u8>, SaveError> {
-    if bytes.len() < 4 || &bytes[..4] != MAGIC {
+    // Too short to hold even the magic: the game empties a slot before it writes it again.
+    if bytes.len() < MAGIC.len() {
+        return Err(SaveError::Truncated);
+    }
+    if &bytes[..4] != MAGIC {
         return Err(SaveError::NotDsss);
     }
     if bytes.len() < HEADER + FOOTER {
@@ -191,7 +205,10 @@ mod tests {
     #[test]
     fn a_cut_or_foreign_file_is_refused_without_a_panic() {
         let save = seal(&invented_payload(500), 1, true);
-        assert_eq!(open(&save[..3], 1), Err(SaveError::NotDsss));
+        // Too short to hold the magic is cut, not foreign: the game empties a slot before it
+        // writes it, and the reader looks at a cut file again.
+        assert_eq!(open(&[], 1), Err(SaveError::Truncated));
+        assert_eq!(open(&save[..3], 1), Err(SaveError::Truncated));
         assert_eq!(open(&save[..100], 1), Err(SaveError::Truncated));
         assert_eq!(
             open(b"PK\x03\x04 not a save at all, a zip pretending", 1),
@@ -200,5 +217,11 @@ mod tests {
         let mut v3 = save.clone();
         v3[4] = 3;
         assert_eq!(open(&v3, 1), Err(SaveError::Version(3)));
+    }
+
+    #[test]
+    fn no_save_that_opens_is_larger_than_the_ceiling() {
+        let largest = HEADER as u64 + mandarin::encrypted_len(MAX_PAYLOAD) + FOOTER as u64;
+        assert!(largest <= MAX_FILE, "{largest} > {MAX_FILE}");
     }
 }

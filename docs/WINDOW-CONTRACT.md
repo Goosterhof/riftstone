@@ -594,11 +594,14 @@ and none ever sends one. Types live in `src/types/rift.ts` (§ v0.4).
 Reasons:
 - `otherAccount`: the slot opens with no account the stone found, so it is another Steam
   account's save, copied in.
-- `beingWritten`: the slot's signature disagrees twice, 500 ms apart, which is the game writing
-  it.
-- `damaged`: the container or the stream is broken.
+- `beingWritten`: the slot is busy. Its signature disagrees, or it is cut short (an empty file
+  included), twice 500 ms apart while the file changes, which is the game writing it. Or the
+  file would not be read at all, twice 500 ms apart: another program holds it for a moment
+  (the game, Steam Cloud, an antivirus). It is never remembered, so the next read tries again.
+- `damaged`: the container or the stream is broken, or the same failure as above with the file
+  unchanged. A file larger than any save is damaged without being read.
 - `noParty`: the file opens but holds no party.
-- `gone`: the slot left the folder since the list was read.
+- `gone`: the slot's file is not there: it left the folder since the list was read.
 
 The sentence names the slot by its file name and never by its path, because the path holds the
 Steam account number.

@@ -1081,7 +1081,9 @@ export type ThumbnailSize = "card" | "full";
 export type SaveReason =
   /** The slot opens with no Steam account the stone found: another account's save. */
   | "otherAccount"
-  /** The slot's signature disagreed twice, 500 ms apart: the game is writing it. */
+  /** The slot is busy: twice, 500 ms apart, it was cut short or disagreed with its signature
+   *  while it changed (the game writing it), or it would not be read at all (another program
+   *  holding it). Never remembered: the next read tries again. */
   | "beingWritten"
   /** The container or its stream is broken. */
   | "damaged"

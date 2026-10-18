@@ -20,7 +20,7 @@ mod container;
 mod mandarin;
 pub mod stream;
 
-pub use container::{open, SaveError};
+pub use container::{open, SaveError, MAX_FILE};
 pub use stream::{field_hash, Class, Root, StreamError, Value};
 
 #[cfg(any(test, feature = "fixtures"))]

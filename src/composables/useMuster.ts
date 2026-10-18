@@ -47,6 +47,10 @@ const pickSlotSummons = ref(0);
 
 /** The last successful read of each slot, the diff's ground. */
 const lastRead = new Map<string, MusterView>();
+/** The slot whose party was drawn last. A failed re-read blanks the sheet but
+ *  keeps this, so the next re-read of that party is still re-carved against
+ *  its last read; a pick of another slot or a folder problem clears it. */
+let drawnId: string | null = null;
 /** Where each hired pawn stood in each slot's tab line (by memberKey), so a
  *  pawn keeps its place when the other leaves (R17.8). */
 const hiredPlaces = new Map<string, Map<string, Place>>();
@@ -153,6 +157,7 @@ function landed(slotId: string, next: MusterView, cause: ReadCause, sameSlot: bo
   const recarving = cause === "changed" && sameSlot && before ? recarve(before, next) : null;
   hiredPlacement.value = placeHired(slotId, next.hired);
   lastRead.set(slotId, next);
+  drawnId = slotId;
   view.value = next;
   viewFailure.value = null;
   marks.value = recarving ?? NO_MARKS;
@@ -175,7 +180,7 @@ function failed(e: unknown): void {
 
 async function read(slotId: string, cause: ReadCause): Promise<void> {
   const mine = ++readSeq;
-  const sameSlot = view.value?.slotId === slotId;
+  const sameSlot = drawnId === slotId;
   if (cause !== "changed") {
     clearMarks();
     readAgainAt.value = null;
@@ -201,6 +206,7 @@ async function read(slotId: string, cause: ReadCause): Promise<void> {
 async function pick(slotId: string): Promise<void> {
   pickedId.value = slotId;
   rememberedId = slotId;
+  if (drawnId !== slotId) drawnId = null;
   view.value = view.value?.slotId === slotId ? view.value : null;
   await read(slotId, "pick");
 }
@@ -237,6 +243,7 @@ async function onChanged(): Promise<void> {
   if (list.problem) {
     view.value = null;
     viewFailure.value = null;
+    drawnId = null;
     clearMarks();
     return;
   }
@@ -333,6 +340,7 @@ export function resetMuster(): void {
   pickSlotSummons.value = 0;
   hiredPlacement.value = {};
   lastRead.clear();
+  drawnId = null;
   hiredPlaces.clear();
   readSeq += 1;
   listSeq += 1;

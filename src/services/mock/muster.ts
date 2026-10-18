@@ -281,7 +281,8 @@ export function mockMusterSlots(scene: MusterScene, later = false): MusterSlotsV
 export const MOCK_SAVE_SENTENCES = {
   damaged: (file: string) => `${file} would not open: its stream ends before its table says it should.`,
   otherAccount: (file: string) => `${file} opens with no Steam account found on this machine.`,
-  beingWritten: (file: string) => `${file} changed between two reads 500 ms apart.`,
+  beingWritten: (file: string) =>
+    `The game is writing ${file} right now, or another program is holding it for a moment.`,
   gone: (file: string) => `${file} is no longer in the save folder.`,
   noParty: (file: string) => `${file} holds no party record.`,
 } as const;
