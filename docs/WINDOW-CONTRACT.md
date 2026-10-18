@@ -630,3 +630,156 @@ no entry for the id or the names could not be read. `MusterView.names` says whic
 from the found game), or `missing` with `namesNote`, a sentence on where the names live.
 `MusterSlotsView.names` says the same for the slot list's vocations. `gains` are the integers
 the save keeps; the game's unit for `weight` is not stated, so the window shows it as given.
+
+## v0.5 — versions of one file, and THE MUSTER by character
+
+The investor's ask (2026-10-18), after installing an update the stone had downloaded: the library
+and THE FAR WORLD showed the mod twice. Their rulings: installing a newer version replaces the
+older install in one step, and the older archive is put away in a folder beside the mods folder,
+from which it can come back; THE MUSTER opens by character, remembers the one picked, and offers
+the character's other saves in a menu. Types live in `src/types/rift.ts` (§ v0.5, and the v0.5
+fields on the v0.4 Muster types and on `Settings`). The design is #00015 §18.
+
+### Commands
+
+| Command (invoke name) | Args (JS, camelCase) | Returns | Notes |
+|---|---|---|---|
+| `plan_keep_newest` | `packageId: string` | `KeepNewestPlanView` | What keeping only the newest version of the package's file would uninstall and put away. Any member names the family. Nothing is written. |
+| `keep_newest` | `packageId: string` | `KeepNewestResultView` | Uninstalls the older versions' installs, each by its own uninstall, then puts those versions away; one turn of the deploy lock. `rift://game-changed` when anything was uninstalled, a scan when anything moved. |
+| `put_away` | `packageId: string` | `PutAwayView` | Moves one older version with no installs to the older-versions folder. A scan follows. |
+| `get_older_versions` | — | `OlderShelfView` | What the older-versions folder holds. |
+| `bring_back` | `fileName: string` | `BringBackResult` | Moves an item of the older-versions folder back into the mods folder. A scan follows. |
+| `open_older_versions_folder` | — | `void` | Shows the older-versions folder in Explorer, Rust-side; refused before the first put-away makes it. |
+
+`plan_install`, `install`, `get_library`, `get_updates`, `search`, `get_installed`,
+`get_muster_slots` and `set_settings` keep their names and arguments; what v0.5 adds to their
+answers is below.
+
+### Versions of one file
+
+**The family rule.** Two packages in the mods folder are versions of one Nexus file when both are
+linked to the same mod and either both links name the same file group (Nexus gives every version
+of one file the same group id; an update check or a download pins it), or one package's last
+check named the other's exact file as its newer file. Packages tied that way, directly or through
+each other, form a family. The newest leads: the latest upload time, then the higher file id; a
+member whose link states neither comes last, by file name. A package with no link, or with an
+unpinned link no check named, is in no family. Names and sizes alone never make a family.
+
+**The same option.** An option of one version is the same option as an option of another when
+both have the same option root (the part of the option id after `#`), else the same name in any
+case, else when each version holds exactly one installable option. A version that renamed its top
+folder (`Lantern Glow v1.1/`) still finds its older self. The spine works this out and says it
+(`OlderVersionView.matches`, `InstallPlanView.replaces`); the window never works it out itself.
+
+**One entry.** `LibraryPackage.family` is null for a package alone. `get_library` still lists
+every package, older versions too, so a scan's answer stays whole; the window draws each family as
+one entry: the lead, with its older versions inside it (`family.older`, on the lead only). An
+older version's own tree opens from there. Each `family.older` entry lists `matches`: which of its
+options is the same option as which of the lead's, and whether it is installed. An option of an
+older version that `matches` does not list is one only that version holds.
+
+`search` leaves an older version's answer out when the lead's same option answers the same search
+too. An answer only an older version gives (a file only it holds, an option only it has) stays;
+the window marks it as the older version's from the library (`family.lead` is another package).
+`get_updates` lists one row per family (the lead's, with `older`) and no row for an older version,
+and its counts count families. A package no check has judged yet (a version just downloaded) reads
+`current` when a check named its exact file as another package's newer one, the older version's
+check that led to the download, and its `checkedMs` is that check's. That holds after the older
+version is put away, since its record stays in `nexus.json`, and the search card's badge agrees.
+
+A conflict among versions of one file only (an older version still installed under a newer one,
+as v0.4 stacked them) is not listed in `InstalledView.conflicts` and sets no `conflicted` flag:
+that is an older version still installed, and `family.older[].installed` says so. A conflict that
+also involves another mod is listed whole. A link or a check that ties or unties a family reads
+the game folder's conflicts afresh.
+
+**Install replaces.** `plan_install` of a family member's option also plans the uninstall of every
+install of the same option in another member: `InstallPlanView.replaces`, each with its own
+uninstall plan's file count and that version's name. `install` runs both in one journaled step:
+the replaced installs' removals first, bottom layer first, then the writes. A write onto a path a
+replaced install held reads `reinstall`, never an overwrite. A failure anywhere rolls the whole
+step back, and the new install takes the first replaced install's place in the pak load order. An
+install that replaces nothing works as before; so does a package in no family, which stacks as in
+v0.4.
+
+**Put away.** After an install of a family member commits, every member older than it that has no
+installs left moves to the older-versions folder (`InstallResultView.putAway`), an older member
+never installed too. The folder sits beside the mods folder, named for it:
+`<mods folder> (older versions)`, so `…\mods (older versions)\` beside the stone's own `mods`. It
+is outside the library: no scan reads it and no watcher wakes for it. The move:
+- is the one change the stone makes to an entry of the mods folder (RS-2 as amended in v0.5);
+- moves the whole archive or folder: never a copy left behind, never a delete, never an edit. It
+  keeps the name, or takes ` (2)` … when the name is taken there (compared the way Windows
+  compares names), and never lands on an existing file (the rules a download lands by, § v0.3);
+- runs only after the install's step committed and before the scan the install requests, still
+  under the deploy lock, so the relink never sees an older version leave while an install of it
+  is still journaled.
+
+A move that fails leaves the install standing and the file where it was; `putAwayFailed` says so
+in one sentence that names the files and the reason, and the entry keeps showing the older
+version. A mods folder at the root of a drive has no folder beside it: every put-away there fails
+that way. A member newer than the install (an older version installed on purpose) is never put
+away, and an uninstall never puts anything away.
+
+**Keep only the newest.** `plan_keep_newest(packageId)` and `keep_newest(packageId)` take any
+member of a family; the plan's `packageId` is the family's lead. The version kept is the newest
+member with an install, else the lead (`keeps`, its file name). Every install of a member older
+than it is uninstalled, bottom layer first, each by its own uninstall under one turn of the deploy
+lock, and then every older member left without installs is put away (`putsAway` names them). The
+plan is `refused` when the package is the only version of its file, when no member is older than
+the version kept, when the game folder or its journal cannot be read, or when an uninstall it
+needs is refused (the game holds a pak open). `keep_newest` refuses the same way with a `refused`
+error. An uninstall that fails stops it there: what it uninstalled stays uninstalled
+(`rift://game-changed` follows), nothing is put away, and the error says why.
+
+**Put one away.** `put_away(packageId)` moves an older member with no installs to the folder, at
+the player's press, under the deploy lock. It is refused (a `refused` error) for a family's lead,
+a package in no family, or a member with installs, and needs the journal (no game found, a
+damaged journal: that error).
+
+**The older-versions folder.** `get_older_versions()` lists what it holds, as a scan would list a
+mods folder (archives and folders, by name, case-blind). `exists` is false until the first
+put-away makes it. Each item carries its Nexus mod name and version from `nexus.json`, where its
+record stays under its package id while it is away, and whether a newer version of the same file
+is in the mods folder now (the family rule over the mods folder and that record). A move that
+has to take another name carries the record to the id that name gives, both ways.
+`bring_back(fileName)` takes a name the folder lists (any case; anything else is `entryNotFound`,
+never a path), moves it back into the mods folder by the same rules, never onto an existing name,
+and returns `landedAs`. A scan follows (`rift://library-changed`), and the version is in its
+family again. `open_older_versions_folder()` shows the folder in Explorer, Rust-side, like
+`open_mods_folder`; before the folder exists it is refused.
+
+**Errors.** A move or a read of the folder that cannot be made is an `io` error whose detail is
+the OS's own words only (`Access is denied. (os error 5)`): the window voices it in the context
+`olderVersions`, naming the file and what was tried itself. `putAwayFailed` is a whole sentence
+that names the files and the reason; the window shows it as it is and adds where the version
+stays. No sentence names more of a path than a file's own name.
+
+### THE MUSTER by character
+
+**A character** is the Arisen with their main pawn, within one Steam account. The saves hold no
+playthrough id. On the investor's five slots (2026-10-18), the Arisen's and the main pawn's record
+ids were the same in every slot, across two different characters, and no other field of the
+Arisen's record told the two apart except progress. So the stone tells a character by the
+Arisen's name with the main pawn's name. Two playthroughs begun with the same two names read as
+one character, and the slot menu tells their saves apart by level and time.
+
+- `MusterSlot.character`: 16 lowercase hex digits, the FNV-1a 64 of the save folder's account id
+  and the two names. The folder's account, not the one whose key opened the slot: a save copied
+  in from another account is the character it becomes when the game saves it here again. It is
+  made from private names, so it is private too: logged nowhere, in no DOM attribute, and used by
+  the window only to group slots and to remember a choice. Null when the slot would not open.
+- `MusterSlot.mainPawnName`: the main pawn's name, shown on the character's entry; null when the
+  slot would not open or holds no main pawn.
+- `Settings.musterCharacter`: the character picked last. The window writes it through
+  `set_settings` when the player picks a character, and never on its own. THE MUSTER opens on
+  that character at their newest slot, or on the character of the newest slot when it is null or
+  no longer listed. The spine keeps it only as a character key: anything else, in the window's
+  settings or in `settings.json`, reads as null. A window from before v0.5 sends no
+  `musterCharacter`, which is null too.
+- The window groups the slots by `character`, newest save first. A slot that would not open is
+  listed apart, under its problem. The slot menu holds the character's slots, newest first.
+  - **Following:** on the newest slot, the sheet follows the character. When the game writes a
+    newer save of that character, in any slot, the sheet moves to it and is re-carved against the
+    party it showed (members matched by `memberKey`).
+  - **Pinned:** a slot picked from the menu stays, and the menu marks the newer save.

@@ -2426,3 +2426,199 @@ The mock gets `?mock=muster…` scenes with an invented party.
 | main session | `crates/rift-save`, `crates/rift-muster`, `crates/rift-pak` (game, msg), `src-tauri/**`, `src/types/rift.ts` and `src/services/rift.ts` (the contract), `scripts/` (the sweep's `--saves`), the docs |
 | the Artisan | #00015 §17 (the Muster's design), in the lab repo |
 | the Illusionist | `src/**` beyond the contract files, `tests/**`, the mock's Muster scenes |
+
+## § v0.5 — versions of one file, and THE MUSTER by character (investor ask, 2026-10-18)
+
+The ask, in the investor's words, after running 0.4.1: *"i downloaded an update from one of the
+packages and that got installed, now it show as 2 entries in the library and in nexus. can we do
+something about that? And the muster works! But can we do the muster based on character instead of
+save slot? and that when you select a character that's the one that will show up, and then a select
+menu somewhere for when you want to switch saveslot?"* Asked how, they ruled: **put the old version
+away** (installing the newer version replaces the older install in one step, and the older archive
+moves to an older-versions folder beside the mods folder, from which it can come back), and
+**remember the character** (THE MUSTER opens on the character picked last, at their newest save,
+and follows them when the game saves).
+
+The wire is WINDOW-CONTRACT § v0.5, the design #00015 §18.
+
+### The ground truth (measured 2026-10-18)
+
+- **Each version of a file is its own package.** `PackageId::for_archive` hashes the file name and
+  size, so a new version is a new package. A 2026 Nexus name parses to the same display name for
+  every version. v0.3's contract left the old archive where it was ("removing it is the player's
+  act in Explorer").
+- **Today an install of the newer version stacks over the older.** The older install stays
+  underneath (its bytes in `backups/<seq>/`, owner the newer install), and any of its files the
+  newer version lacks stay in the game. That is the investor's state now.
+- **The group id is there when it matters.** An update check stores the pinned link
+  (`record_check`), file and group id included, and a download's link carries the group from the
+  start. A package that showed "update available" was pinned.
+- **The saves hold no playthrough id.**
+  - In all five readable slots of the investor's saves, the Arisen's and the main pawn's record
+    ids (`UniqueIDContext`) were the same, across two characters.
+  - The Arisen's name grouped the slots into two characters, two slots and three, and the levels
+    agreed: close within each character, far apart between them. The main pawn's name agreed within
+    each group and differed between them.
+  - Of the 1,549 leaves of the Arisen's record and the slot's detail, the 29 that agreed within each
+    character and differed between them were all progress (`JobContext`, `HumanStatusContext`);
+    none was an id.
+  - The measurement printed slot numbers, levels and booleans only, from a copy of the folder
+    deleted after it. This record keeps neither: the investor's game is the investor's.
+
+### Rulings taken for the build (main session, 2026-10-18)
+
+1. **RS-2, amended.** The stone still never changes, renames or deletes a file in the mods
+   folder, with one exception. It may move an older version of a file, whole, to
+   `<mods folder> (older versions)` beside it, and move it back at the player's word. The move
+   happens only after the install that superseded it committed, or at the player's own press.
+   It is never a delete or an edit, and it never lands on an existing file.
+2. **A family is proven by Nexus, never guessed.** The same mod and the same file group, or a
+   check that named the other's exact file as newer. Names and sizes never make a family.
+3. **One entry per file.** The window folds; the spine keeps listing every package, with
+   `family` on each.
+4. **Installing a version replaces the other versions' installs of the same option** in one
+   journaled step. The same option is the same option root, else the same name, else the one
+   installable option each version has (WINDOW-CONTRACT § v0.5, The same option), so a version
+   whose top folder carries its number still replaces its older self. Rolling back to an older
+   version is the same replace; only versions older than the installed one are ever put away.
+5. **The put-away follows the commit.** If a move fails, the install still stands and the window
+   says so.
+6. **Keep only the newest** cleans up a family whose older versions are still installed, the
+   investor's own state included.
+7. **A character is the Arisen with their main pawn, by name, within one account.** The key is
+   private like the names.
+8. **The chosen character is remembered in `settings.json`.** v0.4 kept the pick for the session
+   only; the investor's "that's the one that will show up" overrides that.
+9. **Version 0.5.0.**
+
+### § rift-nexus (grows: families)
+
+`family.rs`, pure: `families(members: &[FamilyMember]) -> Vec<Family>`.
+- A member is a package id with its effective link (`link_for`) and its last check's newer file id.
+- A family is the connected set under the two ties of ruling 2, ordered newest first: upload
+  time, then file id, then file name. A set of one is no family.
+- Tested on invented links, including the transitive tie and a mixed pinned and unpinned pair
+  that must not fold.
+
+### § rift-deploy (grows: replace)
+
+`plan_install_replacing` and `install_replacing(ctx, journal, package, option, replacing, source,
+progress)`: the reinstall branch of `install` generalised from "the same option" to "these other
+options"; `plan_install` and `install` call them with none.
+- Each replaced install's removal steps (`prepare_uninstall` → `removal_steps`) go into the one
+  intent before the placements, bottom layer first (by journal position), each planned against
+  the journal the removals before it leave. Each replaced install moves through its own
+  temporaries (`{seq}-{n}`), so a path two stacked versions held moves twice without a clash.
+- A failure rolls everything back (`fail_and_roll_back`, which already handles a path touched
+  twice).
+- The new install takes the first replaced install's pak number and its place in the pak load
+  order. The plan reads a path whose top layer is a replaced install as `reinstall`.
+- A replaced install with paks is refused while the game runs, as its own uninstall would be.
+- Tested against the stack rules (`tests/replace_rules.rs`, 7 tests):
+  - a replaced lower layer hands its backups to the layer above;
+  - a replaced top layer restores;
+  - a failure and a crash mid-step roll both back;
+  - two stacked versions replaced at once, bottom first and top first.
+
+### § src-tauri (the spine)
+
+- **Folding the views** (`family.rs`): `get_library`, `get_updates` and `search` compute families
+  from the shelf and `nexus.json` on every call. The DTOs gain `family`, `older` and each older
+  version's `matches` (`lead_match`: the lead's option whose install would take its place).
+  `search` drops an older version's answer when the lead's same option answers too.
+- **A download a check led to:** `NexusStore::row` and `badge` read a package with no verdict of
+  its own as `current` when any record in `nexus.json` (an older version put away included) last
+  named its exact file as newer (`vouched`), so the newer version stays current after the put-away
+  instead of falling back to *not checked*.
+- **Conflicts:** the snapshot drops a conflict whose layers are all versions of one file (the
+  investor's stacked state is an older version installed, not a conflict). It reads the families,
+  so it takes the Nexus store's lock: nothing asks for a snapshot while holding it. `relabel`
+  invalidates the snapshot, so a link or a check that ties a family reads conflicts afresh.
+- **The replace:** `plan_install` and `install` find the replaced installs by the same option
+  (`family::replaced`, `matching_option`) among the family. After the commit, the put-away runs
+  under the deploy lock, before the scan the install requests.
+- **The move:** the downloads' never-overwrite helpers (`occupant`, `rename_new`, `move_new`,
+  `copy_new`) move to a shared `landing` module, used by both downloads and the older-versions
+  folder, with `move_aside` (the next free ` (n)` name, compared case-blind). A folder package
+  moves as a whole folder: a rename, never a copy. The pool of open archives is closed first.
+  When a move takes another name, the version's `nexus.json` record follows it (`move_records`).
+- **New commands** (`commands/versions.rs`): `plan_keep_newest`, `keep_newest`, `put_away`,
+  `get_older_versions`, `bring_back` and `open_older_versions_folder` (#00015 Q18.6).
+- **The Muster:** `slots_view` fills `character` and `mainPawnName`, and `Settings` gains
+  `musterCharacter`, kept only as a 16-hex character key (`persist::character_key`).
+- **Tests:** a spine test per ruling, on invented packages and invented links, and none on the
+  investor's library (`tests/spine_versions.rs`, 11 tests; `spine_muster.rs`'s character test;
+  `spine_ipc.rs`'s versions commands).
+
+### § The window (the Illusionist, after the Artisan's §18 in #00015)
+
+- **The Rift's tree and THE FAR WORLD** fold each family into one entry. THE CROSSING shows what
+  the install replaces. The put-away is told once, with `Bring it back`.
+- **The older-versions shelf** gets a door: where it lives is §18's call.
+- **THE MUSTER** lists characters, keeps a slot menu, and follows or pins.
+- **The mock** gains a family scene (two versions of one file, the older one installed) and a
+  two-character save folder.
+
+### Ownership in the build (v0.5)
+
+| Builder | Owns |
+|---|---|
+| main session | `crates/**`, `src-tauri/**`, `src/types/rift.ts` and `src/services/rift.ts` (the contract), the docs |
+| the Artisan | #00015 §18 (versions in the Rift and THE FAR WORLD, the older-versions shelf, THE MUSTER by character), in the lab repo |
+| the Illusionist | `src/**` beyond the contract files, `tests/**`, the mock's v0.5 scenes |
+
+The window was built by two Illusionists side by side, each on files the other never touched. To
+make that hold, the mock's Muster backend moved whole into `src/services/mock/muster.ts`
+(`createMusterMock`) before either started. A machine restart killed both mid-build and wiped
+their reports; the working tree survived. A third Illusionist wrote the versions side's specs
+against the code they had left, and fixed what those specs found.
+
+### As built (2026-10-18)
+
+- **rift-nexus** (`family.rs`, 5 tests): the family rule as ruling 2 states it, a union-find
+  within each mod, newest first by upload time, file id, then file name.
+- **rift-deploy** (`install_replacing`, `tests/replace_rules.rs`, 7 tests; 178 in the crate): the
+  replaced installs' removals go first in the one intent, bottom layer first, each through its
+  own temporaries (`{seq}-{n}`). The new install takes the first replaced install's pak number. A
+  top-first order, which the first draft used, put `glow 1.0` back instead of the game's own file
+  on the stacked case; the test that caught it stays.
+- **The spine** (`spine_versions.rs` 12 tests, the character test in `spine_muster.rs`, the
+  versions commands through `spine_ipc.rs`, the shape tests in `dto.rs`). The put-away runs inside
+  the install's own deploy closure, after the engine committed, so it holds the deploy lock as the
+  ruling asks; the scan follows by `request_scan`. Three things the window's design asked of the
+  contract came in here: `OlderVersionView.matches` (the same option, worked out once), the
+  conflicts among one family's versions dropped from the snapshot (Q18.3), and
+  `open_older_versions_folder` (Q18.6). Two came from reading the result: an io detail for these
+  moves carries the OS's words only, since the window names the file itself, and `vouched` keeps a
+  download current after the version whose check led to it is put away.
+- **The window** (#00015 §18 as merged with §18.17): 53 new specs over four files for the
+  versions (`versions.spec.ts` 21, `versionsCrossing.spec.ts` 13, `undercroft.spec.ts` 13,
+  `versionsFar.spec.ts` 6), and `musterCharacters.spec.ts` (24, the spacing test among them) beside
+  the grown `muster.spec.ts`. The versions specs found three gaps: Esc from the tree left THE VERSIONS
+  card open, a rollback hid the put-away sentence §18.17 keeps, and the far world's line went stale
+  after an uninstall, because it read `get_updates` instead of the library. A render pass found
+  three more that no spec could see: Vue condenses a leading blank, and a blank between tags that
+  holds a newline, so `Lv 41Warrior` and `data009Slot· following` read joined, and a flex row drops
+  a leading space, so the slot button read `Slot 9· today`. Each is fixed, and a spec now pins the
+  words.
+- **The widths** (§18.14, measured headless on the mock, 1320 × 860 and 1024 × 680):
+  - Q18.1: the lead row is 544 px at 1320, as predicted, and its label keeps 195 px against 88
+    for 12ch, so the older mark never folds there. At 1024 it is 728 and 379.
+  - Q18.2: THE VERSIONS card is 391 px wide (392 predicted), and all three version lines hold on
+    one line.
+  - Q18.8: the slot menu's bottom is at 209 px, inside the 680 px window.
+  - Q18.9: the head's line 2 stays one 28 px line at 1024 in the longest state, followed into
+    another slot.
+  - Q18.10: neither character row's names clip.
+- **The README's frames**: all seven older frames were shot again. They dated from v0.3 and showed
+  four rooms, not five, a staleness v0.4's review missed. Two new frames show the family entry with
+  THE VERSIONS card and the put-away landing. Each one was looked at before the push.
+- **Gates** (Linux bench, `feat/v0.5`): cargo fmt clean, clippy with warnings denied clean, 967
+  tests passed, 0 failed, 11 env-gated benches ignored; npm typecheck 0, lint 0, 433/433 tests in
+  39 files, format:check clean, build clean. The privacy sweep, with the real library, journal,
+  `nexus.json` and save folder as sources, read 0 hits over 332 files, 772 file versions in the
+  history and 51 commit messages.
+- **Left for the native run:** the Windows-only code v0.5 adds (`landing::move_new`'s
+  `MoveFileExW`, moved from `downloads.rs` unchanged) compiles nowhere but Windows, and THE
+  UNDERCROFT's move has never crossed NTFS. Still open from §18.14: Q18.11 (whether a slot reads as
+  being written mid-save) needs the game itself.
