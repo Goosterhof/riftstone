@@ -46,7 +46,7 @@ meaning faster* — and the voice lives in the frame, the states and the two sig
 - **RS-5 — One folder.** The `mods` folder beside `riftstone.exe` is the only library (a bench may point `RIFTSTONE_MODS_DIR` elsewhere). Every archive and folder directly inside it is one package; nothing else is scanned. Folder packages are known by their name, so moving the whole install keeps every link.
 - **RS-6 — Nexus is optional.** Update checks, labels, Find, browsing and a mod's files use the anonymous GraphQL v2 API and need no key. The optional personal API key adds the key's extras through v1: the account, downloads, tracking and endorsing. It lives in Windows Credential Manager, never in a file or the webview; a download URL and an nxm link's key are secrets like it (never logged, never in an error, never in the window). Every request names the Riftstone (`Application-Name`, `Application-Version`), and v1's quota headers are honoured.
 - **RS-7 — Vue 3 + UnoCSS**, `@unocss/reset` before `virtual:uno.css`, the `prefers-reduced-motion` floor.
-- **RS-8 — The saves are the player's (v0.4).** A save is read into memory and nothing else: the stone never writes, renames, re-signs or copies a save, never sends one, and keeps no decrypted copy on disk. It carries no way to encrypt a save: the test fixtures are sealed by code that only test builds compile (`rift-save`'s and `rift-muster`'s `fixtures` features). The game's pak is read the same way, read-only (RS-3 still forbids writing it). A save folder's path holds the Steam account number, so no log line, error or event names it.
+- **RS-8 — The saves are the player's (v0.4).** A save is read into memory and nothing else: the stone never writes, renames, re-signs or copies a save, never sends one, and keeps no decrypted copy on disk. It carries no way to encrypt a save, and neither does the rest of the repo outside test builds: the only sealer is `rift-save`'s `fixtures` code (which `rift-muster`'s fixtures build on), and only test builds compile it. The Sentinel measures that on every push: the graph the shipped exe is built from switches on no `fixtures` feature. The privacy sweep's Python opens saves and seals none: its self-test opens `scripts/fixtures/sweep-invented-save.bin`, which that code sealed and `rift-save`'s own test checks opens to exactly its invented party. The game's pak is read the same way, read-only (RS-3 still forbids writing it). A save folder's path holds the Steam account number, so no log line, error or event names it.
 
 ## The DD2 Load Rules (researched 2026-10-16; constants in `crates/rift-core/src/dd2.rs`)
 
@@ -104,7 +104,9 @@ python3 -I scripts/privacy-sweep.py --self-test
 **The Sentinel** (`.github/workflows/sentinel.yml`, armed with the first push on 2026-10-18) runs
 those gates on every push to `main` and every pull request against it, in three jobs:
 - *Window*: `npm ci`, then typecheck, lint, test, format:check and build.
-- *Crates*: fmt, clippy with warnings denied, and the workspace's tests. It is pinned to Rust
+- *Crates*: fmt, clippy with warnings denied, RS-8 measured, and the workspace's tests. RS-8's
+  step reads `cargo tree -p riftstone -e normal,build` and fails when any `fixtures` feature
+  reaches the graph the shipped exe is built from. It is pinned to Rust
   1.98.0, the toolchain both benches verified with, because a newer stable's lints can turn
   `-D warnings` red overnight. Moving the pin is a deliberate commit, run on both benches first.
 - *Privacy*: the sweep's `--self-test`.
@@ -168,6 +170,15 @@ word far more often than anyone's name. A name the repo already held as a word b
 save (`BEFORE_SAVES`, 830fdf0) is set aside and counted: a hit on it could not be told from the
 repo's own text. Two of the game's record types carry a `Name` that is the game's own id; their
 strings never count (2,767 of them on the bench's eight saves).
+
+The sweep reads the live save folder, not a copy, on purpose. A copy goes stale the day a new
+pawn is hired, and a stale copy would pass a leak of exactly the newest names. The bench rule
+below (a COPY, never the real folder) guards against bench runs of the stone itself, an
+unreleased build with watchers and repeated reads. The sweep reads each slot once, whole and
+read-only, and keeps nothing open. It checks a slot the way `rift-save` does: header, signature,
+then a length no save exceeds, before it decrypts anything. A slot that does not open is read
+once more a second later, since the game may have been writing it. One that still does not
+open is counted in the output, never a traceback that stops the gate.
 
 `--nexus` names the stone's `nexus.json`, where every link keeps its mod id, file id, group id
 and sqid and every check keeps the mod's Nexus name and the newer file it found; the sweep also

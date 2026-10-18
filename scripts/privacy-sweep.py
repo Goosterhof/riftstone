@@ -96,6 +96,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import zipfile
 from collections.abc import Iterable, Iterator
 from pathlib import Path
@@ -115,6 +116,9 @@ def _load_saves():
 
 DD2_SAVES = _load_saves()
 ARGS_FILE = REPO / "scripts" / "privacy-sweep.args"
+# The invented save the self-test opens, sealed by rift-save's test-only sealer
+# (crates/rift-save/src/sweep_fixture.rs checks it opens to exactly that invented party).
+SWEEP_SAVE = REPO / "scripts" / "fixtures" / "sweep-invented-save.bin"
 # Build output and caches are never pushed; a TRACKED file in one of these
 # folders is (a committed .pyc once carried a path), so history reads those.
 SKIP_DIRS = {"node_modules", "target", "dist", ".git", "gen", "__pycache__"}
@@ -283,10 +287,11 @@ class Identifiers:
             self.nexus_number(mod_id, "Nexus mod id")
         return True
 
-    def saves(self, folder: Path, account_id: int | None) -> tuple[int, int]:
+    def saves(self, folder: Path, account_id: int | None, *, reread: float = 1.0) -> tuple[int, int]:
         """A Dragon's Dogma 2 save folder (v0.4): its own folder chain, the Steam account
         number its path holds, and every name and Rift id its saves carry. Returns how many
-        saves opened and how many did not. Reads only."""
+        saves opened and how many did not. Reads only: each save once and whole, and once more
+        after `reread` seconds when it did not open (the game may have been writing it)."""
         self.location(str(folder), "save folder")
         if account_id is None:
             for ancestor in folder.parents:
@@ -299,9 +304,8 @@ class Identifiers:
         self.number(str(DD2_SAVES.STEAM_ID64_BASE + account_id), "Steam id")
         opened = failed = 0
         for save in sorted(folder.glob("*.bin")) if folder.is_dir() else []:
-            try:
-                strings = DD2_SAVES.private_strings(DD2_SAVES.open_save(save.read_bytes(), account_id))
-            except (OSError, DD2_SAVES.SaveError, ValueError):
+            strings = save_strings(save, account_id, reread)
+            if strings is None:
                 failed += 1
                 continue
             opened += 1
@@ -340,6 +344,19 @@ class Identifiers:
         words = [(self.word_pattern(word), kind) for word, kind in self.words.items()]
         numbers = [(re.compile(rf"(?<![\d.]){digits}(?![\d.])"), kind) for digits, kind in self.ids.items()]
         return words + numbers + [(chain_pattern(chain), kind) for chain, kind in self.places.items()]
+
+
+def save_strings(path: Path, account_id: int, reread: float) -> list[str] | None:
+    """One save's private strings, or None when it does not open twice, `reread` seconds
+    apart. A damaged slot is counted by the caller, never a traceback that stops the gate."""
+    for attempt in range(2):
+        if attempt:
+            time.sleep(reread)
+        try:
+            return DD2_SAVES.private_strings(DD2_SAVES.open_save(path.read_bytes(), account_id))
+        except (OSError, DD2_SAVES.SaveError, ValueError):
+            continue
+    return None
 
 
 def private_chain(path: str) -> tuple[str, ...] | None:
@@ -677,35 +694,63 @@ def self_test() -> int:
     check("a long retired word hides inside identifiers", any(p.search("readQuillborneLedger") for p, _ in retired))
     check("a short retired word counts only on its own", not any(p.search("offqbmap") for p, _ in retired))
 
-    # saves (v0.4): AES against FIPS-197, a sealed invented save, its private strings only
+    # saves (v0.4): AES against FIPS-197, and the invented save rift-save's test-only sealer
+    # made (the sweep itself carries no sealer: RS-8), its private strings only
     aes = DD2_SAVES._encrypt_block(DD2_SAVES._expand(bytes(range(16))), bytes.fromhex("00112233445566778899aabbccddeeff"))
     check("AES-128 meets FIPS-197's vector", aes.hex() == "69c4e0d86a7b0430d8cdb78070b4c55a")
     check("pure OFB matches itself both ways", DD2_SAVES._ofb_pure(bytes(16), bytes(16), DD2_SAVES._ofb_pure(bytes(16), bytes(16), b"x" * 40)) == b"x" * 40)
-    invented = DD2_SAVES.murmur3(b"app.Invented")
-    payload = DD2_SAVES.write_stream(
-        [[("Name", "Odalric Vernworthy"), ("Title", "Dragon's Dogma 2")], [("_Name", "Wrenna"), ("_SearchId", "INVENTED7Q")],
-         [("Name", "sm000001_Invented_0000000001")]],
-        [invented, invented, next(iter(DD2_SAVES.GAME_ID_RECORDS))],
-    )
-    sealed = DD2_SAVES.seal(payload, 4242001)
-    check("a sealed invented save opens", DD2_SAVES.open_save(sealed, 4242001) == payload)
+    check("the sweep carries no sealer", not hasattr(DD2_SAVES, "seal") and not hasattr(DD2_SAVES, "write_stream"))
+    sealed = SWEEP_SAVE.read_bytes()
     strings = DD2_SAVES.private_strings(DD2_SAVES.open_save(sealed, 4242001))
-    check("a save gives its names and Rift ids", strings == ["Odalric Vernworthy", "Wrenna", "INVENTED7Q"])
+    check("the invented save gives its names and Rift ids", strings == ["Odalric Vernworthy", "Wrenna", "INVENTED7Q"])
     check("a game string is never a save name", "Dragon's Dogma 2" not in strings)
     check("a game id record's Name is never a save name", "sm000001_Invented_0000000001" not in strings)
-    try:
-        DD2_SAVES.open_save(sealed, 4242002)
-        check("another account's save does not open", False)
-    except DD2_SAVES.SaveError:
-        pass
+
+    def refused(raw: bytes, account: int) -> bool:
+        try:
+            DD2_SAVES.open_save(raw, account)
+        except DD2_SAVES.SaveError:
+            return True
+        return False
+
+    check("another account's save does not open", refused(sealed, 4242002))
+    check("a cut or empty save does not open", refused(sealed[:-1], 4242001) and refused(b"", 4242001))
+    # A damaged body behind a signature that matches it: the inflate fails, and that is a
+    # SaveError, never a traceback that stops the gate.
+    body = bytearray(sealed[:-4])
+    body[16 + DD2_SAVES.SLICE_HEADER + 30] ^= 0xFF
+    damaged = bytes(body) + DD2_SAVES.murmur3(bytes(body)).to_bytes(4, "little")
+    check("a damaged body is a SaveError, never a crash", refused(damaged, 4242001))
+    # A footer whose length no save has is refused before any slice is cut for it.
+    huge = bytearray(sealed[:-4])
+    huge[-8:] = (1 << 62).to_bytes(8, "little")
+    huge_signed = bytes(huge) + DD2_SAVES.murmur3(bytes(huge)).to_bytes(4, "little")
+    check("a length no save has is refused at once", refused(huge_signed, 4242001))
     import tempfile
 
     with tempfile.TemporaryDirectory() as home:
         folder = Path(home, "Steam", "userdata", "4242001", "2054970", "remote", "win64_save")
         folder.mkdir(parents=True)
         (folder / "data009Slot.bin").write_bytes(sealed)
+        (folder / "data003Slot.bin").write_bytes(damaged)
         saved = Identifiers(set())
-        check("a save folder opens its saves", saved.saves(folder, None) == (1, 0))
+        check("a save folder opens its saves and counts a damaged one", saved.saves(folder, None, reread=0) == (1, 1))
+        lone = Path(home, "lone", "userdata", "4242001", "2054970", "remote", "win64_save")
+        lone.mkdir(parents=True)
+        (lone / "data009Slot.bin").write_bytes(sealed)
+        real_open, opens = DD2_SAVES.open_save, []
+
+        def writing_once(raw: bytes, account: int) -> bytes:
+            opens.append(account)
+            if len(opens) == 1:
+                raise DD2_SAVES.SaveError("the game is writing it")
+            return real_open(raw, account)
+
+        DD2_SAVES.open_save = writing_once
+        try:
+            check("a save that opens on its second read counts", Identifiers(set()).saves(lone, None, reread=0) == (1, 0))
+        finally:
+            DD2_SAVES.open_save = real_open
         check("the save's name is collected", saved.words.get("Odalric Vernworthy") == "save name")
         check("the folder's account number is collected", saved.ids.get("4242001") == "Steam account id")
         check("the account's Steam id is collected", saved.ids.get(str(76561197960265728 + 4242001)) == "Steam id")

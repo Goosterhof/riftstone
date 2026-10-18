@@ -19,6 +19,8 @@
 mod container;
 mod mandarin;
 pub mod stream;
+#[cfg(test)]
+mod sweep_fixture;
 
 pub use container::{open, SaveError, MAX_FILE};
 pub use stream::{field_hash, Class, Root, StreamError, Value};

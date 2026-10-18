@@ -113,6 +113,15 @@ jobs:
       - name: Clippy (warnings denied)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # RS-8: the only save sealer is the fixtures features' test code, so the graph the
+      # shipped exe is built from must switch none of them on (dev edges are tests only).
+      - name: RS-8 (the shipped graph switches on no fixtures feature)
+        run: |
+          if cargo tree -p riftstone -e normal,build --prefix none -f '{p} {f}' | grep -E '^rift-[a-z]+ .*fixtures'; then
+            echo "::error::a fixtures feature reaches the graph riftstone.exe is built from (RS-8)"
+            exit 1
+          fi
+
       - name: Test (every [GATE] criterion, fixtures built at run time)
         run: cargo test --workspace
 

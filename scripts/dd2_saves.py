@@ -5,7 +5,11 @@ after MandarinJuice, MIT, © 2026 Michał Gębicki) under the Steam account id, 
 then a self-describing stream of classes (BUILD-SPEC § v0.4 has the format). The sweep needs
 only the strings a person typed or another player chose: the Arisen's and pawns' names and
 nicknames, the hired pawns' creators' names, and the pawns' Rift search ids. It reads; it never
-writes a save.
+writes a save, and it carries no sealer: the self-test opens an invented save that rift-save's
+test-only code sealed (`scripts/fixtures/sweep-invented-save.bin`), so the only code in this
+repo that can encrypt a save compiles into test builds alone (RS-8). It checks a save the way
+rift-save does, header, signature and a length no save exceeds before any decryption, so a
+damaged or half-written slot is a SaveError, never a crash or a hang.
 
 The privacy sweep loads this file by path (it runs isolated, `python3 -I`). AES is pure Python
 here, so the sweep's self-test needs no package; `cryptography` speeds a real run when present.
@@ -18,13 +22,15 @@ import zlib
 
 M64 = (1 << 64) - 1
 P = int.from_bytes(bytes.fromhex("f33b6fb972a0b72515e45c391829e182ad8a9bdc0a64d3444d79c810ab863717"), "little")
-Q = int.from_bytes(bytes.fromhex("f99db75c39d0db920a72ae1c8c9470c156c54d6e05b269a2a63c648855c39b0b"), "little")
-G = int.from_bytes(bytes.fromhex("e66f544afcce68c5ef07b9a07b277585344a1db61376e831f73b9fbd5f44f715"), "little")
-HEADER_KEY = pow(G, 20 % Q, P)
+# g^20 mod p, the c1 of every pair in every slice header (rift-save's HEADER_KEY_LE). Opening a
+# save needs only this and p; the group order and the generator, which sealing needs, are not here.
+HEADER_KEY = int.from_bytes(bytes.fromhex("bb39c81702d5495b671844d2f5ee2b77b811eb6e076b236e41ee7ce342f51612"), "little")
 SEED = 0x5EC646997D69AE1B
 SLICE_HEADER = 528
 FOOTER = 0x8C
 STEAM_ID64_BASE = 76561197960265728
+# The largest payload a save may give (rift-save's MAX_PAYLOAD).
+MAX_PAYLOAD = 256 << 20
 
 # The fields whose strings are a person's, by MurmurHash3 x86_32 (seed 0xFFFFFFFF) of the name.
 PRIVATE_FIELDS = ("Name", "NickName", "_Name", "_Nickname", "_NickName", "_SearchId")
@@ -162,11 +168,17 @@ def murmur3(data: bytes, seed: int = 0xFFFFFFFF) -> int:
 
 
 def open_save(raw: bytes, account_id: int) -> bytes:
-    """The payload of a save (decrypted, inflated). SaveError when it does not open."""
-    if raw[:4] != b"DSSS" or len(raw) < 16 + FOOTER or struct.unpack_from("<I", raw, 4)[0] != 2:
-        raise SaveError("not a DSSS v2 save")
+    """The payload of a save (decrypted, inflated). SaveError when it does not open, in the
+    order rift-save checks: the header, the signature, a length no save exceeds, then the
+    slices and the inflate."""
+    if len(raw) < 16 + FOOTER or raw[:4] != b"DSSS" or struct.unpack_from("<I", raw, 4)[0] != 2:
+        raise SaveError("not a whole DSSS v2 save")
+    if len(raw) % 4 or murmur3(raw[:-4]) != struct.unpack_from("<I", raw, len(raw) - 4)[0]:
+        raise SaveError("the signature does not match the bytes")
     flags = struct.unpack_from("<I", raw, 8)[0]
     length = struct.unpack_from("<Q", raw, len(raw) - 12)[0]
+    if length > MAX_PAYLOAD:
+        raise SaveError("larger than any save")
     data = raw[16 : len(raw) - FOOTER]
     units, state = _slice_units(length)
     if sum((u << 14) + SLICE_HEADER for u in units) != len(data):
@@ -190,39 +202,17 @@ def open_save(raw: bytes, account_id: int) -> bytes:
         remaining -= min(size, remaining)
         pos += SLICE_HEADER + size
     if flags & 0x08:
-        zsize = struct.unpack_from("<I", out, 12)[0]
-        return zlib.decompress(bytes(out[24 : 24 + zsize]), -15)
-    return bytes(out)
-
-
-def seal(payload: bytes, account_id: int) -> bytes:
-    """Encrypt an invented payload into a save — the self-test's only use."""
-    units, state = _slice_units(len(payload))
-    uid = ~account_id & M64
-    state = (state + uid) & M64
-    personal = pow(pow(G, uid % Q, P), 20, P)
-    out = bytearray(b"DSSS" + struct.pack("<III", 2, 0x10, 0))
-    done = 0
-    for unit in units:
-        size = unit << 14
-        probe, key = state, bytearray(32)
-        for i in range(16):
-            probe = _splitmix(probe)
-            key[i], key[16 + i] = probe & 0xFF, (probe >> 8) & 0xFF
-        header = bytearray(SLICE_HEADER)
-        for k in range(4):
-            header[k * 128 : k * 128 + 64] = HEADER_KEY.to_bytes(64, "little")
-            part = int.from_bytes(key[k * 8 : k * 8 + 8], "little")
-            header[k * 128 + 64 : k * 128 + 128] = (personal * part).to_bytes(64, "little")
-        stream, state = _header_stream(state)
-        body = bytearray(size)
-        take = min(size, len(payload) - done)
-        body[:take] = payload[done : done + take]
-        out += bytes(a ^ b for a, b in zip(header, stream))
-        out += ofb(bytes(key[:16]), bytes(key[16:]), bytes(body))
-        done += take
-    out += bytes(128) + struct.pack("<Q", len(payload))
-    out += struct.pack("<I", murmur3(bytes(out)))
+        try:
+            zsize = struct.unpack_from("<I", out, 12)[0]
+            size = struct.unpack_from("<Q", out, 16)[0]
+            if size > MAX_PAYLOAD:
+                raise SaveError("larger than any save")
+            payload = zlib.decompressobj(-15).decompress(bytes(out[24 : 24 + zsize]), size + 1)
+        except (struct.error, zlib.error) as err:
+            raise SaveError("the payload would not inflate") from err
+        if len(payload) != size:
+            raise SaveError("the payload would not inflate")
+        return payload
     return bytes(out)
 
 
@@ -316,26 +306,3 @@ def private_strings(payload: bytes) -> list[str]:
     except (struct.error, IndexError) as err:
         raise SaveError("stream ends early") from err
     return found
-
-
-def write_stream(classes: list[list[tuple[str, str]]], records: list[int] | None = None) -> bytes:
-    """An invented stream of classes with string fields — the self-test's only use. `records`
-    gives each class's type hash (`app.Invented` when left out)."""
-    out = bytearray()
-
-    def pad(n: int) -> None:
-        while (len(out) + 16) % n:
-            out.append(0)
-
-    for index, fields in enumerate(classes):
-        record = records[index] if records else murmur3(b"app.Invented")
-        out += struct.pack("<I", murmur3(b"root"))
-        out += struct.pack("<II", len(fields), record)
-        for name, text in fields:
-            out += struct.pack("<Ii", murmur3(name.encode()), 15)
-            pad(4)
-            units = text.encode("utf-16-le")
-            out += struct.pack("<I", len(units) // 2) + units
-            pad(4)
-    pad(8)
-    return bytes(out)

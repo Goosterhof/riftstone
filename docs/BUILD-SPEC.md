@@ -2371,6 +2371,36 @@ The mock gets `?mock=muster…` scenes with an invented party.
   slot held 4 members, and 80 of 80 equipped things were named from the game's own pak. Key 5
   drew THE MUSTER with 4 member tabs, with 0 page exceptions and 0 console errors. It printed
   counts only.
+- **The General's review of PR #1** (2026-10-18, at `2928e89`): four issues and five nits, each
+  confirmed at the head before it was fixed.
+  - **RS-8 was false about the repo.** `scripts/dd2_saves.py` carried a working sealer that the
+    sweep imports on every run. The sealer and the stream writer left the Python. The
+    self-test opens `scripts/fixtures/sweep-invented-save.bin` instead. `rift-save`'s test-only
+    sealer made it, and its `sweep_fixture` test checks it opens to exactly that invented party.
+    The check is the content, not the bytes, because deflate's output depends on the backend a
+    build links. The Sentinel now measures that the shipped graph switches on no `fixtures`
+    feature.
+  - **Any read error was `gone`, and `gone` was cached.** A slot another program held (or one this
+    user may not read) stayed gone until the game wrote it again. Now only a missing file is
+    `gone`. Any other failure gets the 500 ms second look and is then `beingWritten`, never
+    cached. A file larger than `rift_save::MAX_FILE` is `damaged` from its size alone. A file of
+    0–3 bytes is `Truncated`, not foreign, so it gets the second look too: the game empties a
+    slot before it writes it.
+  - **THE RE-CARVING lost its ground after one failed re-read.** `sameSlot` came from the view the
+    failure had blanked. It now comes from the slot whose party was drawn last, which a failed
+    re-read keeps and a pick of another slot clears (R17.25 holds).
+  - **A failed codex build was not remembered**, so every call opened the 69 GB pak again, and two
+    cold callers built it twice. A failure is now held against the pak's stamp just as a success
+    is, and one build runs at a time behind its own gate.
+  - **The sweep's reader crashed on a damaged slot** (`zlib.error`, `struct.error`). With no
+    signature check and no length cap, a torn slot's footer could also send it looping. It now
+    checks in `rift-save`'s order and turns every failure into a `SaveError`. A slot that does
+    not open is read once more a second later, then counted.
+  - **Why the sweep reads the live save folder** rather than a copy is now in the journal (Privacy).
+  - The held, emptied, failure-memo, single-build and re-carving cases each failed at `2928e89`
+    before their fixes, and the sweep's new damaged-body check crashed the old reader. The
+    oversized-file test and the ceiling test guard the new cap. New: 5 spine tests, 2 rift-save
+    tests, 1 window spec and 5 sweep self-test checks.
 
 ### Ownership in the build
 
