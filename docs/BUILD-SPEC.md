@@ -2078,3 +2078,17 @@ A Windows clone of the branch ran the Rust tests natively (`cargo test --workspa
   off, also over another program's key; a download with each account type, one cancelled, one
   into a FAT32 or exFAT folder; uninstall with the switch on; an upgrade over an installed v0.3
   (§ src-tauri, Open, lists each press in full).
+
+### The third native Windows run (2026-10-18, 0.3.1 at d68df79)
+
+- **Tests:** `cargo test --workspace --no-fail-fast` natively (MSVC, Rust 1.98.0,
+  `RUSTFLAGS=-D warnings`) at d68df79: 864 passed, 0 failed, 8 ignored in 44 test targets. The
+  final review's round (the relink progress, the watcher's re-arm) compiles there without a
+  warning. 75de070 changed only a test fixture's number, the docs and the sweep after it.
+- **Build:** `npm run tauri build` at d68df79 built `riftstone.exe` and
+  `The Riftstone_0.3.1_x64-setup.exe` (5.88 MiB).
+- **Probe:** the same read-only bench probe, on a copy of real app data, passed again; the stone
+  was idle about 5 s after its launch, the relink's reading included. Nothing it counted or
+  named is recorded here.
+- **Still owed:** as after the second run. `cargo clippy` is still not installed on the
+  Windows bench.
