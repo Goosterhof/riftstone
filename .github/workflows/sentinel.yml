@@ -115,9 +115,14 @@ jobs:
 
       # RS-8: the only save sealer is the fixtures features' test code, so the graph the
       # shipped exe is built from must switch none of them on (dev edges are tests only).
+      # The graph is its own denominator: the assignment fails the step under `-e` when
+      # `cargo tree` fails, and a graph without the exe fails it before the check can pass
+      # on nothing (the General's review of PR #1).
       - name: RS-8 (the shipped graph switches on no fixtures feature)
         run: |
-          if cargo tree -p riftstone -e normal,build --prefix none -f '{p} {f}' | grep -E '^rift-[a-z]+ .*fixtures'; then
+          tree=$(cargo tree -p riftstone -e normal,build --prefix none -f '{p} {f}')
+          grep -q '^riftstone ' <<<"$tree" || { echo "::error::cargo tree listed no riftstone"; exit 1; }
+          if grep -E '^rift-[a-z]+ .*fixtures' <<<"$tree"; then
             echo "::error::a fixtures feature reaches the graph riftstone.exe is built from (RS-8)"
             exit 1
           fi

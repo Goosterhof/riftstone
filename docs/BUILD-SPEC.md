@@ -2401,6 +2401,13 @@ The mock gets `?mock=muster…` scenes with an invented party.
     before their fixes, and the sweep's new damaged-body check crashed the old reader. The
     oversized-file test and the ceiling test guard the new cap. New: 5 spine tests, 2 rift-save
     tests, 1 window spec and 5 sweep self-test checks.
+  - **The General re-verified at `3791af0` and approved.** It agreed with keying THE RE-CARVING on
+    the slot drawn last rather than the slot picked. It raised one new nit: the RS-8 step passed
+    when `cargo tree` itself failed, because the step runs as `bash -e` without `pipefail` and an
+    `if` ignores `-e`. The graph is now held in a variable, which fails the step when
+    `cargo tree` fails, and a graph without `riftstone` fails it too. All four cases were checked
+    locally: the real graph passes, and a failing `cargo tree`, a fixtures feature and an empty
+    graph each fail.
 
 ### Ownership in the build
 

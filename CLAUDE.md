@@ -106,7 +106,9 @@ those gates on every push to `main` and every pull request against it, in three 
 - *Window*: `npm ci`, then typecheck, lint, test, format:check and build.
 - *Crates*: fmt, clippy with warnings denied, RS-8 measured, and the workspace's tests. RS-8's
   step reads `cargo tree -p riftstone -e normal,build` and fails when any `fixtures` feature
-  reaches the graph the shipped exe is built from. It is pinned to Rust
+  reaches the graph the shipped exe is built from. The graph is its own denominator: the step
+  also fails when `cargo tree` fails or lists no `riftstone`, so it cannot pass on nothing. It
+  is pinned to Rust
   1.98.0, the toolchain both benches verified with, because a newer stable's lints can turn
   `-D warnings` red overnight. Moving the pin is a deliberate commit, run on both benches first.
 - *Privacy*: the sweep's `--self-test`.
