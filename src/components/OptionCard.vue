@@ -11,6 +11,8 @@ import type { MatchedField, SearchResult } from "@/types/rift";
 import { chipsFor, railFor } from "@/services/chips";
 import { carriesToken, containsAnyToken, SHORT_TOKEN } from "@/services/highlight";
 import { kindsPresent } from "@/services/format";
+import { answerMark, olderPlace, versionName } from "@/services/versions";
+import { useLibrary } from "@/composables/useLibrary";
 import HitText from "./HitText.vue";
 import KindBadge from "./KindBadge.vue";
 import MenuTrail from "./MenuTrail.vue";
@@ -112,6 +114,20 @@ const metaLine = computed(() => {
   return bits.join(" · ");
 });
 
+/** v0.5 (R18.7, §18.17): an answer kept from an older version says so; the
+ *  spine already dropped one whose lead's same option answered too. */
+const library = useLibrary();
+const olderMarkText = computed(() => {
+  const place = olderPlace(library.packages.value, hit.packageId);
+  if (!place) return null;
+  const old = versionName(place.version.version, place.version.fileName);
+  const mark = answerMark(
+    old,
+    place.version.matches.some((m) => m.optionId === hit.optionId),
+  );
+  return metaLine.value ? mark : mark.replace(/^ · /, "");
+});
+
 const matchedLabel = computed(() =>
   hit.matched.length ? `Matched in ${hit.matched.map((m) => MATCHED_WORD[m] ?? m).join(", ")}` : "",
 );
@@ -180,7 +196,9 @@ const matchedLabel = computed(() =>
         <span v-if="hit.nexusCategory" class="card__cat" :title="`Nexus category: ${hit.nexusCategory}`"
           ><HitText :text="hit.nexusCategory" :tokens="hasQuery ? tokens : []"
         /></span>
-        <span class="card__metatext">{{ metaLine }}</span>
+        <span class="card__metatext"
+          >{{ metaLine }}<span v-if="olderMarkText" class="card__older">{{ olderMarkText }}</span></span
+        >
       </div>
       <p v-if="pathLine && !reasonFirst" class="card__match card__match--path" :title="pathLine.all">
         <span class="card__glyph" aria-hidden="true">⌕</span><PathProof :path="pathLine.path" :tokens="tokens" /><span

@@ -158,3 +158,88 @@ export function recarvedSentence(n: number): string {
 }
 
 export const readAgainWords = (ms: number): string => `· read again ${formatClock(ms)}`;
+
+// ---------------------------------------------------------------------------
+// v0.5 — THE MUSTER by character (#00015 §18.8–§18.11). Every sentence here
+// carries no name and no key: a person's name is rendered by the caller as
+// text, and only the accessible names below (never a title, a toast or a live
+// region) say it, as R18.15 and R18.20 rule.
+// ---------------------------------------------------------------------------
+
+export const CHARACTERS_HEAD = "CHARACTERS";
+
+/** R18.16: the carved count over the slots that will not open. */
+export const apartHead = (n: number): string => `${n} WON'T ANSWER`;
+
+/** R18.16: the fixed order of the groups apart. */
+export const APART_ORDER = ["damaged", "beingWritten", "otherAccount", "noParty", "gone"] as const;
+
+/** R18.15 line 3: `3 saves`, `1 save`. */
+export const savesWords = (n: number): string => `${n} ${n === 1 ? "save" : "saves"}`;
+
+/** R18.15: a character row's accessible name (`{Arisen} and {main pawn}, level …`). */
+export function characterLabel(row: {
+  arisen: string;
+  pawn: string | null;
+  level: number | null;
+  vocation: string | null;
+  saves: number;
+  when: string;
+}): string {
+  const who = row.pawn === null ? row.arisen : `${row.arisen} and ${row.pawn}`;
+  const lv = row.level === null ? "" : `, level ${row.level}${row.vocation ? ` ${row.vocation}` : ""}`;
+  return `${who}${lv}, ${savesWords(row.saves)}, last saved ${row.when}`;
+}
+
+/** R18.20: the slot button's accessible name. */
+export const slotButtonLabel = (arisen: string): string => `Save slot of ${arisen}`;
+
+/** R18.24: the button's accessible description while a newer save waits. */
+export const NEWER_SAVE_NOTE = "a newer save arrived";
+
+/** R18.21: a menu entry's accessible name. */
+export function slotEntryLabel(
+  slot: number,
+  when: string,
+  level: number | null,
+  extra: { newest: boolean; writing: boolean; since: number | null },
+): string {
+  const parts = [`Slot ${slot}`, `saved ${when}`];
+  if (level !== null) parts.push(`level ${level}`);
+  if (extra.newest) parts.push("newest");
+  if (extra.writing) parts.push("the game is writing it");
+  if (extra.since !== null) parts.push(`saved since you picked slot ${extra.since}`);
+  return parts.join(", ");
+}
+
+export const NEWEST_BADGE = "NEWEST";
+export const WRITING_ENTRY = "the game is writing it";
+
+/** R18.23–R18.25: the state words after the file name on the head's line 2. */
+export type MusterMode =
+  | { kind: "following"; savingIn: number | null; movedFrom: { slot: number; at: number } | null }
+  | { kind: "pinned"; newerIn: number | null };
+
+export function stateWords(mode: MusterMode): { words: string; warn: boolean } {
+  if (mode.kind === "pinned")
+    return {
+      words: mode.newerIn === null ? "· pinned" : `· pinned · the game saved again in Slot ${mode.newerIn}`,
+      warn: false,
+    };
+  if (mode.savingIn !== null) return { words: `· the game is saving in Slot ${mode.savingIn}`, warn: true };
+  const moved = mode.movedFrom ? ` · moved from Slot ${mode.movedFrom.slot} at ${formatClock(mode.movedFrom.at)}` : "";
+  return { words: `· following the newest save${moved}`, warn: false };
+}
+
+/** R18.25: the polite live region after the sheet followed into another slot. Counts only. */
+export function movedSentence(n: number): string {
+  if (n === 0) return "The game saved in another slot. The stone moved the sheet there: nothing changed.";
+  return `The game saved in another slot. The stone moved the sheet there: ${n} ${n === 1 ? "thing" : "things"} changed.`;
+}
+
+/** R18.24: said once when a newer save arrives while pinned. */
+export const PINNED_NEWER_SENTENCE = "The game saved this character again. The sheet stays on the slot you picked.";
+
+/** R18.27: under `CHARACTERS`, once per session. No name: the window only ever held a key. */
+export const GONE_LINE =
+  "The stone remembered a character it no longer finds in your saves, so it opened on the newest save.";

@@ -4,6 +4,11 @@
 // regions: the pinned page head (inscription, purse, the open slot's line,
 // THE RE-CARVING's carved count), the slot list, and the member tab line over
 // one member's sheet. Read-only: no door here changes anything.
+//
+// v0.5 (#00015 §18.8–§18.10): the left column lists characters, with the
+// slots that won't open apart; the head's open-slot line is the slot menu,
+// with the words that say whether the sheet follows the newest save or is
+// pinned to one.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useMuster } from "@/composables/useMuster";
 import { useNavigation } from "@/composables/useNavigation";
@@ -16,12 +21,15 @@ import {
   MUSTER_INSCRIPTION,
   NAMES_NOTICE,
   READING_PARTY,
+  CHARACTERS_HEAD,
   count,
   readAgainWords,
+  stateWords,
   whenWords,
 } from "@/services/muster";
 import { deltaText, membersOf } from "@/services/recarving";
-import MusterSlotList from "@/components/MusterSlotList.vue";
+import MusterRoster from "@/components/MusterRoster.vue";
+import MusterSlotMenu from "@/components/MusterSlotMenu.vue";
 import MusterTabs from "@/components/MusterTabs.vue";
 import MusterSheet from "@/components/MusterSheet.vue";
 import MusterState from "@/components/MusterState.vue";
@@ -30,7 +38,7 @@ import RiftButton from "@/components/RiftButton.vue";
 const muster = useMuster();
 const nav = useNavigation();
 
-const slotList = ref<InstanceType<typeof MusterSlotList> | null>(null);
+const roster = ref<InstanceType<typeof MusterRoster> | null>(null);
 const tabs = ref<InstanceType<typeof MusterTabs> | null>(null);
 const panel = ref<HTMLElement | null>(null);
 
@@ -65,6 +73,16 @@ const purse = computed(() => {
   return parts;
 });
 
+/** R18.20: the menu stands only while a character's save is on the sheet. */
+const menuFor = computed(() => (muster.picked.value ? muster.shownCharacter.value : null));
+const state = computed(() => stateWords(muster.stateMode.value));
+/** R18.25: `moved from` replaces `read again` for that read. */
+const readAgainShown = computed(
+  () =>
+    muster.readAgainAt.value !== null &&
+    !(menuFor.value && muster.stateMode.value.kind === "following" && muster.stateMode.value.movedFrom),
+);
+
 const readingShown = computed(() => muster.readingSlow.value && !view.value && !slotState.value);
 
 async function copyDetails(): Promise<void> {
@@ -92,7 +110,7 @@ const DOORS: Partial<Record<RecoveryKind | "lookAgain", () => unknown>> = {
   retry: () => (muster.slotsFailure.value ? muster.lookAgain() : muster.readAgain()),
   showInFolder,
   copyDetails,
-  pickSlot: () => slotList.value?.focusNewestOpen(),
+  pickSlot: () => roster.value?.focusNewestOpen(),
   openPreflight: () => nav.go("preflight"),
 };
 
@@ -130,7 +148,7 @@ watch(
   async ([summoned, slots]) => {
     if (!summoned || !slots) return;
     await nextTick();
-    if (slots.slots.length) slotList.value?.focusPicked();
+    if (slots.slots.length) roster.value?.focusShown();
     muster.focusSummoned.value = false;
   },
   { immediate: true },
@@ -161,7 +179,25 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         </p>
       </div>
       <div class="muster__slotline">
-        <p v-if="muster.picked.value" class="muster__open">
+        <div v-if="menuFor && muster.picked.value" class="muster__open">
+          <MusterSlotMenu
+            :who="menuFor"
+            :shown-slot="muster.picked.value"
+            :shown-at="view?.savedAt ?? muster.picked.value.savedAt"
+            :newer-ids="muster.newerIds.value"
+            :lit="muster.slotLit.value"
+            @pick="(id) => void muster.pickSlot(id)"
+          />
+          <span class="muster__rest">
+            <span class="rs-mono muster__file muster__file--menu">{{ muster.picked.value.slotId }}</span>
+            <!-- the spaces are interpolated: Vue condenses a leading or newline-bearing blank away -->
+            <span class="muster__state" :class="{ 'is-warn': state.warn }">{{ ` ${state.words}` }}</span>
+            <span v-if="readAgainShown && muster.readAgainAt.value !== null" class="muster__dim">{{
+              ` ${readAgainWords(muster.readAgainAt.value)}`
+            }}</span>
+          </span>
+        </div>
+        <p v-else-if="muster.picked.value" class="muster__open muster__open--plain">
           <span class="muster__slot">Slot {{ muster.picked.value.slot }}</span>
           <span class="muster__dim"> · </span>
           <span class="rs-mono muster__file">{{ muster.picked.value.slotId }}</span>
@@ -213,16 +249,21 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
       </div>
 
       <section class="muster__slots" aria-labelledby="muster-slots-h">
-        <h2 id="muster-slots-h" class="msec rs-inscription">SLOTS</h2>
+        <h2 id="muster-slots-h" class="msec rs-inscription">{{ CHARACTERS_HEAD }}</h2>
         <div class="muster__slotscroll">
           <p v-if="!list && muster.listingSlow.value" class="muster__quiet">{{ LISTING_SLOTS }}</p>
-          <MusterSlotList
+          <MusterRoster
             v-if="list"
-            ref="slotList"
-            :slots="list.slots"
+            ref="roster"
+            :characters="muster.characters.value"
+            :apart="muster.apart.value"
+            :shown="muster.shownCharacter.value"
             :picked-id="muster.pickedId.value"
             :names="list.names"
-            @pick="(id) => void muster.pick(id)"
+            :marked="marks.count > 0"
+            :gone="muster.goneShown.value"
+            @pick-character="(key) => void muster.pickCharacter(key)"
+            @pick-apart="(id) => void muster.pickApart(id)"
             @to-tabs="focusTabs"
           />
         </div>
@@ -326,9 +367,32 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 .muster__open {
   margin: 0;
   min-width: 0;
+  white-space: nowrap;
+}
+/* R18.20: the slot menu's button, then the file and the state words on one line */
+.muster__open:not(.muster__open--plain) {
+  display: flex;
+  align-items: baseline;
+  gap: var(--rs-space-3);
+}
+.muster__open--plain,
+.muster__rest {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+}
+.muster__state {
+  color: var(--rs-muted);
+}
+.muster__state.is-warn {
+  color: var(--rs-warn);
+}
+/* Q18.9's fallback: below 1200 the file name leaves line 2 (the button's
+   description still carries it) */
+@media (max-width: 1199px) {
+  .muster__file--menu {
+    display: none;
+  }
 }
 .muster__slot {
   color: var(--rs-text);

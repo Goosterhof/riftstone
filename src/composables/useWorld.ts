@@ -3,6 +3,9 @@
 //               detail → returnPlan → returning → returned | failed
 // THE CROSSING (§11.2) keys off `crossingSeq`; the card's rail turns gold on
 // its own because the option's state changed, not because anything is drawn.
+// v0.5 (#00015 R18.5, R18.6, R18.9): an install that replaces another
+// version's install lands with no Undo, its put-away told once in the plan,
+// and a failed replace names the version the rollback put back.
 
 import { computed, ref } from "vue";
 import type {
@@ -10,14 +13,19 @@ import type {
   InstallProgressEvent,
   InstallResultView,
   OptionDetail,
+  PutAwayView,
   UninstallPlanView,
   UninstallResultView,
 } from "@/types/rift";
 import { asRiftFailure, rift, type RiftFailure } from "@/services/rift";
-import { failureDetails, voice, type VoiceContext, type Voiced } from "@/services/voice";
+import { failureDetails, pick, voice, type VoiceContext, type Voiced } from "@/services/voice";
 import { plural } from "@/services/format";
+import { familyNames, foldFamilies, replacedRollback, replacedToast, versionName } from "@/services/versions";
+import { useLibrary } from "./useLibrary";
 import { useNavigation } from "./useNavigation";
 import { useToasts } from "./useToasts";
+import { resetUndercroft, useUndercroft } from "./useUndercroft";
+import { resetVersions } from "./useVersions";
 
 export type WorldStage = "detail" | "plan" | "crossing" | "landed" | "returnPlan" | "returning" | "returned" | "failed";
 
@@ -39,6 +47,8 @@ const returned = ref<UninstallResultView | null>(null);
 const failure = ref<WorldFailure | null>(null);
 const planning = ref(false);
 const crossingSeq = ref(0);
+/** v0.5: the landed install's family, file name → version, read before the scan moves one away. */
+const landedNames = ref<ReadonlyMap<string, string>>(new Map());
 
 const isInstalled = computed(() => Boolean(detail.value?.installed));
 
@@ -76,7 +86,15 @@ function close(): void {
 
 function fail(raw: unknown, context: VoiceContext): void {
   const f: RiftFailure = asRiftFailure(raw);
-  failure.value = { voiced: voice(f, context), details: failureDetails(f, context), context };
+  const voiced = voice(f, context);
+  // R18.30 / Q18.13: a failed replace names the version the rollback put back, read from the plan
+  const replaced = context === "install" ? plan.value?.replaces[0] : undefined;
+  if (replaced && voiced.inscription === "THE CROSSING FAILED") {
+    const placed = Number(pick(f.detail, "rolledBack", "restored", "placed", "filesRolledBack"));
+    const old = versionName(replaced.version, replaced.name);
+    voiced.empathy = `${replacedRollback(old, Number.isFinite(placed) ? placed : null)} Close the game if it's running.`;
+  }
+  failure.value = { voiced, details: failureDetails(f, context), context };
   stage.value = "failed";
 }
 
@@ -95,8 +113,24 @@ async function beginInstall(optionId: string | null = selectedId.value): Promise
   }
 }
 
-function landedToast(result: InstallResultView, name: string): void {
+/** The version a package is, as the copy names it (`v1.3`), from the library the tree draws. */
+function versionOfPackage(packageId: string | undefined): { pkgName: string; version: string } | null {
+  const pkg = useLibrary().packages.value.find((p) => p.package.id === packageId);
+  if (!pkg?.family) return null;
+  return { pkgName: pkg.package.displayName, version: versionName(pkg.family.version, pkg.package.fileName) };
+}
+
+function landedToast(result: InstallResultView, name: string, landedPlan: InstallPlanView): void {
   const { push } = useToasts();
+  const replaced = landedPlan.replaces.at(0);
+  const mine = versionOfPackage(detail.value?.package.id);
+  if (replaced) {
+    // R18.6, Bold Choice 18: a replace has no Undo; going back is installing the older version
+    const old = versionName(replaced.version, replaced.name);
+    const line = mine ? replacedToast(mine.pkgName, mine.version, old) : `${name} is in your world, in ${old}'s place.`;
+    push("world", line, [{ label: "Show in load order", run: () => useNavigation().go("world") }]);
+    return;
+  }
   const restart = result.restartNeeded ? " Restart the game to load it." : "";
   push("world", `${name} is in your world. ${plural(result.filesWritten, "file")} placed.${restart}`, [
     { label: "Undo", run: () => quietUninstall(result.optionId, name) },
@@ -108,6 +142,7 @@ async function confirmInstall(): Promise<void> {
   const current = plan.value;
   if (!current || current.refused) return;
   stage.value = "crossing";
+  landedNames.value = familyNames(useLibrary().packages.value, detail.value?.package.id ?? "");
   progress.value = {
     optionId: current.optionId,
     filesDone: 0,
@@ -121,7 +156,8 @@ async function confirmInstall(): Promise<void> {
     landed.value = result;
     stage.value = "landed";
     crossingSeq.value += 1;
-    landedToast(result, current.name);
+    landedToast(result, current.name, current);
+    if (result.putAway.length) void useUndercroft().load();
     await loadDetail(current.optionId);
   } catch (raw) {
     fail(raw, "install");
@@ -208,6 +244,41 @@ async function quietInstall(optionId: string, name: string): Promise<void> {
   }
 }
 
+/** R18.5's `Try again` on a failed put-away: every older member of the
+ *  installed package's family left without installs, moved one by one. */
+const retryingPutAway = ref(false);
+async function retryPutAway(): Promise<void> {
+  const result = landed.value;
+  const packageId = detail.value?.package.id;
+  if (!result || !packageId || retryingPutAway.value) return;
+  retryingPutAway.value = true;
+  let moving: string | null = null;
+  try {
+    await useLibrary().load();
+    const entry = foldFamilies(useLibrary().packages.value).find(
+      (e) => e.lead.package.id === packageId || e.older.some((o) => o.pkg.package.id === packageId),
+    );
+    const members = entry ? [entry.lead, ...entry.older.map((o) => o.pkg)] : [];
+    const after = members.slice(members.findIndex((m) => m.package.id === packageId) + 1);
+    const backend = await rift();
+    const moved: PutAwayView[] = [];
+    for (const m of after.filter((x) => x.installed === 0)) {
+      moving = m.package.fileName;
+      moved.push(await backend.putAway(m.package.id));
+    }
+    landed.value = { ...result, putAway: [...result.putAway, ...moved], putAwayFailed: null };
+    if (moved.length) void useUndercroft().load();
+  } catch (raw) {
+    const f = asRiftFailure(raw);
+    // the voice names the file the move was about, by its own name (§18.11)
+    const detail = moving ? { ...f.detail, act: "putAway", file: moving } : { ...f.detail, act: "putAway" };
+    const voiced = voice({ kind: f.kind, detail }, "olderVersions");
+    landed.value = { ...result, putAwayFailed: voiced.voice };
+  } finally {
+    retryingPutAway.value = false;
+  }
+}
+
 function backToDetail(): void {
   stage.value = "detail";
   plan.value = null;
@@ -258,6 +329,9 @@ export function useWorld() {
     failure,
     planning,
     crossingSeq,
+    landedNames,
+    retryingPutAway,
+    retryPutAway,
     isInstalled,
     open,
     close,
@@ -280,4 +354,8 @@ export function resetWorld(): void {
   planning.value = false;
   crossingSeq.value = 0;
   detailFailure.value = null;
+  retryingPutAway.value = false;
+  landedNames.value = new Map();
+  resetVersions();
+  resetUndercroft();
 }

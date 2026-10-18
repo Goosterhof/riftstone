@@ -32,8 +32,10 @@ pub mod conflicts;
 pub mod downloads;
 pub mod dto;
 pub mod events;
+pub mod family;
 pub mod fresh;
 pub mod keys;
+pub mod landing;
 pub mod library;
 pub mod migrate;
 pub mod muster;
@@ -216,5 +218,11 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         commands::muster::get_muster_slots,
         commands::muster::get_muster,
         commands::muster::open_saves_folder,
+        commands::versions::plan_keep_newest,
+        commands::versions::keep_newest,
+        commands::versions::put_away,
+        commands::versions::get_older_versions,
+        commands::versions::bring_back,
+        commands::versions::open_older_versions_folder,
     ])
 }

@@ -46,7 +46,17 @@ export type SceneName =
   | "musternosaves"
   | "musternames"
   | "musterslow"
-  | "musterwriting";
+  | "musterwriting"
+  // v0.5: versions of one file (#00015 §18.15)
+  | "family"
+  | "familyfresh"
+  | "familythree"
+  | "putaway"
+  | "putawaytaken"
+  | "putawayfail"
+  | "undercroft"
+  | "undercroftempty"
+  | "undercroftnone";
 
 /** One scenario, or two combined: the mock reads its query string comma-separated. */
 export type Scene = SceneName | `${Exclude<SceneName, "">},${Exclude<SceneName, "">}`;

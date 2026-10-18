@@ -347,8 +347,12 @@ fn the_spine_scans_searches_installs_and_uninstalls_over_a_fake_world() {
     let settings = Settings {
         veil: VeilMode::Adult,
         auto_check_updates: false,
+        muster_character: Some("9f3c0a7e5b1d2c44".into()),
     };
-    assert_eq!(overview::set_settings_impl(&state, settings), settings);
+    assert_eq!(
+        overview::set_settings_impl(&state, settings.clone()),
+        settings
+    );
     assert_eq!(overview::get_settings_impl(&state), settings);
     let on_disk: serde_json::Value =
         serde_json::from_slice(&fs::read(dirs.settings_file()).unwrap()).unwrap();

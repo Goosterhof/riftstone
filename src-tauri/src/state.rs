@@ -59,7 +59,7 @@ use std::sync::{
 use std::time::Instant;
 
 use rift_catalog::{Catalog, CatalogCache, ScanProgress};
-use rift_core::{OptionId, RiftError};
+use rift_core::{OptionId, PackageId, RiftError};
 use rift_deploy::{DeployContext, GameInstall, GameSource, GameState, Journal, RefStatus};
 use rift_nexus::NexusClient;
 
@@ -68,6 +68,7 @@ use crate::conflicts::{self, PakHashCache};
 use crate::downloads::Downloads;
 use crate::dto::{ConflictView, RecoveryNote, ScanProgressEvent, ScanState};
 use crate::events::{self, EventSink};
+use crate::family::Families;
 use crate::fresh::Fresh;
 use crate::keys::KeyStore;
 use crate::library::{Shelf, SourcePool};
@@ -732,6 +733,9 @@ impl AppState {
     /// reader that still holds the shelf keeps reading the old one, so the
     /// labeled shelf is a copy then.
     pub fn relabel(&self) {
+        // v0.5: a link or a check can tie versions of one file or untie them, and the
+        // snapshot's conflicts read the families: the next one is built afresh.
+        self.invalidate_snapshot();
         let mut current = write(&self.shelf);
         let labels = lock(&self.nexus).package_labels(current.packages());
         if current.carries_labels(&labels) {
@@ -1255,6 +1259,8 @@ impl AppState {
         self.snapshot.builds()
     }
 
+    /// The snapshot reads the Nexus store (v0.5, for the families), so nothing asks for one
+    /// while holding the store's lock.
     fn compute_snapshot(&self) -> Snapshot {
         let world = self.world();
         let running = self.game.run().running;
@@ -1273,7 +1279,22 @@ impl AppState {
                 };
                 let game_state = rift_deploy::read_game_state(&ctx, journal);
                 let layers = conflicts::game_layers(&game.root, journal, &game_state, &self.paks);
-                snapshot.conflicts = conflicts::detect(&layers);
+                // v0.5: versions of one file stacked in your world (installed before v0.5
+                // replaced them, or before a link proved them one file) override each other
+                // by design. That is an older version still installed, which the family's own
+                // mark tells (WINDOW-CONTRACT § v0.5): no conflict.
+                let families = Families::of_shelf(&self.shelf(), &lock(&self.nexus));
+                snapshot.conflicts = conflicts::detect(&layers)
+                    .into_iter()
+                    .filter(|conflict| {
+                        let packages: Vec<PackageId> = conflict
+                            .layers
+                            .iter()
+                            .map(|layer| OptionId(layer.option_id.clone()).package())
+                            .collect();
+                        !families.one_family(&packages)
+                    })
+                    .collect();
                 snapshot.conflicted = conflicts::conflicted_ids(&snapshot.conflicts);
                 snapshot.game_state = Some(game_state);
             }

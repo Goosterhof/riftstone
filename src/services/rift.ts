@@ -7,12 +7,15 @@
 // vitest suite. The mock is a separate chunk, loaded only when needed.
 
 import type {
+  BringBackResult,
   DownloadView,
   EndorseStatus,
   GameSummary,
   InstallPlanView,
   InstallResultView,
   InstalledView,
+  KeepNewestPlanView,
+  KeepNewestResultView,
   LaunchPlanView,
   LaunchReport,
   LibraryView,
@@ -27,7 +30,9 @@ import type {
   NexusQuota,
   NexusStandings,
   NxmHandlerView,
+  OlderShelfView,
   ParkedRestoreReport,
+  PutAwayView,
   NexusSummary,
   OptionDetail,
   Overview,
@@ -180,6 +185,18 @@ export interface RiftBackend {
   getMuster(slotId: string): Promise<MusterView>;
   /** v0.4: open the slot's save folder in Explorer, Rust-side (its path stays out of the window). */
   openSavesFolder(slotId: string): Promise<void>;
+  /** v0.5: what keeping only the newest version of one file would uninstall and put away. */
+  planKeepNewest(packageId: string): Promise<KeepNewestPlanView>;
+  /** v0.5: uninstall the older versions' installs of one file, then put them away. */
+  keepNewest(packageId: string): Promise<KeepNewestResultView>;
+  /** v0.5: move an older version with no installs to the older-versions folder. */
+  putAway(packageId: string): Promise<PutAwayView>;
+  /** v0.5: what the older-versions folder holds. */
+  getOlderVersions(): Promise<OlderShelfView>;
+  /** v0.5: move a put-away version back into the mods folder. */
+  bringBack(fileName: string): Promise<BringBackResult>;
+  /** v0.5: show the older-versions folder in Explorer, Rust-side (refused before it exists). */
+  openOlderVersionsFolder(): Promise<void>;
   /** Subscribe to a backend event; resolves to an unsubscribe function. */
   on<T>(event: RiftEvent, handler: (payload: T) => void): Promise<() => void>;
   openUrl(url: string): Promise<void>;
@@ -250,6 +267,12 @@ async function tauriBackend(): Promise<RiftBackend> {
     getMusterSlots: () => invoke("get_muster_slots"),
     getMuster: (slotId) => invoke("get_muster", { slotId }),
     openSavesFolder: (slotId) => invoke("open_saves_folder", { slotId }),
+    planKeepNewest: (packageId) => invoke("plan_keep_newest", { packageId }),
+    keepNewest: (packageId) => invoke("keep_newest", { packageId }),
+    putAway: (packageId) => invoke("put_away", { packageId }),
+    getOlderVersions: () => invoke("get_older_versions"),
+    bringBack: (fileName) => invoke("bring_back", { fileName }),
+    openOlderVersionsFolder: () => invoke("open_older_versions_folder"),
     on: async (event, handler) => {
       const unlisten = await listen(event, (e) => {
         handler(e.payload as never);

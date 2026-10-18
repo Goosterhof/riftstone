@@ -634,6 +634,9 @@ pub struct UpdateRow {
     pub state: UpdateStateView,
     pub page_url: Option<String>,
     pub checked_ms: Option<u64>,
+    /// v0.5: on a family's lead, the older versions of its file still in the mods folder,
+    /// newest first; empty otherwise (an older version has no row of its own).
+    pub older: Vec<OlderVersionView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -705,6 +708,9 @@ pub struct LibraryPackage {
     pub adult: bool,
     /// At least one option of it takes part in a conflict.
     pub conflicted: bool,
+    /// v0.5: its place among the versions of one Nexus file in the mods folder; `None` when no
+    /// other version of the same file is there.
+    pub family: Option<FamilyView>,
     /// Empty for a package that yielded no options (its problems say why).
     pub tree: Vec<TreeNode>,
 }
@@ -775,6 +781,9 @@ pub struct InstallPlanView {
     pub writes: Vec<PlannedWrite>,
     pub total_bytes: u64,
     pub warnings: Vec<PlanWarning>,
+    /// v0.5: the installs of other versions of the same file this install takes the place of,
+    /// in the same journaled step.
+    pub replaces: Vec<ReplacesView>,
     /// A full sentence when the install cannot run.
     pub refused: Option<String>,
 }
@@ -788,6 +797,10 @@ pub struct InstallResultView {
     pub backups: usize,
     pub duration_ms: u64,
     pub restart_needed: bool,
+    /// v0.5: older versions moved to the older-versions folder after the install committed.
+    pub put_away: Vec<PutAwayView>,
+    /// v0.5: a sentence when an older version could not be moved; the install stands.
+    pub put_away_failed: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1335,7 +1348,7 @@ pub enum VeilMode {
     All,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     /// v0.2: replaces v0.1's `veilThumbnails: bool` (`settings.json` keeps
@@ -1343,6 +1356,9 @@ pub struct Settings {
     pub veil: VeilMode,
     /// Check Nexus on launch when the last check is older than 12 hours.
     pub auto_check_updates: bool,
+    /// v0.5: THE MUSTER's chosen character (`MusterSlot.character`), or `None` for the character
+    /// of the newest save. Private like the names it is made from: never logged.
+    pub muster_character: Option<String>,
 }
 
 impl Default for Settings {
@@ -1350,6 +1366,7 @@ impl Default for Settings {
         Settings {
             veil: VeilMode::Off,
             auto_check_updates: true,
+            muster_character: None,
         }
     }
 }
@@ -1814,6 +1831,7 @@ impl From<&rift_deploy::InstallPlan> for InstallPlanView {
                 .collect(),
             total_bytes: plan.total_bytes,
             warnings: plan.warnings.iter().map(PlanWarning::from).collect(),
+            replaces: Vec::new(),
             refused: plan.refused.clone(),
         }
     }
@@ -1828,6 +1846,8 @@ impl From<&rift_deploy::InstallReport> for InstallResultView {
             backups: report.backups,
             duration_ms: report.duration_ms,
             restart_needed: report.restart_needed,
+            put_away: Vec::new(),
+            put_away_failed: None,
         }
     }
 }
@@ -2264,6 +2284,11 @@ pub struct MusterSlot {
     pub account: Option<u32>,
     pub arisen: Option<MusterSlotArisen>,
     pub problem: Option<rift_core::SaveReason>,
+    /// v0.5: the character the slot belongs to (16 hex digits); private, never logged. `None`
+    /// when the slot would not open.
+    pub character: Option<String>,
+    /// v0.5: the main pawn's name, the player's own: shown, never logged.
+    pub main_pawn_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2461,6 +2486,111 @@ impl MusterMember {
 }
 
 // ---------------------------------------------------------------------------
+// v0.5 — versions of one file (WINDOW-CONTRACT § v0.5)
+// ---------------------------------------------------------------------------
+
+/// v0.5: a package's place among the versions of one Nexus file in the mods folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FamilyView {
+    /// The newest version's package id; this package's own when it leads.
+    pub lead: String,
+    /// This package's Nexus file version, when Nexus named one.
+    pub version: Option<String>,
+    /// On the lead only: the older versions still in the mods folder, newest first.
+    pub older: Vec<OlderVersionView>,
+}
+
+/// v0.5: an older version of a file, still in the mods folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OlderVersionView {
+    pub package_id: String,
+    pub file_name: String,
+    pub version: Option<String>,
+    /// Options of it in your world now.
+    pub installed: usize,
+    /// Its options that are the same option as one of the lead's (an install of the lead's
+    /// takes its place); an option of it missing here is one only it holds.
+    pub matches: Vec<OlderOptionMatch>,
+}
+
+/// v0.5: an option of an older version and the lead's option that is the same option.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OlderOptionMatch {
+    pub option_id: String,
+    pub lead_option_id: String,
+    /// The older version's option is in your world now.
+    pub installed: bool,
+}
+
+/// v0.5: an install of another version of the same file that an install plan replaces.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplacesView {
+    pub option_id: String,
+    pub name: String,
+    pub version: Option<String>,
+    /// How many of its files the replace removes or hands back.
+    pub removals: usize,
+}
+
+/// v0.5: an older version moved out of the mods folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PutAwayView {
+    pub file_name: String,
+    pub landed_as: String,
+}
+
+/// v0.5: what keeping only the newest version of one file would do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeepNewestPlanView {
+    pub package_id: String,
+    /// The version kept: the newest one with an install.
+    pub keeps: Option<String>,
+    pub uninstalls: Vec<ReplacesView>,
+    /// The older versions' file names it then moves to the older-versions folder.
+    pub puts_away: Vec<String>,
+    pub refused: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeepNewestResultView {
+    pub uninstalled: usize,
+    pub put_away: Vec<PutAwayView>,
+    pub put_away_failed: Option<String>,
+}
+
+/// v0.5: the older-versions folder beside the mods folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OlderShelfView {
+    pub exists: bool,
+    pub items: Vec<OlderShelfItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OlderShelfItem {
+    pub file_name: String,
+    pub size: u64,
+    pub mod_name: Option<String>,
+    pub version: Option<String>,
+    /// A newer version of the same file is in the mods folder now.
+    pub newer_in_mods: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BringBackResult {
+    pub landed_as: String,
+}
+
+// ---------------------------------------------------------------------------
 // Tests — every key the TS reads, every union tag, every string literal.
 // ---------------------------------------------------------------------------
 
@@ -2622,7 +2752,92 @@ mod tests {
             state: UpdateStateView::UpdateAvailable { newer: file_view() },
             page_url: Some("https://www.nexusmods.com/dragonsdogma2/mods/2207".into()),
             checked_ms: Some(1_760_600_000_000),
+            older: vec![older_version()],
         }
+    }
+
+    fn older_version() -> OlderVersionView {
+        OlderVersionView {
+            package_id: "00000000000000ab".into(),
+            file_name: "Vernworth Cloaks 2207 7 2026-09-30T08-11Z Hq7rTnS4W.zip".into(),
+            version: Some("7".into()),
+            installed: 1,
+            matches: vec![OlderOptionMatch {
+                option_id: "00000000000000ab#Cloaks".into(),
+                lead_option_id: "00000000000000aa#Cloaks".into(),
+                installed: true,
+            }],
+        }
+    }
+
+    const OLDER_VERSION_KEYS: [&str; 5] =
+        ["packageId", "fileName", "version", "installed", "matches"];
+
+    fn replaces_row() -> ReplacesView {
+        ReplacesView {
+            option_id: "00000000000000ab#Glow".into(),
+            name: "Lantern Glow Recolor".into(),
+            version: Some("1.0".into()),
+            removals: 3,
+        }
+    }
+
+    const REPLACES_KEYS: [&str; 4] = ["optionId", "name", "version", "removals"];
+
+    fn put_away_row() -> PutAwayView {
+        PutAwayView {
+            file_name: "Lantern Glow 1.0.zip".into(),
+            landed_as: "Lantern Glow 1.0 (2).zip".into(),
+        }
+    }
+
+    #[test]
+    fn the_versions_shapes_carry_exactly_the_ts_keys() {
+        let plan = round_trip(
+            &KeepNewestPlanView {
+                package_id: "00000000000000aa".into(),
+                keeps: Some("Lantern Glow 1.1.zip".into()),
+                uninstalls: vec![replaces_row()],
+                puts_away: vec!["Lantern Glow 1.0.zip".into()],
+                refused: None,
+            },
+            &["packageId", "keeps", "uninstalls", "putsAway", "refused"],
+        );
+        assert_eq!(keys(&plan["uninstalls"][0]), sorted(&REPLACES_KEYS));
+        assert!(plan["refused"].is_null(), "null, never absent");
+        let done = round_trip(
+            &KeepNewestResultView {
+                uninstalled: 1,
+                put_away: vec![put_away_row()],
+                put_away_failed: Some("It is still in the mods folder.".into()),
+            },
+            &["uninstalled", "putAway", "putAwayFailed"],
+        );
+        assert_eq!(keys(&done["putAway"][0]), sorted(&["fileName", "landedAs"]));
+        let shelf = round_trip(
+            &OlderShelfView {
+                exists: true,
+                items: vec![OlderShelfItem {
+                    file_name: "Lantern Glow 1.0.zip".into(),
+                    size: 31,
+                    mod_name: Some("Lantern Glow".into()),
+                    version: None,
+                    newer_in_mods: true,
+                }],
+            },
+            &["exists", "items"],
+        );
+        assert_eq!(
+            keys(&shelf["items"][0]),
+            sorted(&["fileName", "size", "modName", "version", "newerInMods"])
+        );
+        assert!(shelf["items"][0]["version"].is_null(), "null, never absent");
+        round_trip(
+            &BringBackResult {
+                landed_as: "Lantern Glow 1.0.zip".into(),
+            },
+            &["landedAs"],
+        );
     }
 
     // -- string-literal unions -------------------------------------------
@@ -3430,7 +3645,7 @@ mod tests {
         .unwrap();
         assert_eq!(flagged["unconfirmed"], true);
 
-        round_trip(
+        let row = round_trip(
             &update_row(),
             &[
                 "packageId",
@@ -3442,7 +3657,13 @@ mod tests {
                 "state",
                 "pageUrl",
                 "checkedMs",
+                "older",
             ],
+        );
+        assert_eq!(keys(&row["older"][0]), sorted(&OLDER_VERSION_KEYS));
+        assert_eq!(
+            keys(&row["older"][0]["matches"][0]),
+            sorted(&["optionId", "leadOptionId", "installed"])
         );
         round_trip(
             &OptionRef {
@@ -3582,6 +3803,11 @@ mod tests {
                 }),
                 adult: false,
                 conflicted: true,
+                family: Some(FamilyView {
+                    lead: "00000000000000aa".into(),
+                    version: Some("8".into()),
+                    older: vec![older_version()],
+                }),
                 tree: vec![tree_node()],
             }],
         };
@@ -3596,8 +3822,17 @@ mod tests {
                 "labels",
                 "adult",
                 "conflicted",
+                "family",
                 "tree",
             ])
+        );
+        assert_eq!(
+            keys(&json["packages"][0]["family"]),
+            sorted(&["lead", "version", "older"])
+        );
+        assert_eq!(
+            keys(&json["packages"][0]["family"]["older"][0]),
+            sorted(&OLDER_VERSION_KEYS)
         );
         assert_eq!(
             keys(&json["packages"][0]["tree"][0]),
@@ -3607,15 +3842,16 @@ mod tests {
             keys(&json["packages"][0]["tree"][0]["children"][0]),
             sorted(&TREE_NODE_KEYS)
         );
-        // Unlinked and unlabelled: null, never absent.
+        // Unlinked, unlabelled and alone: null, never absent.
         let bare = serde_json::to_value(LibraryPackage {
             update: None,
             labels: None,
+            family: None,
             tree: vec![],
             ..view.packages[0].clone()
         })
         .unwrap();
-        assert!(bare["update"].is_null() && bare["labels"].is_null());
+        assert!(bare["update"].is_null() && bare["labels"].is_null() && bare["family"].is_null());
         assert_eq!(bare["tree"], json!([]));
     }
 
@@ -3706,6 +3942,7 @@ mod tests {
                 }],
                 total_bytes: 4096,
                 warnings: vec![PlanWarning::GameRunning],
+                replaces: vec![replaces_row()],
                 refused: None,
             },
             &[
@@ -3714,6 +3951,7 @@ mod tests {
                 "writes",
                 "totalBytes",
                 "warnings",
+                "replaces",
                 "refused",
             ],
         );
@@ -3721,7 +3959,8 @@ mod tests {
             keys(&plan["writes"][0]),
             sorted(&["entry", "gamePath", "kind", "size", "action"])
         );
-        round_trip(
+        assert_eq!(keys(&plan["replaces"][0]), sorted(&REPLACES_KEYS));
+        let result = round_trip(
             &InstallResultView {
                 option_id: "00000000000000aa#Glow".into(),
                 files_written: 1,
@@ -3729,6 +3968,8 @@ mod tests {
                 backups: 0,
                 duration_ms: 12,
                 restart_needed: false,
+                put_away: vec![put_away_row()],
+                put_away_failed: None,
             },
             &[
                 "optionId",
@@ -3737,8 +3978,15 @@ mod tests {
                 "backups",
                 "durationMs",
                 "restartNeeded",
+                "putAway",
+                "putAwayFailed",
             ],
         );
+        assert_eq!(
+            keys(&result["putAway"][0]),
+            sorted(&["fileName", "landedAs"])
+        );
+        assert!(result["putAwayFailed"].is_null(), "null, never absent");
         let plan = round_trip(
             &UninstallPlanView {
                 option_id: "00000000000000aa#Glow".into(),
@@ -3928,15 +4176,26 @@ mod tests {
             },
             &["packageId", "matched", "link"],
         );
+        // A window from before v0.5 sends no musterCharacter: none picked.
         let settings: Settings =
             serde_json::from_value(json!({ "veil": "adult", "autoCheckUpdates": false })).unwrap();
         assert_eq!(settings.veil, VeilMode::Adult);
-        round_trip(&settings, &["veil", "autoCheckUpdates"]);
+        assert_eq!(settings.muster_character, None);
+        let json = round_trip(&settings, &["veil", "autoCheckUpdates", "musterCharacter"]);
+        assert!(json["musterCharacter"].is_null(), "null, never absent");
+        round_trip(
+            &Settings {
+                muster_character: Some("9f3c0a7e5b1d2c44".into()),
+                ..settings
+            },
+            &["veil", "autoCheckUpdates", "musterCharacter"],
+        );
         assert_eq!(
             Settings::default(),
             Settings {
                 veil: VeilMode::Off,
-                auto_check_updates: true
+                auto_check_updates: true,
+                muster_character: None,
             },
             "the TS documents these defaults"
         );
@@ -4959,10 +5218,21 @@ mod tests {
                 vocation: warrior,
             }),
             problem: Some(rift_core::SaveReason::OtherAccount),
+            character: Some("9f3c0a7e5b1d2c44".into()),
+            main_pawn_name: Some("Bramble".into()),
         };
         let slot_json = round_trip(
             &slot,
-            &["slotId", "slot", "savedAt", "account", "arisen", "problem"],
+            &[
+                "slotId",
+                "slot",
+                "savedAt",
+                "account",
+                "arisen",
+                "problem",
+                "character",
+                "mainPawnName",
+            ],
         );
         assert_eq!(
             keys(&slot_json["arisen"]),

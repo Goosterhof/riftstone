@@ -6,6 +6,9 @@
 // v0.2: the NEXUS line — the mod's category and tags as the pillar's quiet
 // chips (pressing one toggles that facet), "Nexus #id" as the door to the
 // mod's page, and an honest line when the stone has no labels for it.
+// v0.5 (#00015 R18.4): an option of a family says, under its kinds, how it
+// stands against the file's other versions, and carries the door that needs:
+// `Install v1.3…` (THE CROSSING carries the replace) or `Keep only the newest…`.
 import { computed } from "vue";
 import type { OptionDetail } from "@/types/rift";
 import { useWorld } from "@/composables/useWorld";
@@ -15,6 +18,17 @@ import { usePreflight } from "@/composables/usePreflight";
 import { useSettings } from "@/composables/useSettings";
 import { useDownloads } from "@/composables/useDownloads";
 import { useNexusAccount } from "@/composables/useNexusAccount";
+import { useLibrary } from "@/composables/useLibrary";
+import { useVersions } from "@/composables/useVersions";
+import {
+  installedFromOlder,
+  leadOptionLine,
+  olderOptionLine,
+  olderPlace,
+  stackedUnder,
+  versionName,
+  type DetailLine,
+} from "@/services/versions";
 import { kindsPresent, formatDate, plural } from "@/services/format";
 import { adultnessOf, veils } from "@/services/ledger";
 import ConflictMap from "./ConflictMap.vue";
@@ -56,6 +70,34 @@ const unlabeledLine = computed(() =>
     : "No Nexus labels yet: the stone learns them at the next update check.",
 );
 const veiled = computed(() => veils(settings.value.veil, adultnessOf(detail.labels)));
+
+// --- v0.5: the option among the versions of its file ---------------------
+const library = useLibrary();
+const versions = useVersions();
+const familyLine = computed<{ text: string; door: DetailLine | null } | null>(() => {
+  const packages = library.packages.value;
+  const pkg = packages.find((p) => p.package.id === detail.package.id);
+  if (!pkg?.family) return null;
+  const lead = versionName(pkg.family.version, pkg.package.fileName);
+  const place = olderPlace(packages, pkg.package.id);
+  if (place) {
+    const leadName = versionName(place.lead.family?.version ?? null, place.lead.package.fileName);
+    return { text: olderOptionLine(lead, leadName), door: null };
+  }
+  const installed = installedHere.value;
+  const older = installedFromOlder(pkg, option.value.id, installed) ?? stackedUnder(pkg, option.value.id, installed);
+  if (!older) return null;
+  const line = leadOptionLine(versionName(older.version, older.fileName), lead, installed);
+  return { text: line.text, door: line };
+});
+const installLabel = computed(() =>
+  familyLine.value?.door?.door === "install" ? familyLine.value.door.doorLabel : "Install…",
+);
+
+async function keepOnlyTheNewest(): Promise<void> {
+  versions.open(detail.package.id);
+  await versions.beginKeepNewest(detail.package.id);
+}
 
 const update = computed(() => (detail.update?.state.kind === "updateAvailable" ? detail.update.state.newer : null));
 
@@ -191,6 +233,8 @@ function crumb(name: string): void {
       <KindBadge v-for="k in kindsPresent(option.kinds)" :key="k" :kind="k" :count="option.kinds[k]" />
     </div>
 
+    <p v-if="familyLine && !planning" class="odetail__family">{{ familyLine.text }}</p>
+
     <div v-if="!planning" class="odetail__doors">
       <RiftButton
         v-if="!installedHere"
@@ -199,8 +243,11 @@ function crumb(name: string): void {
         :disabled="option.menuOnly"
         reason="A menu entry installs nothing. Pick one of its variants."
         @click="world.beginInstall()"
-        >Install…</RiftButton
+        >{{ installLabel }}</RiftButton
       >
+      <RiftButton v-if="familyLine?.door?.door === 'keepNewest'" variant="primary" @click="keepOnlyTheNewest()">{{
+        familyLine.door.doorLabel
+      }}</RiftButton>
       <RiftButton v-else variant="danger" :busy="world.planning.value" @click="world.beginUninstall()"
         >Uninstall…</RiftButton
       >
@@ -357,6 +404,13 @@ function crumb(name: string): void {
   display: flex;
   gap: 6px;
   margin-top: var(--rs-space-3);
+}
+/* v0.5 (R18.4): the option among its file's versions, under the kinds */
+.odetail__family {
+  margin: var(--rs-space-3) 0 0;
+  color: var(--rs-text);
+  font-size: var(--rs-text-sm);
+  line-height: 1.45;
 }
 .odetail__doors {
   display: flex;

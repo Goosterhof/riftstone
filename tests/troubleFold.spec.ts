@@ -5,7 +5,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { useStone } from "@/composables/useStone";
-import { button, hasButton, press, sleep, text, textOf, typeQuery, until, wakeOn } from "./harness";
+import { button, press, sleep, text, textOf, typeQuery, until, wakeOn } from "./harness";
 
 afterEach(() => sleep());
 
@@ -166,8 +166,10 @@ describe("the trouble fold (§8.1.1)", () => {
   it("should leave the cards open with no button when the library holds no creation", async () => {
     await wakeOn("nocreations");
     await until(() => troubleNames().length === 3, "the cards, open");
-    expect(hasButton("Show ▸")).toBe(false);
-    expect(hasButton("Close ▾")).toBe(false);
+    // the fold itself carries no door (THE UNDERCROFT's own `Show ▸` sits at the tree's foot, R18.11)
+    const doors = [...(fold()?.querySelectorAll("button") ?? [])].map((b) => textOf(b).trim());
+    expect(doors).not.toContain("Show ▸");
+    expect(doors).not.toContain("Close ▾");
     expect(text()).toContain("3 WON'T ANSWER");
   });
 

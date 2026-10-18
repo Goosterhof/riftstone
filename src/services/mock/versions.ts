@@ -1,0 +1,227 @@
+// v0.5 — the mock's versions of one file (#00015 §18.15): the invented family
+// Lantern Glow Recolor, v1.3 (the lead), v1.2 and v1.1, all linked to mod 2207
+// in one file group, and the rules the spine reads them by (WINDOW-CONTRACT
+// § v0.5): the family by mod and group id, the newest by upload time, the same
+// option by root, else name, else the one installable option each holds, and
+// the ` (2)` a move takes when its name is taken. Every name here is invented.
+//
+// Scenes, comma-combinable with the rest (./index.ts header):
+//   family       v1.3 and v1.2, the same option installed in both (stacked)
+//   familyfresh  v1.3 downloaded, not installed; v1.2 installed
+//   familythree  family, and v1.1 with nothing installed
+//   putaway      familyfresh; installing v1.3's option puts v1.2 away
+//   putawaytaken putaway, with a v1.2 already in the folder: it lands as ` (2)`
+//   putawayfail  putaway, whose move fails after the install committed
+//   undercroft   v1.3 alone in the mods folder, v1.2 in mods (older versions)
+//   undercroftempty / undercroftnone   the folder empty / never made
+
+import type { PackageSummary } from "@/types/rift";
+import { buildPackage, type MockPackage, type PackageSeed } from "./library";
+
+export const FAMILY_NAME = "Lantern Glow Recolor";
+const MOD_ID = 2207;
+/** One file group for every version (Nexus gives the versions of one file one group id). */
+const GROUP_ID = 220750;
+const MAIN_ROOT = "Lantern Glow/Main";
+export const MAIN_NAME = "Lantern Glow — Main";
+/** An option only v1.2 holds (R18.7). */
+export const CANDLE_NAME = "Lantern Glow — Candle Warm";
+
+/** The versions, newest first: `Lantern_Glow_Recolor-2207-1-3-1730540000.zip` and its elders. */
+const VERSIONS = [
+  { version: "1.3", fileId: 2404, uploaded: 1_730_540_000, size: 1_572_864 },
+  { version: "1.2", fileId: 2403, uploaded: 1_729_940_000, size: 1_468_006 },
+  { version: "1.1", fileId: 2402, uploaded: 1_729_100_000, size: 1_363_148 },
+] as const;
+
+export const familyFileName = (version: string): string => {
+  const v = VERSIONS.find((x) => x.version === version);
+  const [major, minor] = version.split(".");
+  return `Lantern_Glow_Recolor-${MOD_ID}-${major}-${minor}-${v?.uploaded ?? 0}.zip`;
+};
+
+const GLOW = (n: number) => ({ rel: `natives/stm/effect/lantern_glow/glow_0${n}.tex.251211553`, size: 349_525 });
+
+function versionSeed(at: (typeof VERSIONS)[number]): PackageSeed {
+  const main = {
+    root: MAIN_ROOT,
+    name: MAIN_NAME,
+    info: {
+      author: "Wilhelmina's Lamplighter",
+      version: at.version,
+      description: "Amber lantern light for the road at night, in one main recolor.",
+    },
+    payload:
+      at.version === "1.3"
+        ? [{ rel: "LanternGlowRecolor.pak", size: 524_288 }, GLOW(0), GLOW(1), GLOW(2)]
+        : [GLOW(0), GLOW(1), GLOW(2)],
+  };
+  const candle = {
+    root: "Lantern Glow/Candle Warm",
+    name: CANDLE_NAME,
+    info: { version: at.version, description: "A warmer candle flame, dropped from the newer versions." },
+    payload: [{ rel: "natives/stm/effect/lantern_glow/candle_warm.tex.251211553", size: 262_144 }],
+  };
+  return {
+    fileName: familyFileName(at.version),
+    displayName: FAMILY_NAME,
+    format: "zip",
+    size: at.size,
+    modifiedMs: at.uploaded * 1000,
+    nexus: {
+      modId: MOD_ID,
+      fileId: at.fileId,
+      groupId: GROUP_ID,
+      sqid: null,
+      version: at.version,
+      uploadedMs: at.uploaded * 1000,
+      source: "filename",
+    },
+    options: at.version === "1.2" ? [main, candle] : [main],
+  };
+}
+
+export const familyPackage = (version: "1.3" | "1.2" | "1.1"): MockPackage => {
+  const at = VERSIONS.find((v) => v.version === version) ?? VERSIONS[0];
+  return buildPackage(versionSeed(at));
+};
+
+const FAMILY_SCENES = ["family", "familyfresh", "familythree", "putaway", "putawaytaken", "putawayfail"];
+const SHELF_SCENES = ["undercroft", "undercroftempty", "undercroftnone"];
+
+/** The scene asks for the family, or for the folder beside the mods folder. */
+export const wantsVersions = (scene: ReadonlySet<string>): boolean =>
+  [...FAMILY_SCENES, ...SHELF_SCENES].some((s) => scene.has(s));
+
+export interface ShelfEntry {
+  pkg: MockPackage;
+  /** Its name in the older-versions folder. */
+  fileName: string;
+}
+
+export interface VersionScene {
+  /** Packages the mods folder gains. */
+  packages: MockPackage[];
+  /** Option ids already installed (the journal's), oldest first. */
+  installed: string[];
+  shelf: { exists: boolean; items: ShelfEntry[] };
+  /** The put-away after an install fails once (putawayfail). */
+  putAwayFails: boolean;
+}
+
+const mainOf = (pkg: MockPackage): string => pkg.options.find((o) => o.root === MAIN_ROOT)?.id ?? "";
+
+export function versionScene(scene: ReadonlySet<string>): VersionScene {
+  const out: VersionScene = {
+    packages: [],
+    installed: [],
+    shelf: { exists: !scene.has("undercroftnone"), items: [] },
+    putAwayFails: scene.has("putawayfail"),
+  };
+  if (scene.has("undercroft")) {
+    const lead = familyPackage("1.3");
+    const older = familyPackage("1.2");
+    out.packages.push(lead);
+    out.installed.push(mainOf(lead));
+    out.shelf.items.push({ pkg: older, fileName: older.summary.fileName });
+  }
+  if (!FAMILY_SCENES.some((s) => scene.has(s))) {
+    // a scene with no shelf named keeps the folder unmade, as on a first launch
+    if (!SHELF_SCENES.some((s) => scene.has(s))) out.shelf.exists = false;
+    return out;
+  }
+  const lead = familyPackage("1.3");
+  const older = familyPackage("1.2");
+  out.packages.push(lead, older);
+  const fresh = ["familyfresh", "putaway", "putawaytaken", "putawayfail"].some((s) => scene.has(s));
+  out.installed.push(mainOf(older));
+  if (!fresh) out.installed.push(mainOf(lead));
+  if (scene.has("familythree")) out.packages.push(familyPackage("1.1"));
+  if (scene.has("putawaytaken")) {
+    // an earlier v1.2 the player set in the folder by hand, under the same name
+    const earlier = familyPackage("1.2");
+    out.shelf.items.push({ pkg: earlier, fileName: earlier.summary.fileName });
+  }
+  if (!SHELF_SCENES.some((s) => scene.has(s)) && !out.shelf.items.length) out.shelf.exists = false;
+  return out;
+}
+
+// --- the spine's rules, over the mock's packages -------------------------------
+
+const familyKey = (summary: PackageSummary): string | null => {
+  const link = summary.nexus;
+  if (!link || link.groupId === null) return null;
+  return `${link.modId}|${link.groupId}`;
+};
+
+/** Higher first; a missing value last. */
+function descending(a: number | null, b: number | null): number {
+  if (a === b) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  return b - a;
+}
+
+/** Newest first: the latest upload, then the higher file id; a member stating neither last, by name. */
+function newestFirst(a: MockPackage, b: MockPackage): number {
+  const la = a.summary.nexus;
+  const lb = b.summary.nexus;
+  const byUpload = descending(la?.uploadedMs ?? null, lb?.uploadedMs ?? null);
+  if (byUpload !== 0) return byUpload;
+  const byFile = descending(la?.fileId ?? null, lb?.fileId ?? null);
+  if (byFile !== 0) return byFile;
+  return a.summary.fileName.toLowerCase().localeCompare(b.summary.fileName.toLowerCase());
+}
+
+/** Every family of two or more, by package id: its members newest first. */
+export function familiesOf(packages: readonly MockPackage[]): Map<string, MockPackage[]> {
+  const groups = new Map<string, MockPackage[]>();
+  for (const pkg of packages) {
+    const key = familyKey(pkg.summary);
+    if (!key) continue;
+    groups.set(key, [...(groups.get(key) ?? []), pkg]);
+  }
+  const out = new Map<string, MockPackage[]>();
+  for (const members of groups.values()) {
+    if (members.length < 2) continue;
+    const sorted = [...members].sort(newestFirst);
+    for (const m of sorted) out.set(m.summary.id, sorted);
+  }
+  return out;
+}
+
+/** A newer version of the shelved package's file is in the mods folder. */
+export function newerInMods(shelved: MockPackage, packages: readonly MockPackage[]): boolean {
+  const key = familyKey(shelved.summary);
+  if (!key) return false;
+  return packages.some((p) => familyKey(p.summary) === key && newestFirst(p, shelved) < 0);
+}
+
+const installable = (pkg: MockPackage) => pkg.options.filter((o) => !o.menuOnly);
+
+/** The option of `to` that is the same option as `optionId` of `from`, or null
+ *  (WINDOW-CONTRACT § v0.5, The same option). */
+export function sameOptionIn(from: MockPackage, optionId: string, to: MockPackage): string | null {
+  const option = from.options.find((o) => o.id === optionId);
+  if (!option || option.menuOnly) return null;
+  const theirs = installable(to);
+  const byRoot = theirs.find((o) => o.root === option.root);
+  if (byRoot) return byRoot.id;
+  const byName = theirs.find((o) => o.name.toLowerCase() === option.name.toLowerCase());
+  if (byName) return byName.id;
+  if (installable(from).length === 1 && theirs.length === 1) return theirs[0]?.id ?? null;
+  return null;
+}
+
+/** A name not taken among `taken` (compared case-blind, as Windows does): `name`, else `stem (2).ext` … */
+export function freeName(name: string, taken: readonly string[]): string {
+  const blind = new Set(taken.map((t) => t.toLowerCase()));
+  if (!blind.has(name.toLowerCase())) return name;
+  const dot = name.lastIndexOf(".");
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : "";
+  for (let n = 2; ; n++) {
+    const next = `${stem} (${n})${ext}`;
+    if (!blind.has(next.toLowerCase())) return next;
+  }
+}

@@ -7,7 +7,7 @@ import { asRiftFailure, rift } from "@/services/rift";
 import { voice, voicedLine } from "@/services/voice";
 import { useToasts } from "./useToasts";
 
-const settings = ref<Settings>({ veil: "off", autoCheckUpdates: true });
+const settings = ref<Settings>({ veil: "off", autoCheckUpdates: true, musterCharacter: null });
 
 async function loadSettings(): Promise<void> {
   const backend = await rift();
@@ -32,9 +32,11 @@ export function useSettings() {
     loadSettings,
     setVeil: (veil: VeilMode) => saveSettings({ ...settings.value, veil }),
     setAutoCheck: (on: boolean) => saveSettings({ ...settings.value, autoCheckUpdates: on }),
+    /** v0.5: THE MUSTER's pick (a character key, never shown or logged). */
+    setMusterCharacter: (key: string | null) => saveSettings({ ...settings.value, musterCharacter: key }),
   };
 }
 
 export function resetSettings(): void {
-  settings.value = { veil: "off", autoCheckUpdates: true };
+  settings.value = { veil: "off", autoCheckUpdates: true, musterCharacter: null };
 }

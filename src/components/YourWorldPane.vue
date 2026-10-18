@@ -3,8 +3,9 @@
 // and one hairline separate it from the cold (§13: never a gradient between).
 // Nothing selected → what is in your game; an option selected → its detail and
 // THE CROSSING. Folds to a 56 px warm sliver in the lookbook (Bold Choice 6).
-import { computed, onMounted } from "vue";
+import { computed, onMounted, watch } from "vue";
 import { useWorld } from "@/composables/useWorld";
+import { useVersions } from "@/composables/useVersions";
 import { useStone } from "@/composables/useStone";
 import { useInstalled } from "@/composables/useInstalled";
 import { useNavigation } from "@/composables/useNavigation";
@@ -14,6 +15,7 @@ import { kindsSentence, plural } from "@/services/format";
 import { recoverySentence } from "@/services/ledger";
 import type { PayloadKinds } from "@/types/rift";
 import OptionDetail from "./OptionDetail.vue";
+import VersionsCard from "./VersionsCard.vue";
 import RiftButton from "./RiftButton.vue";
 import RiftInscription from "./RiftInscription.vue";
 
@@ -21,14 +23,27 @@ const { folded = false } = defineProps<{ folded?: boolean }>();
 const emit = defineEmits<{ unfold: [] }>();
 
 const world = useWorld();
+const versions = useVersions();
 const stone = useStone();
 const installed = useInstalled();
 const nav = useNavigation();
 const farWorld = useFarWorld();
 const preflight = usePreflight();
 
-const selected = computed(() => world.selectedId.value !== null);
-const railWorld = computed(() => world.isInstalled.value);
+/** v0.5 (R18.4): THE VERSIONS card stands over what the pane held; closing it returns there. */
+const versionsOpen = computed(() => versions.leadId.value !== null);
+const selected = computed(() => world.selectedId.value !== null || versionsOpen.value);
+const railWorld = computed(() => !versionsOpen.value && world.isInstalled.value);
+// picking an option (or closing it) is a new thing for the pane: the card steps aside
+watch(
+  () => world.selectedId.value,
+  () => versions.close(),
+);
+
+function closePane(): void {
+  if (versionsOpen.value) versions.close();
+  else world.close();
+}
 
 const totals = computed<PayloadKinds>(() => {
   const sum: PayloadKinds = { pak: 0, loose: 0, reframework: 0, root: 0 };
@@ -61,11 +76,12 @@ onMounted(() => {
     <header class="world__head" :class="{ 'rail-world': railWorld, 'has-rail': selected }">
       <i v-if="world.crossingSeq.value > 0" :key="world.crossingSeq.value" class="world__warm" aria-hidden="true" />
       <h2 class="world__title rs-inscription">YOUR WORLD</h2>
-      <button v-if="selected" type="button" class="world__esc" title="Close (Esc)" @click="world.close()">Esc</button>
+      <button v-if="selected" type="button" class="world__esc" title="Close (Esc)" @click="closePane()">Esc</button>
     </header>
 
     <div class="world__body">
-      <template v-if="selected">
+      <VersionsCard v-if="versionsOpen" />
+      <template v-else-if="selected">
         <OptionDetail v-if="world.detail.value" :detail="world.detail.value" />
         <p v-else-if="world.detailFailure.value" class="world__line">{{ world.detailFailure.value.voice }}</p>
         <p v-else class="world__line rs-mono">Reading the option…</p>

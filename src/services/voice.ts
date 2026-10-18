@@ -59,6 +59,11 @@ export const VOICE_CONTEXTS = [
   // v0.4: THE MUSTER, reading a save slot's party (get_muster_slots, get_muster,
   // open_saves_folder). The caller adds `file` (the slot id) to the detail.
   "muster",
+  // v0.5: a move to or from mods (older versions) beside the mods folder, or a
+  // read of it (put_away, keep_newest's moves, bring_back, get_older_versions,
+  // open_older_versions_folder). The caller adds `act` ("putAway" | "bringBack"
+  // | "read" | "open") and `file` (the file's own name, never a path).
+  "olderVersions",
 ] as const;
 
 export type VoiceContext = (typeof VOICE_CONTEXTS)[number];
@@ -180,7 +185,39 @@ const IO_VOICES: Partial<Record<VoiceContext, (why: string) => Voiced>> = {
   }),
 };
 
+/** v0.5 (#00015 §18.11): a move the stone could not make names the file by its
+ *  own name and says where it still is. */
+function olderVersionsIo(d: Detail): Voiced {
+  const why = stripStop(reasonOf(d, "Windows refused the move"));
+  const file = pick(d, "file") ?? "the archive";
+  const act = pick(d, "act");
+  const io = (voice: string, empathy: string, recovery: Recovery[] = [RETRY, COPY]): Voiced => ({
+    kind: "io",
+    inscription: null,
+    voice,
+    empathy,
+    recovery,
+  });
+  if (act === "bringBack") {
+    return io(
+      `The stone couldn't move ${file} back into your mods folder: ${why}.`,
+      "It is still in mods (older versions), exactly as it was.",
+    );
+  }
+  if (act === "putAway") {
+    return io(
+      `The stone couldn't move ${file} to mods (older versions): ${why}.`,
+      "It is still in your mods folder, exactly as it was.",
+    );
+  }
+  if (act === "open") {
+    return io(`The stone couldn't open mods (older versions): ${why}.`, "Nothing in it was changed.");
+  }
+  return io(`The stone couldn't look inside mods (older versions): ${why}.`, "Nothing in it was changed.", [RETRY]);
+}
+
 function ioFailure(d: Detail, context: VoiceContext): Voiced {
+  if (context === "olderVersions") return olderVersionsIo(d);
   if (CROSSING_INSCRIPTION[context]) return writeFailure(d, context);
   const own = IO_VOICES[context];
   if (own) return own(stripStop(reasonOf(d, "Windows refused")));
@@ -265,6 +302,16 @@ const REFUSED_FOR_GOOD: ReadonlySet<VoiceContext> = new Set(["download", "nxm", 
 
 function refused(d: Detail, context: VoiceContext): Voiced {
   if (context === "parked") return parkedRefused(d);
+  // v0.5 (#00015 §18.11): the spine's sentence, verbatim, and what it left alone
+  if (context === "olderVersions") {
+    return {
+      kind: "refused",
+      inscription: null,
+      voice: reasonOf(d, "The stone held the move back."),
+      empathy: "Nothing was moved.",
+      recovery: [DISMISS],
+    };
+  }
   const reason = reasonOf(d, "the game is running");
   const running = RUNNING.test(reason);
   return {

@@ -15,6 +15,8 @@ import { usePackage } from "@/composables/usePackage";
 import { usePreflight } from "@/composables/usePreflight";
 import { useLibrary } from "@/composables/useLibrary";
 import LibraryTree from "@/components/LibraryTree.vue";
+import UndercroftFold from "@/components/UndercroftFold.vue";
+import { useVersions } from "@/composables/useVersions";
 import { formatBytes, plural } from "@/services/format";
 import { adultnessOf, veils } from "@/services/ledger";
 import OptionCard from "@/components/OptionCard.vue";
@@ -34,6 +36,7 @@ const pkg = usePackage();
 const preflight = usePreflight();
 const { settings } = useSettings();
 const tree = useLibrary();
+const versions = useVersions();
 const libraryTree = ref<InstanceType<typeof LibraryTree> | null>(null);
 
 const list = ref<HTMLElement | null>(null);
@@ -202,7 +205,13 @@ defineExpose({ focusCard, focusTree });
 </script>
 
 <template>
-  <div class="room" :class="{ 'is-lookbook': lookbookMode, 'has-overlay': world.selectedId.value && !lookbookMode }">
+  <div
+    class="room"
+    :class="{
+      'is-lookbook': lookbookMode,
+      'has-overlay': (world.selectedId.value || versions.leadId.value) && !lookbookMode,
+    }"
+  >
     <main class="rift" aria-label="The Rift">
       <!-- results header, 48 px, sticky -->
       <header class="rift__head">
@@ -347,6 +356,8 @@ defineExpose({ focusCard, focusTree });
                outside the listbox: its cards are not options -->
           <TroubleFold v-if="!query && !search.labelFiltered.value" @emptied="onTroubleEmptied" />
           <LibraryTree v-if="treeMode" ref="libraryTree" :class="{ 'is-after-fold': showTroubled }" />
+          <!-- v0.5 (R18.11): THE UNDERCROFT closes the tree, outside role="tree", the trouble fold's mirror -->
+          <UndercroftFold v-if="treeMode" />
           <div
             v-else
             id="rift-answers"

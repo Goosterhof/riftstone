@@ -4,28 +4,35 @@
 //! Every write goes through rift-deploy's engine under the write-ahead
 //! journal; the spine only picks the option, opens the package, and tells
 //! the window what changed (`rift://install-progress`, `rift://game-changed`).
+//! v0.5: an install of one version of a file replaces the other versions'
+//! installs of the same option in the same step, then puts the older versions
+//! it left without installs away (WINDOW-CONTRACT § v0.5).
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rift_core::{ExtractProgress, OptionId, RiftError};
+use rift_deploy::Journal;
 
 use crate::commands::overview::game_summary;
+use crate::commands::versions;
 use crate::commands::{blocking, not_found, Spine};
 use crate::dto::{
     GameSummary, InstallPlanView, InstallProgressEvent, InstallResultView, InstalledRow,
     InstalledView, MissingFile, PakLoadReport, PakView, ParkedFileView, ParkedRestoreReport,
-    StrayFile, SwitchKey, UninstallPlanView, UninstallResultView,
+    ReplacesView, StrayFile, SwitchKey, UninstallPlanView, UninstallResultView,
 };
 use crate::events;
-use crate::state::{read, AppState, JournalSlot};
+use crate::family::{self, Families};
+use crate::state::{lock, read, AppState, JournalSlot};
 
 /// Install progress reaches the window at most this often (and always at the end).
 const PROGRESS_EVERY: Duration = Duration::from_millis(40);
 
 /// A plan the engine cannot make (no game, a damaged journal) is still a
 /// plan: refused, with the sentence that says why.
-fn refusal(err: &RiftError) -> Option<String> {
+pub(crate) fn refusal(err: &RiftError) -> Option<String> {
     match err {
         RiftError::GameNotFound => Some(
             "Dragon's Dogma 2 has not been found yet. Point the Riftstone at the game folder first."
@@ -43,8 +50,23 @@ pub fn plan_install_impl(state: &AppState, option_id: &str) -> Result<InstallPla
     let (package, option) = shelf
         .option(&OptionId(option_id.to_string()))
         .ok_or_else(|| not_found(option_id))?;
-    match state.plan(|ctx, journal| rift_deploy::plan_install(ctx, journal, package, option)) {
-        Ok(plan) => Ok((&plan).into()),
+    let families = Families::of_shelf(&shelf, &lock(&state.nexus));
+    let planned = state.plan(|ctx, journal| {
+        let replacing = family::replaced(&families, &shelf, package, option, |id| {
+            journal.is_installed(id)
+        });
+        let plan = rift_deploy::plan_install_replacing(ctx, journal, package, option, &replacing);
+        let replaces: Vec<ReplacesView> = replacing
+            .iter()
+            .map(|id| versions::replaces_view(&families, ctx, journal, id).0)
+            .collect();
+        (plan, replaces)
+    });
+    match planned {
+        Ok((plan, replaces)) => Ok(InstallPlanView {
+            replaces,
+            ..InstallPlanView::from(&plan)
+        }),
         Err(err) => match refusal(&err) {
             Some(sentence) => Ok(InstallPlanView {
                 option_id: option.id.0.clone(),
@@ -52,6 +74,7 @@ pub fn plan_install_impl(state: &AppState, option_id: &str) -> Result<InstallPla
                 writes: Vec::new(),
                 total_bytes: 0,
                 warnings: Vec::new(),
+                replaces: Vec::new(),
                 refused: Some(sentence),
             }),
             None => Err(err),
@@ -59,13 +82,17 @@ pub fn plan_install_impl(state: &AppState, option_id: &str) -> Result<InstallPla
     }
 }
 
-pub fn install_impl(state: &AppState, option_id: &str) -> Result<InstallResultView, RiftError> {
+pub fn install_impl(
+    state: &Arc<AppState>,
+    option_id: &str,
+) -> Result<InstallResultView, RiftError> {
     // Play waits while an install is under way, from here to its last byte.
     let _installing = state.begin_install();
     let shelf = state.shelf();
     let (package, option) = shelf
         .option(&OptionId(option_id.to_string()))
         .ok_or_else(|| not_found(option_id))?;
+    let families = Families::of_shelf(&shelf, &lock(&state.nexus));
     let events = &state.events;
     let mut last_sent: Option<Instant> = None;
     let mut progress = |p: ExtractProgress| {
@@ -85,19 +112,38 @@ pub fn install_impl(state: &AppState, option_id: &str) -> Result<InstallResultVi
             },
         );
     };
-    let report = state.deploy(|ctx, journal| {
+    let (report, put) = state.deploy(|ctx, journal| {
+        let replacing = family::replaced(&families, &shelf, package, option, |id| {
+            journal.is_installed(id)
+        });
         let mut source = rift_archive::open(&package.path)?;
-        rift_deploy::install(
+        let report = rift_deploy::install_replacing(
             ctx,
             journal,
             package,
             option,
+            &replacing,
             source.as_mut(),
             &mut progress,
-        )
+        )?;
+        drop(source);
+        // The step committed: the older versions it left without installs go,
+        // still under the deploy lock and before the scan below.
+        let journal: &Journal = journal;
+        let put = versions::put_away_older(state, &shelf, families.older_than(&package.id), |id| {
+            versions::has_install(journal, id)
+        });
+        Ok((report, put))
     })?;
     state.events.changed(events::GAME_CHANGED);
-    Ok((&report).into())
+    if !put.moved.is_empty() {
+        state.request_scan();
+    }
+    Ok(InstallResultView {
+        put_away: put.moved,
+        put_away_failed: put.failed,
+        ..InstallResultView::from(&report)
+    })
 }
 
 pub fn plan_uninstall_impl(

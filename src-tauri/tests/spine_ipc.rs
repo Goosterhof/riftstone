@@ -16,11 +16,12 @@ use tauri::webview::InvokeRequest;
 use tauri::Manager;
 
 use riftstone_lib::dto::{
-    CheckAction, GameSummary, InstallPlanView, InstallResultView, InstalledView, LabelFacets,
-    LaunchPlanView, LaunchReport, LaunchRoute, LibraryView, Md5Result, NexusBrowsePage,
-    NexusFindings, NexusKeyStanding, NexusModFiles, NexusStandings, NexusSummary, NxmHandlerState,
-    NxmHandlerView, OptionDetail, Overview, OwnerKind, PackageDetail, PackageSummary,
-    ParkedRestoreReport, SearchResult, Settings, UninstallPlanView, UninstallResultView, UpdateRow,
+    BringBackResult, CheckAction, GameSummary, InstallPlanView, InstallResultView, InstalledView,
+    KeepNewestPlanView, KeepNewestResultView, LabelFacets, LaunchPlanView, LaunchReport,
+    LaunchRoute, LibraryView, Md5Result, NexusBrowsePage, NexusFindings, NexusKeyStanding,
+    NexusModFiles, NexusStandings, NexusSummary, NxmHandlerState, NxmHandlerView, OlderShelfView,
+    OptionDetail, Overview, OwnerKind, PackageDetail, PackageSummary, ParkedRestoreReport,
+    PutAwayView, SearchResult, Settings, UninstallPlanView, UninstallResultView, UpdateRow,
     UpdatesView, VeilMode,
 };
 use riftstone_lib::events::{GAME_CHANGED, LIBRARY_CHANGED, NXM_RECEIVED};
@@ -417,6 +418,97 @@ fn every_command_answers_the_window_by_its_invoke_name_and_argument_keys() {
             .is_err(),
         "the window's key is the only one that maps"
     );
+}
+
+/// v0.5: two invented versions of one invented Nexus file, tied in `nexus.json` by their file
+/// group; the ids of the older and the newer.
+fn two_versions(bench: &Bench, dirs: &DataDirs) -> (String, String) {
+    let mut ids = Vec::new();
+    let mut packages = serde_json::Map::new();
+    for (name, file_id, version, uploaded_ms) in [
+        ("Hearth Embers 1.0.zip", 3001, "1.0", 1_000),
+        ("Hearth Embers 1.1.zip", 3002, "1.1", 2_000),
+    ] {
+        let path = bench.mods.join(name);
+        support::write_zip(
+            &path,
+            &[(
+                "Hearth Embers/natives/stm/effect/hearth/ember.tex.251211553",
+                version.as_bytes(),
+            )],
+        );
+        let id = rift_core::PackageId::for_archive(name, std::fs::metadata(&path).unwrap().len());
+        packages.insert(
+            id.0.clone(),
+            json!({ "link": { "modId": 7140, "fileId": file_id, "groupId": 714_000,
+                "version": version, "uploadedMs": uploaded_ms, "source": "download" } }),
+        );
+        ids.push(id.0);
+    }
+    std::fs::create_dir_all(&dirs.data).unwrap();
+    std::fs::write(
+        dirs.nexus_file(),
+        serde_json::to_vec(&json!({ "schema": 1, "packages": packages })).unwrap(),
+    )
+    .unwrap();
+    (ids[0].clone(), ids[1].clone())
+}
+
+#[test]
+fn the_versions_commands_answer_the_window_by_their_invoke_names_and_argument_keys() {
+    let bench = Bench::new();
+    let dirs = DataDirs::under(&bench.data_home());
+    let (old, new) = two_versions(&bench, &dirs);
+    let (state, _) = bench.open(bench.config(dirs));
+    assert!(state.scan_blocking());
+    let (_app, window) = mock_window(&state);
+
+    let library = window.invoke("get_library", json!({})).unwrap();
+    let lead = library["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["package"]["id"] == new.as_str())
+        .unwrap();
+    assert_eq!(keys(&lead["family"]), sorted(&["lead", "version", "older"]));
+    let shelf: OlderShelfView = window.call("get_older_versions", json!({}));
+    assert!(!shelf.exists && shelf.items.is_empty());
+    let plan: KeepNewestPlanView = window.call("plan_keep_newest", json!({ "packageId": old }));
+    assert_eq!(plan.package_id, new);
+    assert_eq!(plan.puts_away, ["Hearth Embers 1.0.zip"]);
+    let moved: PutAwayView = window.call("put_away", json!({ "packageId": old }));
+    assert_eq!(moved.landed_as, "Hearth Embers 1.0.zip");
+    state.wait_until_scanned();
+    let shelf: OlderShelfView = window.call("get_older_versions", json!({}));
+    assert!(shelf.exists);
+    assert_eq!(shelf.items[0].version.as_deref(), Some("1.0"));
+    let back: BringBackResult =
+        window.call("bring_back", json!({ "fileName": "Hearth Embers 1.0.zip" }));
+    assert_eq!(back.landed_as, "Hearth Embers 1.0.zip");
+    state.wait_until_scanned();
+    let done: KeepNewestResultView = window.call("keep_newest", json!({ "packageId": new }));
+    assert_eq!((done.uninstalled, done.put_away.len()), (0, 1));
+    assert!(
+        window
+            .invoke("put_away", json!({ "package_id": new }))
+            .is_err(),
+        "the window's key is the only one that maps"
+    );
+
+    // THE MUSTER's chosen character crosses in the settings, and only as a character key.
+    let settings: Settings = window.call(
+        "set_settings",
+        json!({ "settings": { "veil": "off", "autoCheckUpdates": true, "musterCharacter": "9f3c0a7e5b1d2c44" } }),
+    );
+    assert_eq!(
+        settings.muster_character.as_deref(),
+        Some("9f3c0a7e5b1d2c44")
+    );
+    let settings: Settings = window.call(
+        "set_settings",
+        json!({ "settings": { "veil": "off", "autoCheckUpdates": true, "musterCharacter": "not a key" } }),
+    );
+    assert_eq!(settings.muster_character, None);
 }
 
 /// The keys of a JSON object, sorted.

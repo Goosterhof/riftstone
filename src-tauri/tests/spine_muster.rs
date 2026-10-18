@@ -200,6 +200,94 @@ fn the_party_reads_whole_and_named_from_the_game() {
     );
 }
 
+/// A save of another character on the same account: the invented party, its Arisen and main
+/// pawn renamed (invented names too).
+fn other_character(slot: i32) -> Vec<u8> {
+    let mut party = fixtures::party();
+    party[0].name = "Hester";
+    party[1].name = "Tobin";
+    rift_save::seal(&fixtures::payload(&party, slot, 1_200), ACCOUNT, true)
+}
+
+#[test]
+fn slots_tell_their_character_by_the_arisen_with_their_main_pawn_within_one_account() {
+    let (bench, folder) = muster_bench();
+    put(&folder, "data005Slot.bin", &other_character(5), 30);
+    let mut damaged = fixtures::save(3);
+    let at = damaged.len() / 2;
+    damaged[at] ^= 0x40;
+    put(&folder, "data003Slot.bin", &damaged, 200);
+    // The same two names on another account are another character.
+    let other = save_folder(&bench, ACCOUNT + 7);
+    put(
+        &other,
+        "data009Slot.bin",
+        &rift_save::seal(
+            &fixtures::payload(&fixtures::party(), 9, 5),
+            ACCOUNT + 7,
+            true,
+        ),
+        5,
+    );
+    let (state, _) = open(
+        &bench,
+        vec![
+            SaveFolder {
+                account_id: ACCOUNT,
+                path: folder,
+            },
+            SaveFolder {
+                account_id: ACCOUNT + 7,
+                path: other,
+            },
+        ],
+    );
+    let view = get_muster_slots_impl(&state);
+    let slot = |id: &str| {
+        view.slots
+            .iter()
+            .find(|s| s.slot_id == id)
+            .unwrap_or_else(|| panic!("{id} is listed"))
+    };
+    let odalric = slot("data009Slot@1").character.clone().unwrap();
+    assert_eq!(odalric.len(), 16);
+    assert!(
+        odalric
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+        "16 lowercase hex digits"
+    );
+    assert_eq!(
+        slot("data008Slot@1").character.as_deref(),
+        Some(odalric.as_str()),
+        "two saves of one party are one character"
+    );
+    let hester = slot("data005Slot@1").character.clone().unwrap();
+    assert_ne!(hester, odalric, "another Arisen is another character");
+    assert_ne!(
+        slot("data009Slot@2").character.as_deref(),
+        Some(odalric.as_str()),
+        "the same names on another account are another character"
+    );
+    assert_eq!(
+        slot("data003Slot@1").character,
+        None,
+        "a slot that would not open"
+    );
+    assert_eq!(
+        slot("data009Slot@1").main_pawn_name.as_deref(),
+        Some("Wren")
+    );
+    assert_eq!(
+        slot("data005Slot@1").main_pawn_name.as_deref(),
+        Some("Tobin")
+    );
+    assert_eq!(slot("data003Slot@1").main_pawn_name, None);
+    // The key is made from private names and crosses only as the slot's own field.
+    let wire = serde_json::to_string(&view).unwrap();
+    assert_eq!(wire.matches(&odalric).count(), 2, "{wire}");
+}
+
 #[test]
 fn every_problem_is_listed_and_voiced_by_its_reason() {
     let (bench, folder) = muster_bench();

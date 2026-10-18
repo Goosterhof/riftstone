@@ -175,3 +175,20 @@ mark.rs-hit {
   font-weight: 600;
   white-space: nowrap;
 }
+
+/* v0.5 (#00015 R18.2, R18.4, R18.12): a file name ellipsized from the LEFT, so
+   the version and the extension at its end stay in view; the whole name lives
+   in the element's title. The inner span keeps the name's own order. */
+.rs-tail {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+.rs-tail__text {
+  direction: ltr;
+  unicode-bidi: isolate;
+}

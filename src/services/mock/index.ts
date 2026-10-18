@@ -71,17 +71,21 @@
 // Under nogame the names are missing too: they live in the game's own text.
 
 import type {
+  BringBackResult,
   Check,
   ConflictView,
   DownloadPhase,
   DownloadView,
   EndorseStatus,
+  FamilyView,
   GameSummary,
   InstallOrigin,
   InstallPlanView,
   InstallResultView,
   InstalledRow,
   InstalledView,
+  KeepNewestPlanView,
+  KeepNewestResultView,
   LabelCount,
   LabelFacets,
   LaunchPlanView,
@@ -100,6 +104,9 @@ import type {
   NexusSummary,
   NxmHandlerView,
   OptionDetail,
+  OlderShelfItem,
+  OlderShelfView,
+  OlderVersionView,
   OptionRef,
   Overview,
   PackageDetail,
@@ -111,7 +118,9 @@ import type {
   PlanWarning,
   PlannedRemoval,
   PlannedWrite,
+  PutAwayView,
   RemovalAction,
+  ReplacesView,
   RiftError,
   SearchQuery,
   SearchResult,
@@ -127,7 +136,16 @@ import { EVENTS } from "@/types/rift";
 import { RiftFailure, type RiftBackend, type RiftEvent } from "../rift";
 import type { NexusQuota, PendingBackend } from "../pending";
 import { TROUBLE_KINDS } from "../voice";
-import { MOCK_SAVE_SENTENCES, mockMuster, mockMusterSlots, type MusterScene } from "./muster";
+import { createMusterMock, type MusterMock } from "./muster";
+import {
+  FAMILY_NAME,
+  familiesOf,
+  freeName,
+  newerInMods,
+  sameOptionIn,
+  versionScene,
+  type ShelfEntry,
+} from "./versions";
 import {
   MOCK_DAY,
   MOCK_FINDS,
@@ -161,6 +179,8 @@ export interface MockHooks {
   deliverNxm(link: string): void;
   /** v0.4: the game saves Slot 9 one level later (#00015 R17.31), and the save watcher fires. */
   gameSaved(): void;
+  /** v0.5: the Muster's whole mock (./muster.ts), its own dev hooks included. */
+  musterMock: MusterMock;
 }
 
 export type MockBackend = RiftBackend & PendingBackend & MockHooks;
@@ -309,7 +329,18 @@ export function createMockBackend(): MockBackend {
   // the next backend (the next spec, the next scenario).
   let packages: MockPackage[] = scene.has("empty") ? [] : structuredClone(MOCK_PACKAGES);
   if (scene.has("nocreations")) packages = packages.map((p) => ({ ...p, options: [] }));
-  let settings: Settings = { veil: "off", autoCheckUpdates: true };
+  // v0.5 (./versions.ts): the family scenes bring Lantern Glow Recolor's versions
+  // in place of the library's own Lantern Glow, so one name stands for one file.
+  const versionsAt = versionScene(scene);
+  if (versionsAt.packages.length && !scene.has("empty")) {
+    packages = [...packages.filter((p) => p.summary.displayName !== FAMILY_NAME), ...versionsAt.packages];
+  }
+  /** The older-versions folder beside the mods folder (THE UNDERCROFT). */
+  const shelf: { exists: boolean; items: ShelfEntry[] } = versionsAt.shelf;
+  let putAwayFails = versionsAt.putAwayFails;
+  // v0.5: the Muster's mock owns its state (./muster.ts); `gameRoot` is read when asked.
+  const muster = createMusterMock(scene, () => gameRoot === null, emit, wait);
+  let settings: Settings = { veil: "off", autoCheckUpdates: true, musterCharacter: muster.rememberedAtStart() };
   let gameRoot: string | null = scene.has("nogame")
     ? null
     : "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Dragons Dogma 2";
@@ -365,6 +396,11 @@ export function createMockBackend(): MockBackend {
     for (const [i, name] of riftstone.entries()) {
       const installedAt = new Date(MOCK_NOW - (10 - i) * MOCK_DAY).toISOString();
       preinstall(name, { seq: i + 3, installedAt }, "riftstone");
+    }
+    for (const [i, optionId] of versionsAt.installed.entries()) {
+      const found = packages.flatMap((pkg) => pkg.options.map((o) => ({ pkg, o }))).find((x) => x.o.id === optionId);
+      const installedAt = new Date(MOCK_NOW - (3 - i) * MOCK_DAY).toISOString();
+      if (found) installs.push(recordOf(found.o, found.pkg, { seq: installs.length + 1, installedAt }));
     }
   }
   let seq = installs.length;
@@ -461,6 +497,124 @@ export function createMockBackend(): MockBackend {
   }
   const conflicted = (optionId: string) => conflicts().some((c) => c.layers.some((l) => l.optionId === optionId));
 
+  // --- v0.5: versions of one file (./versions.ts holds the spine's rules) ---
+  const membersOf = (pkg: MockPackage): MockPackage[] | null => familiesOf(packages).get(pkg.summary.id) ?? null;
+  const installedIn = (pkg: MockPackage): number => pkg.options.filter((o) => isInstalled(o.id)).length;
+  const isOlderMember = (pkg: MockPackage): boolean => {
+    const members = membersOf(pkg);
+    return members !== null && members[0] !== pkg;
+  };
+
+  /** On a family's lead: its older versions, newest first, with their same options. */
+  function olderViews(pkg: MockPackage): OlderVersionView[] {
+    const members = membersOf(pkg);
+    if (!members || members[0] !== pkg) return [];
+    return members.slice(1).map((older) => ({
+      packageId: older.summary.id,
+      fileName: older.summary.fileName,
+      version: older.summary.nexus?.version ?? null,
+      installed: installedIn(older),
+      matches: older.options.flatMap((o) => {
+        const leadOptionId = sameOptionIn(older, o.id, pkg);
+        return leadOptionId ? [{ optionId: o.id, leadOptionId, installed: isInstalled(o.id) }] : [];
+      }),
+    }));
+  }
+
+  function familyView(pkg: MockPackage): FamilyView | null {
+    const members = membersOf(pkg);
+    if (!members) return null;
+    return { lead: members[0].summary.id, version: pkg.summary.nexus?.version ?? null, older: olderViews(pkg) };
+  }
+
+  /** The installs of the same option in the other versions of the option's file. */
+  function replacedBy(optionId: string): { record: InstallRecord; pkg: MockPackage }[] {
+    const found = findOption(optionId);
+    const members = found ? membersOf(found.pkg) : null;
+    if (!found || !members) return [];
+    return members.flatMap((m) => {
+      if (m === found.pkg) return [];
+      const same = sameOptionIn(found.pkg, optionId, m);
+      const record = same ? recordOfId(same) : undefined;
+      return record ? [{ record, pkg: m }] : [];
+    });
+  }
+
+  const replacesView = (r: { record: InstallRecord; pkg: MockPackage }): ReplacesView => ({
+    optionId: r.record.optionId,
+    name: r.record.name,
+    version: r.pkg.summary.nexus?.version ?? null,
+    removals: r.record.files.length,
+  });
+
+  /** Moves one package, whole, to the older-versions folder: its name, or ` (2)` … */
+  function moveToShelf(pkg: MockPackage): PutAwayView {
+    const landedAs = freeName(
+      pkg.summary.fileName,
+      shelf.items.map((i) => i.fileName),
+    );
+    shelf.exists = true;
+    shelf.items.push({ pkg, fileName: landedAs });
+    packages = packages.filter((p) => p !== pkg);
+    return { fileName: pkg.summary.fileName, landedAs };
+  }
+
+  /** After an install of a family member committed: every older member left
+   *  without installs goes, never-installed ones too. */
+  function putAwayAfter(pkg: MockPackage): Pick<InstallResultView, "putAway" | "putAwayFailed"> {
+    const members = membersOf(pkg);
+    if (!members) return { putAway: [], putAwayFailed: null };
+    const older = members.slice(members.indexOf(pkg) + 1).filter((m) => installedIn(m) === 0);
+    if (!older.length) return { putAway: [], putAwayFailed: null };
+    if (putAwayFails) {
+      putAwayFails = false;
+      const names = older.map((m) => m.summary.fileName).join(", ");
+      return {
+        putAway: [],
+        putAwayFailed: `The stone couldn't move ${names} to mods (older versions): access is denied.`,
+      };
+    }
+    return { putAway: older.map(moveToShelf), putAwayFailed: null };
+  }
+
+  const ONLY_VERSION = (pkg: MockPackage) =>
+    `"${pkg.summary.fileName}" is the only version of its file in the mods folder.`;
+
+  /** What keeping only the newest would do, or why it cannot. */
+  function keepNewestOf(
+    pkg: MockPackage,
+  ): KeepNewestPlanView & { olderMembers: MockPackage[]; records: InstallRecord[] } {
+    const members = membersOf(pkg);
+    const none = { olderMembers: [], records: [], uninstalls: [], putsAway: [] };
+    if (!members) return { ...none, packageId: pkg.summary.id, keeps: null, refused: ONLY_VERSION(pkg) };
+    const lead = members[0];
+    const kept = members.find((m) => installedIn(m) > 0) ?? lead;
+    const olderMembers = members.slice(members.indexOf(kept) + 1);
+    const base = { packageId: lead.summary.id, keeps: kept.summary.fileName };
+    if (!olderMembers.length) {
+      return {
+        ...none,
+        ...base,
+        refused: `No version of ${lead.summary.displayName} is older than the one kept, "${kept.summary.fileName}".`,
+      };
+    }
+    const pairs = olderMembers.flatMap((m) =>
+      m.options.flatMap((o) => {
+        const record = recordOfId(o.id);
+        return record ? [{ record, pkg: m }] : [];
+      }),
+    );
+    const held = pairs.find((p) => running && hasPaks(p.record));
+    return {
+      ...base,
+      olderMembers,
+      records: pairs.map((p) => p.record),
+      uninstalls: pairs.map(replacesView),
+      putsAway: olderMembers.map((m) => m.summary.fileName),
+      refused: held ? RUNNING_UNINSTALL(held.record.name) : null,
+    };
+  }
+
   /** Links made since the last SUCCESSFUL check: no check has judged them yet,
    *  so they read notChecked (a failed check judges none). */
   const unjudged = new Set<string>();
@@ -477,6 +631,7 @@ export function createMockBackend(): MockBackend {
       localUploadedMs: link.uploadedMs,
       pageUrl: `https://www.nexusmods.com/dragonsdogma2/mods/${link.modId}`,
       checkedMs: lastCheckMs,
+      older: olderViews(pkg),
     };
     // `offline` changes nothing here: a failed check leaves the cache alone
     // (get_updates is cached state), so the rows keep the last good verdict
@@ -545,6 +700,8 @@ export function createMockBackend(): MockBackend {
   function updatesView(): UpdatesView {
     const rows: UpdateRow[] = [];
     for (const pkg of packages) {
+      // v0.5: one row per family, the lead's; an older version has none of its own
+      if (isOlderMember(pkg)) continue;
       const row = updateRow(pkg);
       if (row) rows.push(row);
       else if (pkg.options.length) {
@@ -558,6 +715,7 @@ export function createMockBackend(): MockBackend {
           state: { kind: "unlinked" },
           pageUrl: null,
           checkedMs: null,
+          older: [],
         });
       }
     }
@@ -917,6 +1075,16 @@ export function createMockBackend(): MockBackend {
         if (hit) hits.push(hit);
       }
     }
+    // v0.5: an older version's answer goes when the lead's same option answers too
+    const answered = new Set(hits.map((h) => h.optionId));
+    const kept = hits.filter((hit) => {
+      const found = findOption(hit.optionId);
+      const members = found ? membersOf(found.pkg) : null;
+      if (!found || !members || members[0] === found.pkg) return true;
+      const same = sameOptionIn(found.pkg, hit.optionId, members[0]);
+      return !same || !answered.has(same);
+    });
+    hits.splice(0, hits.length, ...kept);
     if (toks.length) hits.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
     // v0.3: limit 0 is no cap — every match
     return query.limit > 0 ? hits.slice(0, query.limit) : hits;
@@ -1056,6 +1224,7 @@ export function createMockBackend(): MockBackend {
       labels,
       adult: labels?.adult ?? false,
       conflicted: pkg.options.some((o) => conflicted(o.id)),
+      family: familyView(pkg),
       tree: nest(pkg),
     };
   }
@@ -1419,19 +1588,6 @@ export function createMockBackend(): MockBackend {
   // --- the nxm:// handler and the links it brings --------------------------
   const otherAtStart = scene.has("nxmother") ? MOCK_OTHER_HANDLER : null;
 
-  // v0.4 — the Muster's state: one save of Slot 9 by the dev hook, one
-  // being-written refusal under musterwriting.
-  let savedLater = false;
-  let writingOnce = scene.has("musterwriting");
-  function musterScene(): MusterScene {
-    let folder: MusterScene["folder"] = null;
-    if (scene.has("musternosteam")) folder = "noSteam";
-    else if (scene.has("musternosaves")) folder = "noSaves";
-    return { folder, namesMissing: scene.has("musternames") || gameRoot === null };
-  }
-  function saveFailure(slotId: string, reason: keyof typeof MOCK_SAVE_SENTENCES): RiftFailure {
-    return new RiftFailure({ kind: "save", detail: { detail: MOCK_SAVE_SENTENCES[reason](slotId), reason } });
-  }
   let handler: NxmHandlerView = otherAtStart
     ? { state: "other", other: otherAtStart, givesBackTo: null }
     : { state: "none", other: null, givesBackTo: null };
@@ -1677,20 +1833,28 @@ export function createMockBackend(): MockBackend {
       if (!found) throw notFound(optionId);
       const { option } = found;
       const reinstall = isInstalled(optionId);
-      const slot = reinstall ? pakOrder.indexOf(optionId) : pakOrder.length;
-      const writes: PlannedWrite[] = option.payload.map((p) => ({
-        entry: p.entry,
-        gamePath: gamePathOf(optionId, p.target, slot),
-        kind: p.target.kind,
-        size: p.size,
-        action: reinstall ? { kind: "reinstall" } : { kind: "create" },
-      }));
+      // v0.5: the replaced installs leave first, so a path one held is met after its removal
+      const replaced = replacedBy(optionId);
+      const held = new Set(replaced.flatMap((r) => r.record.files.map((f) => gamePathOf(r.record.optionId, f.target))));
+      const takenSlot = replaced.map((r) => pakOrder.indexOf(r.record.optionId)).find((i) => i >= 0);
+      const slot = reinstall ? pakOrder.indexOf(optionId) : (takenSlot ?? pakOrder.length);
+      const writes: PlannedWrite[] = option.payload.map((p) => {
+        const gamePath = gamePathOf(optionId, p.target, slot);
+        return {
+          entry: p.entry,
+          gamePath,
+          kind: p.target.kind,
+          size: p.size,
+          action: reinstall || held.has(gamePath) ? { kind: "reinstall" } : { kind: "create" },
+        };
+      });
       const plan: InstallPlanView = {
         optionId,
         name: option.name,
         writes,
         totalBytes: writes.reduce((n, w) => n + w.size, 0),
         warnings: planWarnings(option),
+        replaces: replaced.map(replacesView),
         refused: planRefusal(option),
       };
       return plan;
@@ -1709,11 +1873,24 @@ export function createMockBackend(): MockBackend {
           bytesDone += file.size;
           emit(EVENTS.installProgress, { optionId, filesDone: i + 1, filesTotal: total, bytesDone, bytesTotal });
         }
+        // v0.5: the replaced installs go in the same step; the new one takes the first's pak slot
+        let slot = -1;
+        for (const { record } of replacedBy(optionId)) {
+          const at = pakOrder.indexOf(record.optionId);
+          if (slot < 0 && at >= 0) slot = at;
+          installs = installs.filter((r) => r !== record);
+          pakOrder = pakOrder.filter((id) => id !== record.optionId);
+        }
         if (!isInstalled(optionId)) {
           installs.push(recordOf(found.option, found.pkg, { seq: ++seq, installedAt: new Date().toISOString() }));
-          if (found.option.kinds.pak) pakOrder.push(optionId);
+          if (found.option.kinds.pak) {
+            if (slot >= 0) pakOrder.splice(slot, 0, optionId);
+            else pakOrder.push(optionId);
+          }
         }
+        const moved = putAwayAfter(found.pkg);
         emit(EVENTS.gameChanged, {});
+        if (moved.putAway.length) emit(EVENTS.libraryChanged, {});
         const result: InstallResultView = {
           optionId,
           filesWritten: total,
@@ -1722,6 +1899,7 @@ export function createMockBackend(): MockBackend {
           durationMs: 220 * total,
           // the game reads pak_mods/ and natives/ at start: this one loads next launch
           restartNeeded: running,
+          ...moved,
         };
         return result;
       });
@@ -2199,31 +2377,97 @@ export function createMockBackend(): MockBackend {
     pickFolder() {
       return Promise.resolve("D:\\Games\\Dragons Dogma 2");
     },
-    // --- v0.4: the Muster --------------------------------------------------
-    async getMusterSlots() {
+    // --- v0.4: the Muster (./muster.ts owns it whole since v0.5) -------------
+    getMusterSlots: () => muster.getMusterSlots(),
+    getMuster: (slotId) => muster.getMuster(slotId),
+    openSavesFolder: (slotId) => muster.openSavesFolder(slotId),
+    musterMock: muster,
+    // --- v0.5: versions of one file (./versions.ts, WINDOW-CONTRACT § v0.5) ---
+    async planKeepNewest(packageId) {
+      await wait(30);
+      const pkg = packages.find((p) => p.summary.id === packageId);
+      if (!pkg) throw notFound(packageId);
+      const { packageId: lead, keeps, uninstalls, putsAway, refused } = keepNewestOf(pkg);
+      const plan: KeepNewestPlanView = { packageId: lead, keeps, uninstalls, putsAway, refused };
+      return plan;
+    },
+    async keepNewest(packageId) {
+      const pkg = packages.find((p) => p.summary.id === packageId);
+      if (!pkg) throw notFound(packageId);
+      const plan = keepNewestOf(pkg);
+      if (plan.refused) throw refusedWith(plan.refused);
+      return holding(async () => {
+        await wait(300);
+        for (const record of plan.records) {
+          installs = installs.filter((r) => r !== record);
+          pakOrder = pakOrder.filter((id) => id !== record.optionId);
+        }
+        if (plan.records.length) emit(EVENTS.gameChanged, {});
+        const putAway = plan.olderMembers.filter((m) => installedIn(m) === 0).map(moveToShelf);
+        if (putAway.length) emit(EVENTS.libraryChanged, {});
+        const result: KeepNewestResultView = { uninstalled: plan.records.length, putAway, putAwayFailed: null };
+        return result;
+      });
+    },
+    async putAway(packageId) {
       await wait(60);
-      return mockMusterSlots(musterScene(), savedLater);
-    },
-    async getMuster(slotId) {
-      await wait(scene.has("musterslow") ? 2000 : 120);
-      if (writingOnce && slotId === "data009Slot") {
-        writingOnce = false;
-        // the save settles a moment later, and the watcher says so
-        setTimeout(() => emit(EVENTS.musterChanged, {}), 900);
-        throw saveFailure(slotId, "beingWritten");
+      const pkg = packages.find((p) => p.summary.id === packageId);
+      if (!pkg) throw notFound(packageId);
+      const members = membersOf(pkg);
+      if (!members) throw refusedWith(ONLY_VERSION(pkg));
+      if (members[0] === pkg) {
+        throw refusedWith(
+          `"${pkg.summary.fileName}" is the newest version of its file, so it stays in the mods folder.`,
+        );
       }
-      const read = mockMuster(slotId, musterScene(), savedLater);
-      if (typeof read === "string") throw saveFailure(slotId, read);
-      return read;
+      if (installedIn(pkg) > 0) {
+        throw refusedWith(`"${pkg.summary.fileName}" still has options in your world; uninstall them first.`);
+      }
+      const moved = moveToShelf(pkg);
+      emit(EVENTS.libraryChanged, {});
+      return moved;
     },
-    async openSavesFolder(slotId) {
-      await wait(40);
-      if (!mockMusterSlots(musterScene()).slots.some((s) => s.slotId === slotId)) throw saveFailure(slotId, "gone");
+    async getOlderVersions() {
+      await wait(30);
+      const blind = (s: string) => s.toLowerCase();
+      const items: OlderShelfItem[] = [...shelf.items]
+        .sort((a, b) => blind(a.fileName).localeCompare(blind(b.fileName)))
+        .map((item) => ({
+          fileName: item.fileName,
+          size: item.pkg.summary.size,
+          modName: item.pkg.summary.nexus ? item.pkg.summary.displayName : null,
+          version: item.pkg.summary.nexus?.version ?? null,
+          newerInMods: newerInMods(item.pkg, packages),
+        }));
+      const view: OlderShelfView = { exists: shelf.exists, items };
+      return view;
+    },
+    async bringBack(fileName) {
+      await wait(60);
+      const at = shelf.items.findIndex((i) => i.fileName.toLowerCase() === fileName.toLowerCase());
+      if (at < 0) throw notFound(fileName);
+      const item = shelf.items[at];
+      const landedAs = freeName(
+        item.fileName,
+        packages.map((p) => p.summary.fileName),
+      );
+      shelf.items.splice(at, 1);
+      const pkg = item.pkg;
+      pkg.summary = { ...pkg.summary, fileName: landedAs, path: `${MOCK_MODS_DIR}\\${landedAs}` };
+      packages = [...packages, pkg];
+      emit(EVENTS.libraryChanged, {});
+      const result: BringBackResult = { landedAs };
+      return result;
+    },
+    async openOlderVersionsFolder() {
+      await wait(20);
+      if (!shelf.exists) {
+        throw refusedWith("The stone hasn't put anything away yet, so the older-versions folder is not there to show.");
+      }
     },
     // --- the dev hooks: the world outside the window ------------------------
     gameSaved() {
-      savedLater = true;
-      emit(EVENTS.musterChanged, {});
+      muster.gameSaved();
     },
     closeGame() {
       setRunning(false);
@@ -2238,6 +2482,7 @@ export function createMockBackend(): MockBackend {
       closeGame: () => backend.closeGame(),
       deliverNxm: (link) => backend.deliverNxm(link),
       gameSaved: () => backend.gameSaved(),
+      musterMock: backend.musterMock,
     };
   }
   return backend;

@@ -142,10 +142,47 @@ impl NexusStore {
     }
 
     /// The last verdict for this package's current link, if it still applies.
-    fn verdict(&self, package: &Package, link: &NexusLink) -> Option<&LinkRecord> {
+    fn verdict(&self, id: &PackageId, link: &NexusLink) -> Option<&LinkRecord> {
         self.packages
-            .get(&package.id.0)
+            .get(&id.0)
             .filter(|record| record.state.is_some() && record.state_mod_id == Some(link.mod_id))
+    }
+
+    /// A check that named this package's exact file as another package's newer one, while this
+    /// package has no verdict of its own (v0.5: a version just downloaded, whose older version's
+    /// check led to it). Any record `nexus.json` keeps counts, an older version put away in the
+    /// older-versions folder too; the latest such check wins.
+    fn vouched(&self, package: &Package, link: &NexusLink) -> Option<&LinkRecord> {
+        let file_id = link.file_id?;
+        self.packages
+            .iter()
+            .filter(|(id, _)| **id != package.id.0)
+            .map(|(_, record)| record)
+            .filter(|record| record.state_mod_id == Some(link.mod_id))
+            .filter(|record| match record.state.as_ref() {
+                Some(UpdateStateView::UpdateAvailable { newer }) => newer.file_id == file_id,
+                Some(UpdateStateView::LocalArchived { newer: Some(newer) }) => {
+                    newer.file_id == file_id
+                }
+                _ => false,
+            })
+            .max_by_key(|record| record.checked_ms)
+    }
+
+    /// The link `nexus.json` keeps for a package id, whether or not the package is on the shelf
+    /// (v0.5: a version in the older-versions folder keeps its record there); `None` when the
+    /// record holds none or the player unlinked it.
+    pub fn record_link(&self, id: &PackageId) -> Option<NexusLink> {
+        self.packages
+            .get(&id.0)
+            .filter(|record| !record.unlinked)
+            .and_then(|record| record.link.clone())
+    }
+
+    /// The mod's name on Nexus as the package's last check heard it, while that check still
+    /// applies to its link.
+    pub fn mod_name(&self, id: &PackageId, link: &NexusLink) -> Option<String> {
+        self.verdict(id, link)?.mod_name.clone()
     }
 
     /// A pasted link (or a fresh MD5 match) replaces whatever was there.
@@ -181,11 +218,19 @@ impl NexusStore {
     /// One package's row on the Nexus page.
     pub fn row(&self, package: &Package) -> UpdateRow {
         let link = self.link_for(package);
-        let verdict = link.as_ref().and_then(|l| self.verdict(package, l));
-        let state = match (&link, verdict) {
-            (None, _) => UpdateStateView::Unlinked,
-            (Some(_), Some(record)) => record.state.clone().unwrap_or(UpdateStateView::NotChecked),
-            (Some(_), None) => UpdateStateView::NotChecked,
+        let own = link.as_ref().and_then(|l| self.verdict(&package.id, l));
+        let vouched = match (&link, own) {
+            (Some(l), None) => self.vouched(package, l),
+            _ => None,
+        };
+        let verdict = own.or(vouched);
+        let state = match (&link, own, vouched) {
+            (None, _, _) => UpdateStateView::Unlinked,
+            (Some(_), Some(record), _) => {
+                record.state.clone().unwrap_or(UpdateStateView::NotChecked)
+            }
+            (Some(_), None, Some(_)) => UpdateStateView::Current,
+            (Some(_), None, None) => UpdateStateView::NotChecked,
         };
         let local_version = link
             .as_ref()
@@ -201,19 +246,35 @@ impl NexusStore {
             state,
             page_url: link.as_ref().map(|l| rift_nexus::mod_page_url(l.mod_id)),
             checked_ms: verdict.and_then(|r| r.checked_ms),
+            older: Vec::new(),
+        }
+    }
+
+    /// The file the package's last check named as newer than its own, while that check still
+    /// applies to its link (v0.5: one of the family rule's two ties).
+    pub fn newer_file_id(&self, id: &PackageId, link: &NexusLink) -> Option<u64> {
+        match self.verdict(id, link)?.state.as_ref()? {
+            UpdateStateView::UpdateAvailable { newer } => Some(newer.file_id),
+            UpdateStateView::LocalArchived { newer: Some(newer) } => Some(newer.file_id),
+            _ => None,
         }
     }
 
     /// The badge on a search card: `None` when the package is not linked.
     pub fn badge(&self, package: &Package) -> Option<UpdateBadge> {
         let link = self.link_for(package)?;
-        Some(
-            match self.verdict(package, &link).and_then(|r| r.state.as_ref()) {
-                Some(UpdateStateView::UpdateAvailable { .. }) => UpdateBadge::Available,
-                Some(UpdateStateView::Current) => UpdateBadge::Current,
-                _ => UpdateBadge::Unknown,
-            },
-        )
+        let Some(verdict) = self.verdict(&package.id, &link) else {
+            return Some(if self.vouched(package, &link).is_some() {
+                UpdateBadge::Current
+            } else {
+                UpdateBadge::Unknown
+            });
+        };
+        Some(match verdict.state.as_ref() {
+            Some(UpdateStateView::UpdateAvailable { .. }) => UpdateBadge::Available,
+            Some(UpdateStateView::Current) => UpdateBadge::Current,
+            _ => UpdateBadge::Unknown,
+        })
     }
 
     /// Record one package's check: the pinned link (when the check pinned

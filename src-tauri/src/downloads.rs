@@ -60,6 +60,7 @@ use rift_nexus::{Downloaded, NexusClient, NexusError, NxmGrant, NxmLink};
 use crate::account;
 use crate::dto::{DownloadPhase, DownloadProgressEvent, DownloadView};
 use crate::events;
+use crate::landing::{occupant, rename_new};
 use crate::persist;
 use crate::state::{lock, read, AppState};
 
@@ -1187,159 +1188,10 @@ pub fn land(
     })
 }
 
-/// The entry of `folder` named `name`, compared the way Windows compares
-/// names (case-blind): its own spelling and its path.
-fn occupant(folder: &Path, name: &str) -> Option<(String, PathBuf)> {
-    let wanted = lower_key(name);
-    let listed = fs::read_dir(folder).ok().and_then(|entries| {
-        entries.flatten().find_map(|entry| {
-            let there = entry.file_name().to_string_lossy().into_owned();
-            (lower_key(&there) == wanted).then(|| (there, entry.path()))
-        })
-    });
-    listed.or_else(|| {
-        let path = folder.join(name);
-        fs::symlink_metadata(&path)
-            .is_ok()
-            .then(|| (name.to_string(), path))
-    })
-}
-
 /// Does the file at `path` hold exactly these bytes (size, then MD5)?
 fn same_bytes(path: &Path, bytes: u64, md5: &str) -> bool {
     fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() == bytes)
         && rift_nexus::md5_file(path, &mut |_| {}).is_ok_and(|hash| hash == md5)
-}
-
-/// Rename `from` to `to` only when `to` does not exist, never over a file:
-/// a hard link where the file system has them (a link fails on an existing
-/// name; then the partial name goes), elsewhere (FAT32, exFAT, some network
-/// shares) a move that itself refuses an existing name ([`move_new`]). An
-/// existing name is `AlreadyExists` either way, whenever it appeared.
-fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
-    rename_new_by(from, to, |from, to| fs::hard_link(from, to))
-}
-
-/// [`rename_new`] with the hard link as a seam (the tests make it fail).
-fn rename_new_by(
-    from: &Path,
-    to: &Path,
-    link: impl FnOnce(&Path, &Path) -> io::Result<()>,
-) -> io::Result<()> {
-    match link(from, to) {
-        Ok(()) => {
-            if let Err(err) = fs::remove_file(from) {
-                log::warn!(
-                    "the partial name of a landed download could not be removed ({err}); the next launch removes it"
-                );
-            }
-            Ok(())
-        }
-        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Err(err),
-        Err(_) => move_new(from, to),
-    }
-}
-
-/// Move `from` to `to` in one step that fails with `AlreadyExists` when `to`
-/// exists (std's `rename` would replace it): `MoveFileExW` without
-/// `MOVEFILE_REPLACE_EXISTING` on Windows (whose `ERROR_ALREADY_EXISTS` and
-/// `ERROR_FILE_EXISTS` std reads as `AlreadyExists`).
-#[cfg(windows)]
-fn move_new(from: &Path, to: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
-
-    // Through the folders' own verbatim (`\\?\`) spelling, so a name deep in
-    // a long install path still moves.
-    let wide = |path: &Path| -> io::Result<Vec<u16>> {
-        let folder = path
-            .parent()
-            .filter(|folder| !folder.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        let name = path
-            .file_name()
-            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
-        Ok(fs::canonicalize(folder)?
-            .join(name)
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect())
-    };
-    let (from, to) = (wide(from)?, wide(to)?);
-    // SAFETY: both are NUL-terminated UTF-16 strings that live across the call.
-    let moved = unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0) };
-    if moved == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-/// [`move_new`] on Linux (the bench): `renameat2` with `RENAME_NOREPLACE`. A
-/// file system that cannot refuse in the move itself copies into a new file
-/// instead ([`copy_new`]).
-#[cfg(target_os = "linux")]
-fn move_new(from: &Path, to: &Path) -> io::Result<()> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-
-    let c_path = |path: &Path| {
-        CString::new(path.as_os_str().as_bytes())
-            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
-    };
-    let (from_c, to_c) = (c_path(from)?, c_path(to)?);
-    // SAFETY: both are NUL-terminated paths that live across the call.
-    let moved = unsafe {
-        libc::renameat2(
-            libc::AT_FDCWD,
-            from_c.as_ptr(),
-            libc::AT_FDCWD,
-            to_c.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    if moved == 0 {
-        return Ok(());
-    }
-    let err = io::Error::last_os_error();
-    match err.raw_os_error() {
-        Some(libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP) => copy_new(from, to),
-        _ => Err(err),
-    }
-}
-
-/// [`move_new`] elsewhere: [`copy_new`].
-#[cfg(not(any(windows, target_os = "linux")))]
-fn move_new(from: &Path, to: &Path) -> io::Result<()> {
-    copy_new(from, to)
-}
-
-/// The last way to put a file in place without writing over one: copy it
-/// into a file made new (`create_new` fails on an existing name), flushed to
-/// disk, then remove the partial file. A copy that fails removes its own new
-/// file and leaves the partial file for the caller.
-#[cfg_attr(windows, allow(dead_code))]
-fn copy_new(from: &Path, to: &Path) -> io::Result<()> {
-    let mut target = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(to)?;
-    let copied = fs::File::open(from)
-        .and_then(|mut source| io::copy(&mut source, &mut target))
-        .and_then(|_| target.sync_all());
-    drop(target);
-    if let Err(err) = copied {
-        // The file this copy made, never one that was there.
-        let _ = fs::remove_file(to);
-        return Err(err);
-    }
-    if let Err(err) = fs::remove_file(from) {
-        log::warn!(
-            "the partial name of a landed download could not be removed ({err}); the next launch removes it"
-        );
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1578,73 +1430,5 @@ mod tests {
             land(mods, &sixth, "Lantern", size, &md5).unwrap(),
             Landing::Written("Lantern (2)".into())
         );
-    }
-
-    #[test]
-    fn a_move_where_hard_links_fail_never_writes_over_a_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let from = dir.path().join(part_name("m-1"));
-        let to = dir.path().join("Lantern Glow Recolor.zip");
-        fs::write(&from, b"the new archive").unwrap();
-        // A file that appeared after any look: the move itself must refuse it.
-        fs::write(&to, b"the player's own").unwrap();
-        let err = move_new(&from, &to).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists, "{err}");
-        assert_eq!(fs::read(&to).unwrap(), b"the player's own");
-        assert_eq!(fs::read(&from).unwrap(), b"the new archive");
-        // A free name: moved whole, the partial name gone.
-        let free = dir.path().join("Lantern Glow Recolor (2).zip");
-        move_new(&from, &free).unwrap();
-        assert_eq!(fs::read(&free).unwrap(), b"the new archive");
-        assert!(!from.exists());
-    }
-
-    #[test]
-    fn the_last_resort_copy_never_writes_over_a_file_either() {
-        let dir = tempfile::tempdir().unwrap();
-        let from = dir.path().join(part_name("m-3"));
-        let to = dir.path().join("Lantern Glow Recolor.zip");
-        fs::write(&from, b"the new archive").unwrap();
-        fs::write(&to, b"the player's own").unwrap();
-        let err = copy_new(&from, &to).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
-        assert_eq!(fs::read(&to).unwrap(), b"the player's own");
-        assert_eq!(fs::read(&from).unwrap(), b"the new archive");
-        let free = dir.path().join("Lantern Glow Recolor (2).zip");
-        copy_new(&from, &free).unwrap();
-        assert_eq!(fs::read(&free).unwrap(), b"the new archive");
-        assert!(!from.exists());
-    }
-
-    #[test]
-    fn where_hard_links_fail_the_landing_moves_and_still_never_overwrites() {
-        let dir = tempfile::tempdir().unwrap();
-        let no_links = |_: &Path, _: &Path| -> io::Result<()> {
-            Err(io::Error::from(io::ErrorKind::Unsupported))
-        };
-        let from = dir.path().join(part_name("m-2"));
-        let to = dir.path().join("Vernworth Cloaks Collection.zip");
-        fs::write(&from, b"new").unwrap();
-        fs::write(&to, b"old").unwrap();
-        let err = rename_new_by(&from, &to, no_links).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
-        assert_eq!(fs::read(&to).unwrap(), b"old");
-        fs::remove_file(&to).unwrap();
-        rename_new_by(&from, &to, no_links).unwrap();
-        assert_eq!(fs::read(&to).unwrap(), b"new");
-        assert!(!from.exists());
-    }
-
-    #[test]
-    fn rename_new_refuses_an_existing_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let from = dir.path().join("from");
-        let to = dir.path().join("to");
-        fs::write(&from, b"new").unwrap();
-        fs::write(&to, b"old").unwrap();
-        let err = rename_new(&from, &to).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
-        assert_eq!(fs::read(&to).unwrap(), b"old");
-        assert_eq!(fs::read(&from).unwrap(), b"new");
     }
 }
