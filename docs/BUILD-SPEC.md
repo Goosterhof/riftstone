@@ -2239,7 +2239,9 @@ was confirmed in-game by the investor (a specialization, and armour the first pa
 4. **The Muster never waits on the game being closed.** DD2 writes a slot when it saves. The
    stone reads whole files and retries a read that lands mid-write (a short file or a bad
    signature) once, 500 ms later.
-5. **Version 0.4.0** (workspace `Cargo.toml`, `package.json`, `tauri.conf.json`).
+5. **Version 0.4.0** (workspace `Cargo.toml`, `package.json`, `tauri.conf.json`), and **0.4.1** since
+   the General's review round (`e24a73a`), so the 0.4.0 installer built before the round can be told
+   apart from one built after it, as 0.3.1 was for v0.3.
 
 ### § rift-save (new crate: the DSSS container, Mandarin, the class stream)
 
@@ -2408,6 +2410,14 @@ The mock gets `?mock=muster…` scenes with an invented party.
     `cargo tree` fails, and a graph without `riftstone` fails it too. All four cases were checked
     locally: the real graph passes, and a failing `cargo tree`, a fixtures feature and an empty
     graph each fail.
+- **The second native Windows run of v0.4** (0.4.1, at `e24a73a`, MSVC, Rust 1.98.0). The first
+  attempt ran out of Windows commit memory while it compiled every test binary at once (`os error
+  1455`, "the paging file is too small"), so no test ran. With `-j 4`, the workspace's tests under
+  `RUSTFLAGS=-D warnings` read 920 passed, 0 failed, 11 benches ignored: 0.4.0's 913 plus the review
+  round's 7. `npm run tauri build` built `The Riftstone_0.4.1_x64-setup.exe` (6.06 MiB). The same
+  read-only probe, on a fresh copy of the investor's save folder deleted after the run, found 5
+  slots, all readable, and named 80 of 80 equipped things. Key 5 drew THE MUSTER with 4 member tabs,
+  with 0 page exceptions and 0 console errors.
 
 ### Ownership in the build
 
