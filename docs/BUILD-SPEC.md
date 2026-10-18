@@ -1186,8 +1186,9 @@ rules each crate proves with tests.
    Python and every Rust file under `src-tauri/` and `crates/` on every `npm test`; the privacy
    sweep's `--forbid` list (in its git-ignored args file) checks the working tree and the tip a
    push publishes. Both match a word of five letters or more anywhere and a shorter one only as
-   a whole word, so a letter run inside embedded data (the audition's base64 fonts) is no hit;
-   the spec's own fixtures build even their identifiers from the codes. Persisted legacy data is read by a generic lift that names nothing
+   a whole word, and the sweep never reads a `data:` URI's base64 payload (the audition's
+   embedded fonts), where any letters or digits are chance; the spec's own fixtures build even
+   their identifiers from the codes. Persisted legacy data is read by a generic lift that names nothing
    (§ rift-deploy). The git history is not rewritten. Pictures are every gate's blind spot: the
    README's frames are shot from the mock and looked at by hand (§ The window, Open).
 2. **What survives under neutral words**: the modinfo.ini packaging format (`addonfor`,

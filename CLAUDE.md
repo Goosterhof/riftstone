@@ -141,8 +141,9 @@ builds land; the sweep reads it as a folder chain, with either slash. `--skip-na
 library child that is not a package. `--forbid` holds words the repo must never carry again,
 printed as places, never as words: the args file is where those words live, so the repo never
 has to spell them. A word of five letters or more matches anywhere, inside identifiers too; a
-shorter one matches only as a whole word, so a run of letters that embedded data holds by chance
-(the base64 fonts in `docs/design/audition.html`) is no hit. A forbidden word is checked in the working tree and at the tip a push
+shorter one matches only as a whole word. The sweep never reads the base64 payload of a `data:`
+URI (the fonts embedded in `docs/design/audition.html`): what such data spells is chance, not a
+name or an id. A forbidden word is checked in the working tree and at the tip a push
 publishes (every tracked file at HEAD whose text differs from the working tree, and HEAD's own
 message), so a clean-up that is not committed yet never passes for a clean push. The older
 history keeps what it kept (BUILD-SPEC § v0.3, ruling 1), and a commit between the last push
@@ -163,7 +164,12 @@ v0.3: install names now come from the stone's own journal, and the Nexus ids fro
 `nexus.json`. The tip check and the picture count followed that night, after a review found
 a forbidden word still committed at HEAD in three files while the sweep, reading only the
 uncommitted working tree, reported none, and the README's frames still showing one in their
-pixels. On 2026-10-18 the committed spec began reading the docs, the scripts and the Rust too.)*
+pixels. On 2026-10-18 the committed spec began reading the docs, the scripts and the Rust too.
+The same day the reworked sweep's first full run, the first to read the journal's and
+`nexus.json`'s ids, found one more leak: a real Nexus file id in an example URL since v0.1, beside
+the invented mod id that had replaced its real one in the first scrub. The history was
+rewritten once more before the first push, so every commit carries the invented file 2391 in
+its place.)*
 
 ## Running It
 

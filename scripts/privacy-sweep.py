@@ -19,6 +19,8 @@ slash, so the same folder in a doc, a mock and a test all count.
 A push publishes more than the working tree, so the sweep reads three places:
 the working tree, every file version any ref reaches in the history, and every
 commit message. A leak scrubbed from the tree but alive in history still counts.
+The base64 payload of a `data:` URI (an embedded font) is not read: a run of
+digits or letters there is chance, not a name.
 
     python3 -I scripts/privacy-sweep.py \\
         --library  "/mnt/c/<install dir>/mods" \\
@@ -508,9 +510,15 @@ def first_commit_with(blob: str) -> str:
     return shas[-1] if shas else blob[:9]
 
 
+# A data: URI's base64 payload: what an embedded font or picture spells is chance.
+EMBEDDED_DATA = re.compile(r"(data:[\w.+-]+/[\w.+-]+(?:;[\w.+-]+=[\w.+-]+)*;base64,)[A-Za-z0-9+/=]+")
+
+
 def hits_in(
     text: str, patterns: list[tuple[re.Pattern[str], str]], anything: re.Pattern[str]
 ) -> Iterator[tuple[int, str]]:
+    # the payload goes, its line stays: line numbers keep their meaning
+    text = EMBEDDED_DATA.sub(r"\1", text)
     if not anything.search(text):
         return
     for number, line in enumerate(text.splitlines(), 1):
@@ -560,6 +568,12 @@ def self_test() -> int:
     check("a damaged journal says so", not Identifiers(set()).journal("[1, 2"))
     leaked = "see mod 2207, file 2391 (Rk4vLmN2Q)"
     check("a leaked sqid and ids are hits", len(list(hits_in(leaked, found.patterns(), any_of(found.patterns())))) == 3)
+    font = "src:url(data:font/woff2;base64,d09GMgAB2207qQ+/2391x=) format('woff2');"
+    check("an embedded font's payload is never read", not list(hits_in(font, found.patterns(), any_of(found.patterns()))))
+    check(
+        "what follows a payload on its line still counts",
+        list(hits_in(font + " mod 2207", found.patterns(), any_of(found.patterns()))) == [(1, "Nexus mod id")],
+    )
 
     # the tip: a retired word committed at HEAD but edited away on disk still counts
     retired = forbidden_patterns(["Quillborne", "qbm"])
