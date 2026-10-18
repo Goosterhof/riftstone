@@ -22,7 +22,7 @@
 // - running: Dragon's Dogma 2 runs, and the engine's rules bite: pak
 //   uninstalls, reorders and switches are refused in the engine's own words,
 //   installs land with a gameRunning warning and need a restart.
-// - nxmother: another program (OtherManager.exe) answers nxm:// links.
+// - nxmother: another program (Wagonmaster.exe, #00015 R16.24) answers nxm:// links.
 // - nocreations keeps every package and strips every option: the library with
 //   nothing to fold the trouble over (§8.1.1).
 //

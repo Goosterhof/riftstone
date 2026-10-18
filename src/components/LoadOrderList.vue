@@ -307,9 +307,6 @@ function onPointerUp(): void {
 .lrow__gone {
   font: 400 var(--rs-text-sm) var(--rs-font-sans);
 }
-.is-warn {
-  color: var(--rs-warn);
-}
 .is-world {
   color: var(--rs-world);
 }

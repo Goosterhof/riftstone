@@ -213,7 +213,8 @@ defineExpose({ focusCard, focusTree });
               · {{ plural(library.packages, "package") }} · {{ plural(library.options, "option") }}</span
             >
           </p>
-          <div class="rift__tools">
+          <!-- no package, or no folder: no tree to open or fold -->
+          <div v-if="!empty && !modsMissing" class="rift__tools">
             <RiftButton size="sm" @click="libraryTree?.expandAll()">Expand all</RiftButton>
             <RiftButton size="sm" @click="tree.collapseAll()">Collapse all</RiftButton>
           </div>

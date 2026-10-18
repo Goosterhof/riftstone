@@ -34,7 +34,7 @@ const onItsWay = computed(() => dl.unfinishedFor(null, modId, file.fileId) !== n
 const heldBack = computed(() => {
   if (!canDownload.value)
     return nexus.standing.value === "none"
-      ? "Add your Nexus key in PREFLIGHT to download from the stone."
+      ? "Add your Nexus key to download from the stone."
       : "Nexus has not accepted the key this session.";
   return onItsWay.value ? HELD_WHILE_DOWNLOADING : null;
 });

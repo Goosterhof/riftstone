@@ -14,7 +14,7 @@
 // AND underline, HitText). The player picks; Link this links and runs the
 // check, so labels arrive at once. Nothing here moves the focus onto a button
 // that sends: a press the player did not make must never send a name.
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { NexusCandidate, NexusFileView, UpdateRow } from "@/types/rift";
 import { HELD_WHILE_DOWNLOADING, landedPath, useDownloads } from "@/composables/useDownloads";
 import { useNexusAccount } from "@/composables/useNexusAccount";
@@ -43,7 +43,9 @@ const preflight = usePreflight();
 
 const linkText = ref("");
 const keyText = ref("");
-const keyOpen = ref(false);
+/** The ACCOUNT section's key form: the far world's own, which every key door
+ *  in the window opens (useFarWorld().openKeyForm). */
+const keyOpen = far.keyFormOpen;
 
 /** §9: the offline notice says how old the status below is. The voice can't
  *  know (it maps a failure); the page does, so it dates the empathy line. */
@@ -187,7 +189,7 @@ async function recoverFind(packageId: string, kind: RecoveryKind): Promise<void>
   if (kind === "rescan") {
     far.setFind(packageId, null);
     await stone.startScan();
-  } else if (kind === "replaceKey") keyOpen.value = true;
+  } else if (kind === "replaceKey") await far.openKeyForm();
   else if (kind === "retry") await findOne(packageId);
   else far.setFind(packageId, null);
 }
@@ -334,11 +336,22 @@ async function removeKey(): Promise<void> {
   keyOpen.value = false;
 }
 
+/** Every key door on this page (Paste key…, Replace key…, a notice's Add key…,
+ *  the shelf's) is the window's one key door: the ACCOUNT form open, its
+ *  password field focused. */
 async function replaceKey(): Promise<void> {
-  keyOpen.value = true;
-  await nextTick();
-  document.querySelector<HTMLInputElement>("#far-account input[type=password]")?.focus();
+  await far.openKeyForm();
 }
+
+// A key door pressed while a mod's FILES fills the page (its own Add key…, or
+// a refused link's toast): the files give way to the far world's scroll, so
+// the form the door opens is there to take the focus.
+watch(
+  () => far.keyDoorPresses.value,
+  () => {
+    filesOf.value = null;
+  },
+);
 
 // The standings are the connected account's: a key that changes hands (even
 // from one connected account to another) forgets the old account's and reads
@@ -376,6 +389,10 @@ onMounted(() => {
   void far.load();
   void dl.load();
   void nexus.followAccount();
+});
+// The form is the page's: leaving the far world closes it, as it always did.
+onBeforeUnmount(() => {
+  keyOpen.value = false;
 });
 </script>
 
@@ -443,7 +460,7 @@ onMounted(() => {
           v-else-if="keyState === 'none'"
           inscription="THE FAR WORLD IS SILENT"
           size="md"
-          body="Add your Nexus Mods personal API key and the stone will check your linked mods for updates, show your account, and download, track and endorse mods for you. It stays on this PC. Browsing Nexus works without it."
+          body="Add your Nexus Mods personal API key and the stone will show your account, and download, track and endorse mods for you. It stays on this PC. Update checks and browsing Nexus work without it."
         />
         <RiftInscription
           v-else-if="keyState === 'rejected'"

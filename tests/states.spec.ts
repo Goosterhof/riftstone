@@ -21,6 +21,9 @@ describe("the voiced states (§9)", () => {
     // nothing to sort or group over an empty library
     expect(document.querySelector(".rift__sort")).toBeNull();
     expect(text()).not.toContain("Group by package");
+    // and no tree to open or fold: Expand all and Collapse all wait for a package
+    expect(hasButton("Expand all")).toBe(false);
+    expect(hasButton("Collapse all")).toBe(false);
     const opens = vi.spyOn(spine(), "openModsFolder");
     button("Open mods folder").click();
     await until(() => opens.mock.calls.length === 1, "the folder opened");
@@ -39,6 +42,9 @@ describe("the voiced states (§9)", () => {
       "The stone couldn't find or make its mods folder at <install dir>\\mods. It needs a folder named mods beside riftstone.exe that it may write to.",
     );
     expect(hasButton("Open mods folder")).toBe(false);
+    // no folder, no tree: nothing to expand or collapse
+    expect(hasButton("Expand all")).toBe(false);
+    expect(hasButton("Collapse all")).toBe(false);
     const scans = vi.spyOn(spine(), "rescan");
     button("Scan again").click();
     await until(() => scans.mock.calls.length === 1, "a scan asked for");
@@ -59,6 +65,8 @@ describe("the voiced states (§9)", () => {
       ["Open mods folder", true],
     ]);
     expect(hasButton("Scan again")).toBe(false);
+    expect(hasButton("Expand all")).toBe(false);
+    expect(hasButton("Collapse all")).toBe(false);
     const opens = vi.spyOn(spine(), "openModsFolder");
     button("Open mods folder").click();
     await until(() => opens.mock.calls.length === 1, "the folder made again");
@@ -75,6 +83,21 @@ describe("the voiced states (§9)", () => {
     // every install stays uninstallable from the journal: a door on each
     expect(document.querySelectorAll("[aria-label^='Uninstall ']").length).toBe(7);
     expect(text()).toContain("its package isn't in your mods folder");
+  });
+
+  it("should draw each gone package's line in Alegreya 14, faint, as R16.26 rules it", async () => {
+    await wakeOn("emptymods");
+    useNavigation().go("world");
+    await until(() => document.querySelectorAll(".home__gone").length > 0, "the lines of packages gone");
+    for (const line of document.querySelectorAll(".home__gone")) {
+      expect(textOf(line)).toContain("its package isn't in your mods folder");
+    }
+    const source = Object.values(
+      import.meta.glob<string>("../src/pages/InstalledPage.vue", { query: "?raw", import: "default", eager: true }),
+    ).join("");
+    const rule = /\n\.home__gone \{([^}]*)\}/.exec(source)?.[1] ?? "";
+    expect(rule).toContain("font: 400 var(--rs-text-sm) var(--rs-font-sans);");
+    expect(rule).toContain("color: var(--rs-faint);");
   });
 
   it("should draw the mods folder as Preflight's own row, with the spine's empty-folder check inside it", async () => {
@@ -192,6 +215,9 @@ describe("the voiced states (§9)", () => {
     await wakeOn();
     // v0.3: the idle Rift is the library tree (§16.1)
     await until(() => document.querySelector('#rift-tree [role="treeitem"]') !== null, "the library");
+    // a library with its folder: the tree header's tools are drawn
+    expect(hasButton("Expand all")).toBe(true);
+    expect(hasButton("Collapse all")).toBe(true);
     for (const line of ["THE RIFT IS QUIET", "NO WORLD ANSWERS", "READING THE RIFT", "YOUR WORLD HAS CHANGED"]) {
       expect(text()).not.toContain(line);
     }

@@ -7,7 +7,6 @@
 // into the mods folder came to.
 
 import type {
-  DownloadPhase,
   DownloadView,
   LaunchWarning,
   NexusLabels,
@@ -241,18 +240,6 @@ export function launchWarningLine(warning: LaunchWarning): string {
 // ---------------------------------------------------------------------------
 // v0.3 — downloads into the mods folder
 // ---------------------------------------------------------------------------
-
-/** Each phase in a word or three, for a row or a screen reader. */
-export const DOWNLOAD_PHASE_WORD: Record<DownloadPhase, string> = {
-  waiting: "waiting for the site's link",
-  queued: "queued",
-  linking: "asking Nexus for a link",
-  downloading: "downloading",
-  verifying: "checking the file",
-  landed: "in your mods folder",
-  failed: "failed",
-  cancelled: "cancelled",
-};
 
 /** A download's name as the player knows it: the file's Nexus name, else the mod's. */
 export function downloadName(d: Pick<DownloadView, "fileName" | "modName" | "modId" | "fileId">): string {

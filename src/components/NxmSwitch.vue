@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // R16.24 — the nxm switch, the ACCOUNT card's last row. One switch whose
-// accessible name never changes; its state a mono word at the right (ON in
+// accessible name never changes; its state a plain mono word at the right, no
+// chip (ON in
 // the Rift's cyan, OFF muted: off is a legitimate choice, never a warning);
 // under it one line saying who answers Nexus's Mod Manager Download button now
 // and who gets it back. The stone never turns it on by itself.
@@ -20,7 +21,7 @@ const why = computed(() => {
     return `The stone answers it now. Turning this off gives it back to ${h.givesBackTo ?? "no program"}.`;
   if (h.state === "none") return "No program answers it now.";
   if (h.state === "other")
-    return `${h.other ?? "Another program"} answers it now. The stone remembers it and gives it back when you turn this off.`;
+    return `${h.other ?? "Another program"} answers it now. Turn this on and the stone remembers it, and gives it back when you turn this off.`;
   return "Only on Windows.";
 });
 
@@ -84,19 +85,16 @@ onMounted(() => {
   outline: 2px solid var(--rs-rift);
   outline-offset: 2px;
 }
+/* a plain mono word, never a chip: no border, padding or radius */
 .nxm__state {
   min-width: 3ch;
-  padding: 2px 6px;
-  border: 1px solid var(--rs-edgehi);
-  border-radius: var(--rs-radius-chip);
   color: var(--rs-muted);
   font-size: var(--rs-text-xs);
   font-weight: 600;
   letter-spacing: 0.04em;
-  text-align: center;
+  text-align: right;
 }
 .nxm__state.is-on {
-  border-color: var(--rs-rift);
   color: var(--rs-rift);
 }
 .nxm__why {

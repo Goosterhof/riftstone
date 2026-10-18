@@ -439,6 +439,11 @@ async function putBack(store: string, index: number): Promise<void> {
 .home__dim {
   color: var(--rs-faint);
 }
+/* R16.26: a package no longer in the mods folder, said in Alegreya 14, faint */
+.home__gone {
+  font: 400 var(--rs-text-sm) var(--rs-font-sans);
+  color: var(--rs-faint);
+}
 /* PAK LOAD PROOF: the pak's own name is the datum, so it keeps its full width
    and the slot line wraps under it instead of squeezing it to "zrif…". */
 .home__row--proof .home__name {

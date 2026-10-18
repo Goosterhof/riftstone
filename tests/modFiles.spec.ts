@@ -30,6 +30,9 @@ async function openFarWorld(scene: Scene = ""): Promise<void> {
 const lanternFiles = (): HTMLButtonElement | null =>
   document.querySelector<HTMLButtonElement>('[aria-label="Files of Lantern Glow Recolor on Nexus"]');
 const filesView = (): HTMLElement | null => document.querySelector<HTMLElement>("[data-mod-files]");
+/** THE FAR WORLD's key field, in the ACCOUNT section's form: where every key door leads. */
+const keyField = (): HTMLInputElement | null =>
+  document.querySelector<HTMLInputElement>("#far-account input[type=password]");
 const fileRow = (fileId: number): HTMLElement =>
   must(document.querySelector<HTMLElement>(`[data-mod-files] [data-file="${fileId}"]`), `file ${fileId}`);
 
@@ -87,7 +90,7 @@ describe("a mod's files", () => {
     expect(download.disabled).toBe(false);
     expect(download.getAttribute("aria-disabled")).toBe("true");
     const why = must(document.getElementById(download.getAttribute("aria-describedby") ?? ""), "the reason");
-    expect(textOf(why).trim()).toBe("Add your Nexus key in PREFLIGHT to download from the stone.");
+    expect(textOf(why).trim()).toBe("Add your Nexus key to download from the stone.");
     download.focus();
     expect(document.activeElement).toBe(download);
     const started = vi.spyOn(spine(), "startDownload");
@@ -98,6 +101,20 @@ describe("a mod's files", () => {
     expect(hasButton("‹ The far world")).toBe(true);
     button("‹ The far world").click();
     await until(() => filesView() === null, "the far world again");
+  });
+
+  it("should say what the key adds above a keyless mod's files, and open the far world's key form on Add key…", async () => {
+    await openFarWorld();
+    await openLanternFiles();
+    const nokey = must(document.querySelector<HTMLElement>("[data-mod-files] .files__nokey"), "the keyless line");
+    expect(textOf(must(nokey.querySelector("p"), "its sentence")).trim()).toBe(
+      "Add your Nexus key to download from the stone.",
+    );
+    buttonIn(nokey, "Add key…").click();
+    // the files give way to the far world's scroll: its ACCOUNT form open, its field focused
+    await until(() => filesView() === null, "the far world's scroll again");
+    await until(() => keyField() !== null && document.activeElement === keyField(), "the key field, focused");
+    expect(useNavigation().page.value).toBe("nexus");
   });
 
   it("should hold a file's Download while that very file is on its way, saying so, and leave the mod's other files free", async () => {

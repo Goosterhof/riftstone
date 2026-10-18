@@ -44,6 +44,10 @@ const candidatesOf = (name: string): HTMLOListElement | null =>
 
 const toastLines = (): string[] => useToasts().toasts.value.map((t) => t.line);
 
+/** THE FAR WORLD's key field, in the ACCOUNT section's form: where every key door leads. */
+const keyField = (): HTMLInputElement | null =>
+  document.querySelector<HTMLInputElement>("#far-account input[type=password]");
+
 async function openFarWorld(scene: Scene = ""): Promise<void> {
   await wakeOn(scene);
   useNavigation().go("nexus");
@@ -375,6 +379,30 @@ describe("Find on Nexus", () => {
     },
     SLOW_TEST_MS,
   );
+
+  it("should open the far world's key form, its field focused, from a row failure's key door", async () => {
+    await openFarWorld();
+    const id = idOf("Ox Cart Express");
+    // a link that Nexus refused for the key lands on the row (useFarWorld.linkCandidate)
+    useFarWorld().setFind(id, {
+      status: "failed",
+      failure: voice(
+        new RiftFailure({
+          kind: "nexus",
+          detail: { detail: "Nexus Mods did not accept the API key.", reason: "keyRejected" },
+        }),
+        "nexusLink",
+      ),
+    });
+    const row = (): HTMLElement => document.getElementById(`far-row-${id}`) as HTMLElement;
+    await until(() => textOf(row()).includes("Replace key…"), "the row's key door");
+    const door = [...row().querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      textOf(b).includes("Replace key…"),
+    );
+    door?.click();
+    await until(() => keyField() !== null && document.activeElement === keyField(), "the key field, focused");
+    expect(document.activeElement).toBe(keyField());
+  });
 
   it("should voice a refused anonymous find without any key talk, and its button retries", async () => {
     await openFarWorld();

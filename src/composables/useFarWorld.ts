@@ -9,7 +9,7 @@
 // by mod id names no file: the check pins one only where the spine can (a file
 // id, sqid, upload stamp or version to match), and the toast says which.
 
-import { computed, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 import type {
   Md5Result,
   NexusBrowseSort,
@@ -23,6 +23,7 @@ import { asRiftFailure, rift } from "@/services/rift";
 import { quotaProbe, type NexusQuota } from "@/services/pending";
 import { plural } from "@/services/format";
 import { farCaseOf, voice, voicedLine, type FarCase, type Voiced } from "@/services/voice";
+import { useNavigation } from "./useNavigation";
 import { useToasts } from "./useToasts";
 import { useStone } from "./useStone";
 
@@ -375,6 +376,30 @@ const keyRefused = computed(() => keyFailureCase.value === "keyRejected");
 /** The last paste never reached Nexus (the chip reads OFFLINE, nothing was stored). */
 const keyUnreached = computed(() => keyFailureCase.value === "offline");
 
+// ---------------------------------------------------------------------------
+// The key's one door
+// ---------------------------------------------------------------------------
+
+/** THE FAR WORLD's key form (its ACCOUNT section) is open. */
+const keyFormOpen = ref(false);
+/** Counts the presses of the key's door: at each one THE FAR WORLD gives way
+ *  to its scroll (a mod's FILES closes), so the form can take the focus. */
+const keyDoorPresses = ref(0);
+
+/** The key's one door, wherever the key is the way out: a mod's FILES without
+ *  one (Add key…), a refused nxm link's toast (the voice's Add key… or
+ *  Replace key…), and the far world's own Paste key… and Replace key…. From
+ *  any room it goes to THE FAR WORLD, waits for the page to be drawn, opens
+ *  the ACCOUNT section's key form and puts the focus in its password field. */
+async function openKeyForm(): Promise<void> {
+  useNavigation().go("nexus");
+  keyFormOpen.value = true;
+  keyDoorPresses.value += 1;
+  // the room changes, and the form opens, at the next render
+  await nextTick();
+  document.querySelector<HTMLInputElement>("#far-account input[type=password]")?.focus();
+}
+
 export function useFarWorld() {
   return {
     updates,
@@ -417,6 +442,9 @@ export function useFarWorld() {
     browseFailure,
     browseHasMore,
     browse,
+    keyFormOpen,
+    keyDoorPresses,
+    openKeyForm,
     onProgress: (event: UpdatesProgressEvent) => (progress.value = event),
   };
 }
@@ -444,4 +472,6 @@ export function resetFarWorld(): void {
   browsing.value = null;
   browseFailure.value = null;
   browseSeq = 0;
+  keyFormOpen.value = false;
+  keyDoorPresses.value = 0;
 }

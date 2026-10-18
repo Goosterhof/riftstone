@@ -28,6 +28,10 @@ const sorts = (): string[] =>
 
 const nxmLine = (): string => textOf(document.getElementById("nxm-why") ?? document.body).trim();
 
+/** THE FAR WORLD's key field, in the ACCOUNT section's form: where every key door leads. */
+const keyField = (): HTMLInputElement | null =>
+  document.querySelector<HTMLInputElement>("#far-account input[type=password]");
+
 afterEach(() => {
   sleep();
   vi.restoreAllMocks();
@@ -91,8 +95,37 @@ describe("The far world v0.3", () => {
     await openFarWorld(["key", "nxmother"].join(",") as Scene);
     await until(() => nxmLine().startsWith(MOCK_OTHER_HANDLER), "the switch at other");
     expect(nxmLine()).toBe(
-      `${MOCK_OTHER_HANDLER} answers it now. The stone remembers it and gives it back when you turn this off.`,
+      `${MOCK_OTHER_HANDLER} answers it now. Turn this on and the stone remembers it, and gives it back when you turn this off.`,
     );
+  });
+
+  it("should promise only what the key adds while the stone holds none, never the update checks that need none", async () => {
+    await openFarWorld();
+    await until(() => text().includes("THE FAR WORLD IS SILENT"), "the keyless account");
+    expect(text()).toContain(
+      "Add your Nexus Mods personal API key and the stone will show your account, and download, track and endorse mods for you. It stays on this PC. Update checks and browsing Nexus work without it.",
+    );
+    // the update check is anonymous (RS-6): a key never brings it
+    expect(text()).not.toContain("check your linked mods for updates");
+  });
+
+  it("should draw the switch's state as a plain mono word: no border, padding or radius, ON cyan and OFF muted (R16.24)", () => {
+    const source = Object.values(
+      import.meta.glob<string>("../src/components/NxmSwitch.vue", { query: "?raw", import: "default", eager: true }),
+    ).join("");
+    expect(source).toContain('class="nxm__state rs-mono"');
+    const word = /\n\.nxm__state \{([^}]*)\}/.exec(source)?.[1] ?? "";
+    const on = /\n\.nxm__state\.is-on \{([^}]*)\}/.exec(source)?.[1] ?? "";
+    expect(word).not.toMatch(/border|padding|radius/);
+    for (const kept of [
+      "color: var(--rs-muted);",
+      "font-size: var(--rs-text-xs);",
+      "font-weight: 600;",
+      "letter-spacing: 0.04em;",
+    ]) {
+      expect(word).toContain(kept);
+    }
+    expect(on.trim()).toBe("color: var(--rs-rift);");
   });
 
   it("should send the field's words only on Search, and append the next page on Show 20 more", async () => {
@@ -679,7 +712,7 @@ describe("The far world v0.3: the key's work", () => {
     await until(() => sw.getAttribute("aria-checked") === "false", "the switch off");
     expect(word()).toBe("OFF");
     expect(nxmLine()).toBe(
-      `${MOCK_OTHER_HANDLER} answers it now. The stone remembers it and gives it back when you turn this off.`,
+      `${MOCK_OTHER_HANDLER} answers it now. Turn this on and the stone remembers it, and gives it back when you turn this off.`,
     );
     expect(toastLines()).toContain(`nxm:// links go back to ${MOCK_OTHER_HANDLER}.`);
     expect(set.mock.calls).toStrictEqual([[true], [false]]);
@@ -1108,15 +1141,48 @@ describe("The far world v0.3: what the stone says of an arriving link", () => {
     expect(opened.mock.calls).toStrictEqual([[LANTERN_PAGE, "_blank", "noopener"]]);
   });
 
-  it("should offer Open Preflight beside the file's page when the stone holds no key", async () => {
+  it("should offer the voice's Add key… beside the file's page when the stone holds no key, and open the far world's key form from another room", async () => {
     await openFarWorld();
     await until(() => text().includes("THE FAR WORLD IS SILENT"), "the keyless account");
     spine().deliverNxm(`nxm://dragonsdogma2/mods/412/files/2391?key=invented&expires=${later()}`);
     await until(() => toastOf(NO_KEY_LINE) !== undefined, "the refusal");
     const toast = must(toastOf(NO_KEY_LINE), "toast");
-    expect(toast.actions.map((a) => a.label)).toStrictEqual(["Open on Nexus", "Open Preflight"]);
-    await useToasts().act(toast, must(toast.actions.at(1), "Open Preflight"));
-    expect(useNavigation().page.value).toBe("preflight");
+    expect(toast.actions.map((a) => a.label)).toStrictEqual(["Open on Nexus", "Add key…"]);
+    // the player walked on to the Rift before pressing it
+    useNavigation().go("rift");
+    await until(() => document.getElementById("far-account") === null, "the Rift");
+    await useToasts().act(toast, must(toast.actions.at(1), "Add key…"));
+    expect(useNavigation().page.value).toBe("nexus");
+    await until(() => keyField() !== null && document.activeElement === keyField(), "the key field, focused");
+  });
+
+  it("should open the same key form from PREFLIGHT's NEXUS KEY row, never only the far world's top", async () => {
+    await wakeOn();
+    useNavigation().go("preflight");
+    await until(() => text().includes("NEXUS KEY"), "PREFLIGHT's NEXUS KEY row");
+    const row = must(
+      [...document.querySelectorAll<HTMLElement>(".pre__sec")].find((s) => textOf(s).includes("NEXUS KEY")),
+      "the NEXUS KEY section",
+    );
+    must(row.querySelector<HTMLButtonElement>("button"), "its Add").click();
+    await until(() => keyField() !== null && document.activeElement === keyField(), "the key field, focused");
+    expect(useNavigation().page.value).toBe("nexus");
+  });
+
+  it("should offer Replace key… for a link made for another account, and open the same form from another room", async () => {
+    await openFarWorld("key");
+    await until(() => keyChip() === "CONNECTED", "the connected account");
+    const line =
+      "That link was made for a different Nexus account than the key in the stone. Nothing was downloaded. Sign in to Nexus with that key's account, or replace the key, then press Mod Manager Download again.";
+    spine().deliverNxm(`nxm://dragonsdogma2/mods/412/files/2391?key=invented&expires=${later()}&user_id=1`);
+    await until(() => toastOf(line) !== undefined, "the refusal");
+    const toast = must(toastOf(line), "toast");
+    expect(toast.actions.map((a) => a.label)).toStrictEqual(["Open on Nexus", "Replace key…"]);
+    useNavigation().go("world");
+    await until(() => document.getElementById("far-account") === null, "Your World");
+    await useToasts().act(toast, must(toast.actions.at(1), "Replace key…"));
+    expect(useNavigation().page.value).toBe("nexus");
+    await until(() => keyField() !== null && document.activeElement === keyField(), "the key field, focused");
   });
 
   it("should give a link that names no file of this game nothing to open, and no key to fix", async () => {

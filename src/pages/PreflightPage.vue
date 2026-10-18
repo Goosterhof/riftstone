@@ -8,14 +8,15 @@ import { computed } from "vue";
 import type { Check, VeilMode } from "@/types/rift";
 import { useStone } from "@/composables/useStone";
 import { useSettings } from "@/composables/useSettings";
-import { useNavigation } from "@/composables/useNavigation";
+import { useFarWorld } from "@/composables/useFarWorld";
 import { usePreflight, REFRAMEWORK_URL } from "@/composables/usePreflight";
 import { plural } from "@/services/format";
 import RiftButton from "@/components/RiftButton.vue";
 import RiftInscription from "@/components/RiftInscription.vue";
 
 const stone = useStone();
-const nav = useNavigation();
+/** The NEXUS KEY row's Add / Replace: the window's one key door (THE FAR WORLD's ACCOUNT form, its field focused). */
+const { openKeyForm } = useFarWorld();
 const preflight = usePreflight();
 const { settings, setVeil, setAutoCheck } = useSettings();
 
@@ -248,7 +249,7 @@ const modsLine = computed(() => {
               ? "•••••••••••• (stored in Windows Credential Manager)"
               : "none — update checks run without one"
           }}</span>
-          <RiftButton size="sm" @click="nav.go('nexus')">{{ o?.nexus.hasApiKey ? "Replace" : "Add" }}</RiftButton>
+          <RiftButton size="sm" @click="openKeyForm()">{{ o?.nexus.hasApiKey ? "Replace" : "Add" }}</RiftButton>
         </li>
       </ul>
     </section>

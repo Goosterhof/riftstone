@@ -10,8 +10,8 @@ import { MOCK_DAY, MOCK_NOW } from "./library";
 export const MOCK_ACCOUNT_NAME = "Arisen of Vernworth";
 /** Its user id, as validate.json would give it; an nxm link carrying another is refused. */
 export const MOCK_USER_ID = 7_700_123;
-/** Another program's exe, for the handler scene `nxmother`. */
-export const MOCK_OTHER_HANDLER = "OtherManager.exe";
+/** Another program's exe, for the handler scene `nxmother` (#00015 R16.24). */
+export const MOCK_OTHER_HANDLER = "Wagonmaster.exe";
 /** A mod the mock account authored: endorsing it is refused (endorseOwnMod). */
 export const MOCK_OWN_MOD = 7310;
 

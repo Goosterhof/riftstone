@@ -123,17 +123,20 @@ function nxmRefusalLine(voiced: Voiced): string {
   return voiced.kind === "refused" ? line.replace(/^The stone held back: /, "") : line;
 }
 
-/** §9 Nexus link refused's doors: Open on Nexus, and Open Preflight when the
- *  key is the way out (none stored, refused, or another account's: the voice
- *  offers Add key… or Replace key…, both of kind replaceKey). A link that
- *  names no file of this game (another game, a collection, an unreadable
- *  link: its ids are null) has no page here to open. */
+/** §9 Nexus link refused's doors: Open on Nexus, and the voice's own key door
+ *  when the key is the way out (none stored, refused, or another account's:
+ *  the voice offers Add key… or Replace key…, both of kind replaceKey), under
+ *  the voice's own label. That door is the window's one key door
+ *  (useFarWorld().openKeyForm): from any room it goes to THE FAR WORLD, waits
+ *  for the page, opens its ACCOUNT section's key form and puts the focus in
+ *  the password field. A link that names no file of this game (another game,
+ *  a collection, an unreadable link: its ids are null) has no page here to open. */
 function nxmRefusalActions(voiced: Voiced, event: Pick<NxmReceivedEvent, "modId" | "fileId">): ToastAction[] {
   const actions: ToastAction[] = [];
   const { modId, fileId } = event;
   if (modId !== null) actions.push({ label: "Open on Nexus", run: () => openRefusedOnNexus(modId, fileId) });
-  if (voiced.recovery.some((r) => r.kind === "replaceKey"))
-    actions.push({ label: "Open Preflight", run: () => useNavigation().go("preflight") });
+  const key = voiced.recovery.find((r) => r.kind === "replaceKey");
+  if (key) actions.push({ label: key.label, run: () => useFarWorld().openKeyForm() });
   return actions;
 }
 

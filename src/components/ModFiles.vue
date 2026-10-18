@@ -4,11 +4,14 @@
 // per category in the wire's order; the retired ones (old versions, removed,
 // archived) fold closed under one "Older files" disclosure, which opens them
 // below itself, in the region it controls. Each file is a ModFileRow, with
-// Download on every row (held back but reachable without a key).
+// Download on every row (held back but reachable without a key). Without a
+// key, a line above the files says so, and its Add key… is the window's one
+// key door: THE FAR WORLD's ACCOUNT form, its field focused (the files give way).
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId } from "vue";
 import type { NexusFileCategory, NexusFileEntry, NexusModFiles } from "@/types/rift";
 import { asRiftFailure, rift } from "@/services/rift";
 import { voice, type Voiced } from "@/services/voice";
+import { useFarWorld } from "@/composables/useFarWorld";
 import { useNexusAccount } from "@/composables/useNexusAccount";
 import { usePreflight } from "@/composables/usePreflight";
 import FailureNotice from "./FailureNotice.vue";
@@ -23,6 +26,7 @@ const {
 } = defineProps<{ modId: number; name?: string | null; forPackageId?: string | null }>();
 const emit = defineEmits<{ back: [] }>();
 
+const far = useFarWorld();
 const nexus = useNexusAccount();
 const preflight = usePreflight();
 
@@ -102,7 +106,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
     <p v-else-if="loading && !files" class="files__dim rs-mono" role="status">asking Nexus for the files…</p>
 
     <template v-if="files">
-      <p v-if="keyless" class="files__nokey">Add your Nexus key in PREFLIGHT to download from the stone.</p>
+      <div v-if="keyless" class="files__nokey">
+        <p>Add your Nexus key to download from the stone.</p>
+        <RiftButton size="sm" @click="far.openKeyForm()">Add key…</RiftButton>
+      </div>
       <p v-if="!files.files.length" class="files__dim">Nexus lists no files for this mod.</p>
 
       <template v-for="group in live" :key="group.category">
@@ -210,7 +217,14 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   outline-offset: 2px;
 }
 .files__nokey {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rs-space-3);
   margin: var(--rs-space-3) 0 0;
   color: var(--rs-text);
+}
+.files__nokey p {
+  margin: 0;
 }
 </style>

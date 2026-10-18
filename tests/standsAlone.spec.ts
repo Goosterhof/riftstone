@@ -1,8 +1,9 @@
-// v0.3 (BUILD-SPEC § v0.3, ruling 1): the stone stands alone. The mod manager
-// it once lived beside is named nowhere in the repo's text: not in code,
-// comments, identifiers, test names, fixtures, strings or docs. This sweep
-// reads every source file of the window (src/), every spec and the bench they
-// stand on (tests/), the page around them (index.html) and its style config,
+// v0.3 (BUILD-SPEC § v0.3, ruling 1): the stone stands alone, with no
+// reference to other mod managers. The forbidden words stand nowhere in the
+// repo's text: not in code, comments, identifiers, test names, fixtures,
+// strings or docs. This sweep reads every source file of the window (src/),
+// every spec and the bench they stand on (tests/), the page around them
+// (index.html) and its style config,
 // the docs (docs/, README.md, CLAUDE.md), the privacy sweep (scripts/) and
 // every Rust file of the spine and the crates, so CI and a fresh clone check
 // what the machine-local sweep checks. It builds the words it looks for from
@@ -31,11 +32,11 @@ const SOURCES = import.meta.glob<string>(
 
 const word = (...codes: number[]): string => String.fromCharCode(...codes);
 
-/** The old manager's name anywhere (inside identifiers too), and its initials
- *  as a word of their own; case-blind. */
-const OLD_NAME = word(102, 108, 117, 102, 102, 121);
-const OLD_INITIALS = word(102, 109, 109);
-const FORBIDDEN = new RegExp(`${OLD_NAME}|\\b${OLD_INITIALS}\\b`, "i");
+/** The forbidden words: the first anywhere (inside identifiers too), the
+ *  second only as a word of its own; case-blind. */
+const FIRST_WORD = word(102, 108, 117, 102, 102, 121);
+const SECOND_WORD = word(102, 109, 109);
+const FORBIDDEN = new RegExp(`${FIRST_WORD}|\\b${SECOND_WORD}\\b`, "i");
 
 const upper = (s: string): string => s.toUpperCase();
 const title = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
@@ -97,19 +98,19 @@ describe("the stone stands alone", () => {
     expect(files.some((f) => f.startsWith("scripts/") && !f.endsWith(".py"))).toBe(false);
   });
 
-  it("should name the old manager nowhere: neither its name nor its initials, on any line", () => {
+  it("should carry none of the forbidden words", () => {
     expect(hitsIn(SOURCES)).toStrictEqual([]);
   });
 
-  it("should catch the name in any case and inside an identifier, and the initials only as a word", () => {
+  it("should catch the first word in any case and inside an identifier, and the second only as a word of its own", () => {
     expect(
       hitsIn({
-        "a.ts": `const shelf = "${title(OLD_NAME)} Mods";`,
-        "b.ts": `function read${title(OLD_NAME)}Ledger(): void {}`,
-        "c.vue": `<p>${upper(OLD_NAME)}</p>`,
-        "d.ts": `// ${upper(OLD_INITIALS)} named it`,
-        "e.ts": `const label = "${OLD_INITIALS}-adopted";`,
-        "f.ts": "const offmmap = readOffsetMap();\nconst fine = true;",
+        "a.ts": `const shelf = "${title(FIRST_WORD)} Mods";`,
+        "b.ts": `function read${title(FIRST_WORD)}Ledger(): void {}`,
+        "c.vue": `<p>${upper(FIRST_WORD)}</p>`,
+        "d.ts": `// ${upper(SECOND_WORD)} named it`,
+        "e.ts": `const label = "${SECOND_WORD}-adopted";`,
+        "f.ts": `const of${SECOND_WORD}ap = readOffsetMap();\nconst fine = true;`,
       }),
     ).toStrictEqual(["a.ts:1", "b.ts:1", "c.vue:1", "d.ts:1", "e.ts:1"]);
   });
