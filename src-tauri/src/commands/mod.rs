@@ -22,6 +22,7 @@ pub mod browse;
 pub mod deploy;
 pub mod downloads;
 pub mod library;
+pub mod muster;
 pub mod nexus;
 pub mod nxm;
 pub mod overview;

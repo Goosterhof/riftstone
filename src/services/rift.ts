@@ -18,6 +18,8 @@ import type {
   LibraryView,
   Md5Result,
   LabelFacets,
+  MusterSlotsView,
+  MusterView,
   NexusBrowsePage,
   NexusBrowseQuery,
   NexusFindings,
@@ -56,6 +58,7 @@ const ERROR_KINDS: ReadonlySet<string> = new Set([
   "refused",
   "journal",
   "nexus",
+  "save",
   "io",
 ]);
 
@@ -171,6 +174,12 @@ export interface RiftBackend {
   restoreParked(store: string): Promise<ParkedRestoreReport>;
   /** v0.2: delete a parked file from the backup store for good. */
   discardParked(store: string): Promise<void>;
+  /** v0.4: every save slot that holds a party, newest first. */
+  getMusterSlots(): Promise<MusterSlotsView>;
+  /** v0.4: the whole party of one slot; a slot that will not open rejects with a `save` error. */
+  getMuster(slotId: string): Promise<MusterView>;
+  /** v0.4: open the slot's save folder in Explorer, Rust-side (its path stays out of the window). */
+  openSavesFolder(slotId: string): Promise<void>;
   /** Subscribe to a backend event; resolves to an unsubscribe function. */
   on<T>(event: RiftEvent, handler: (payload: T) => void): Promise<() => void>;
   openUrl(url: string): Promise<void>;
@@ -238,6 +247,9 @@ async function tauriBackend(): Promise<RiftBackend> {
     getLabels: () => invoke("get_labels"),
     restoreParked: (store) => invoke("restore_parked", { store }),
     discardParked: (store) => invoke("discard_parked", { store }),
+    getMusterSlots: () => invoke("get_muster_slots"),
+    getMuster: (slotId) => invoke("get_muster", { slotId }),
+    openSavesFolder: (slotId) => invoke("open_saves_folder", { slotId }),
     on: async (event, handler) => {
       const unlisten = await listen(event, (e) => {
         handler(e.payload as never);

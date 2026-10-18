@@ -309,6 +309,8 @@ pub struct AppState {
     watcher: Mutex<Option<LibraryWatcher>>,
     game: Arc<GameWord>,
     game_watching: AtomicBool,
+    /// v0.4: the Muster's slots, its parsed parties and the game's names.
+    pub(crate) muster: crate::muster::MusterState,
 }
 
 impl AppState {
@@ -419,6 +421,7 @@ impl AppState {
             watcher: Mutex::new(None),
             game: Arc::new(GameWord::new(running, now)),
             game_watching: AtomicBool::new(false),
+            muster: crate::muster::MusterState::default(),
             config,
         });
         state.recover_journal();
@@ -440,6 +443,7 @@ impl AppState {
             .spawn(move || {
                 me.watch_game();
                 me.arm_watcher();
+                crate::muster::wake(&me);
                 // When a scan already runs (the window's, the watcher's), that
                 // one is the startup scan: the auto-check waits for it, so it
                 // judges the library the scan found.
@@ -1218,6 +1222,11 @@ impl AppState {
 
     /// The game and its journal as they stand — an owned copy, so the caller
     /// reads the disk with no lock held.
+    /// v0.4: read exactly these save folders (tests and benches), nothing discovered.
+    pub fn fix_save_folders(&self, folders: Vec<rift_muster::saves::SaveFolder>) {
+        self.muster.fix_folders(folders);
+    }
+
     pub fn world(&self) -> World {
         read(&self.world).clone()
     }

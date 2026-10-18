@@ -48,6 +48,7 @@ const NAV: { id: Page; label: string; key: string }[] = [
   { id: "world", label: "YOUR WORLD", key: "2" },
   { id: "nexus", label: "NEXUS", key: "3" },
   { id: "preflight", label: "PREFLIGHT", key: "4" },
+  { id: "muster", label: "THE MUSTER", key: "5" },
 ];
 
 const seamState = computed(() => (stone.scanning.value ? "scanning" : search.seam.value));
@@ -63,6 +64,16 @@ const reach = computed(() =>
 /** Until the stone is awake (no game, first launch), the facets and the rooms
  *  are carved but dark: only the search well and the foot speak (§9 wake). */
 const awake = computed(() => stone.phase.value === "ready");
+
+/** R17.2: with no game found, THE MUSTER stays live (its saves live under
+ *  Steam), and THE RIFT with it while the Muster is open, as the way back to
+ *  NO WORLD ANSWERS. Every other room stays dark. */
+function roomLive(id: Page): boolean {
+  if (awake.value) return true;
+  if (stone.phase.value !== "nogame") return false;
+  return id === "muster" || (id === "rift" && nav.page.value === "muster");
+}
+const navLive = computed(() => NAV.some((n) => roomLive(n.id)));
 
 const carvedCount = computed(() => {
   if (stone.phase.value === "nogame") return "NO WORLD";
@@ -80,6 +91,7 @@ const navCount = computed<Record<Page, string | null>>(() => ({
   world: stone.overview.value?.game ? String(stone.overview.value.library.installedOptions) : null,
   nexus: farWorld.updateCount.value ? String(farWorld.updateCount.value) : null,
   preflight: null,
+  muster: null,
 }));
 
 function onType(value: string): void {
@@ -165,13 +177,14 @@ defineExpose({ focusSearch: () => well.value?.focus() });
       <FarWorldLabels />
     </div>
 
-    <nav class="pillar__nav" :class="{ 'is-dark': !awake }" :inert="!awake" aria-label="Rooms">
+    <nav class="pillar__nav" :class="{ 'is-dark': !navLive }" :inert="!navLive" aria-label="Rooms">
       <button
         v-for="n in NAV"
         :key="n.id"
         type="button"
         class="navlink"
-        :class="{ 'is-on': nav.page.value === n.id }"
+        :class="{ 'is-on': nav.page.value === n.id, 'is-dark': navLive && !roomLive(n.id) }"
+        :inert="navLive && !roomLive(n.id)"
         :aria-current="nav.page.value === n.id ? 'page' : undefined"
         @click="nav.go(n.id)"
       >
@@ -346,7 +359,8 @@ defineExpose({ focusSearch: () => well.value?.focus() });
   white-space: nowrap;
 }
 .pillar__facets.is-dark,
-.pillar__nav.is-dark {
+.pillar__nav.is-dark,
+.navlink.is-dark {
   opacity: 0.38;
 }
 .pillar__nav {

@@ -10,7 +10,15 @@
 // voice; the sentence's words are read only when no code came (an odd answer,
 // or an older spine), through the regexes the v0.2 voice used.
 
-import type { InstalledRow, NexusReason, PackageSummary, Problem, ProblemKind, RiftError } from "@/types/rift";
+import type {
+  InstalledRow,
+  NexusReason,
+  PackageSummary,
+  Problem,
+  ProblemKind,
+  RiftError,
+  SaveReason,
+} from "@/types/rift";
 import type { RiftFailure } from "./rift";
 
 /** What the user was doing when the failure struck. The specs walk every one
@@ -48,6 +56,9 @@ export const VOICE_CONTEXTS = [
   "nxm",
   // v0.3: opening the mods folder in Explorer.
   "modsFolder",
+  // v0.4: THE MUSTER, reading a save slot's party (get_muster_slots, get_muster,
+  // open_saves_folder). The caller adds `file` (the slot id) to the detail.
+  "muster",
 ] as const;
 
 export type VoiceContext = (typeof VOICE_CONTEXTS)[number];
@@ -64,6 +75,8 @@ export type RecoveryKind =
    *  download: its Mod Manager Download button makes a fresh link). The
    *  caller knows which page; the voice only offers the door. */
   | "openNexusPage"
+  /** v0.4: focus the Muster's slot list, on the newest slot that opens. */
+  | "pickSlot"
   | "dismiss";
 
 export interface Recovery {
@@ -571,6 +584,83 @@ function nexusFailure(d: Detail, context: VoiceContext): Voiced {
   return FAR_VOICES[which](d, context);
 }
 
+// ---------------------------------------------------------------------------
+// v0.4 — THE MUSTER (#00015 R17.22, R17.24). A save failure is voiced by its
+// reason first; the spine's sentence is read only when no known reason came.
+// `file` is the slot's file name (its id), never a path: the path holds the
+// Steam account number.
+// ---------------------------------------------------------------------------
+
+const READ_AGAIN: Recovery = { kind: "retry", label: "Read again" };
+const PICK_SLOT: Recovery = { kind: "pickSlot", label: "Pick another slot" };
+
+const SAVE_REASONS: readonly SaveReason[] = ["otherAccount", "beingWritten", "damaged", "noParty", "gone"];
+
+/** The spine's reason code for a save failure, when the detail carries a known one. */
+export function saveReasonOf(d: Detail): SaveReason | null {
+  const raw = pick(d, "reason");
+  return SAVE_REASONS.find((r) => r === raw) ?? null;
+}
+
+const fileOf = (d: Detail) => `\`${pick(d, "file", "slotId") ?? "that save"}\``;
+
+const save = (inscription: string, voiceLine: string, empathy: string, recovery: Recovery[]): Voiced => ({
+  kind: "save",
+  inscription,
+  voice: voiceLine,
+  empathy,
+  recovery,
+});
+
+const READ_ONLY = "The stone only reads saves; nothing was changed.";
+export const MUSTER_UNREAD = "THE STONE COULDN'T READ THE PARTY";
+
+const SAVE_VOICES: Record<SaveReason, (file: string) => Voiced> = {
+  otherAccount: (file) =>
+    save(
+      "ANOTHER ARISEN'S SAVE",
+      `${file} belongs to a Steam account the stone didn't find on this PC, so it can't open it: it was probably copied in from another account.`,
+      "Nothing was changed.",
+      [SHOW, PICK_SLOT],
+    ),
+  beingWritten: (file) =>
+    save(
+      "THE GAME IS SAVING",
+      `The game is writing ${file} right now.`,
+      "The stone reads it again as soon as the save settles; nothing was changed.",
+      [READ_AGAIN],
+    ),
+  damaged: (file) =>
+    save(
+      "THIS SAVE WON'T OPEN",
+      `The stone couldn't read ${file}: the file is damaged inside.`,
+      "The stone only reads saves, so it is exactly as it was. If the game can't load it either, load another slot in the game.",
+      [SHOW, READ_AGAIN, COPY],
+    ),
+  noParty: (file) =>
+    save("NO PARTY IN THIS SAVE", `${file} opens, but holds no Arisen and no pawns to read.`, "", [PICK_SLOT]),
+  gone: (file) =>
+    save(
+      "THIS SAVE IS GONE",
+      `${file} left the save folder after the stone listed it.`,
+      "The stone is reading the list again.",
+      [PICK_SLOT],
+    ),
+};
+
+function saveFailure(d: Detail): Voiced {
+  const reason = saveReasonOf(d);
+  if (reason) return SAVE_VOICES[reason](fileOf(d));
+  const sentence = stripStop(pick(d, "detail", "message", "error") ?? "the save gave an answer it could not use");
+  return save(MUSTER_UNREAD, `${sentence}.`, READ_ONLY, [READ_AGAIN, COPY]);
+}
+
+/** Any other failure while reading the party: the kind's own sentence, then
+ *  the Muster's promise, and its two doors (R17.22's last row). */
+function musterOther(base: Voiced): Voiced {
+  return { ...base, inscription: MUSTER_UNREAD, empathy: READ_ONLY, recovery: [READ_AGAIN, COPY] };
+}
+
 type Handler = (detail: Detail, context: VoiceContext) => Voiced;
 
 const HANDLERS: Record<RiftError["kind"], Handler> = {
@@ -584,12 +674,14 @@ const HANDLERS: Record<RiftError["kind"], Handler> = {
   refused,
   journal: journalFailure,
   nexus: nexusFailure,
+  save: (d) => saveFailure(d),
   io: (d, context) => (context === "parked" ? parkedIo(d) : ioFailure(d, context)),
 };
 
 /** Give a failure its voice. */
 export function voice(failure: Pick<RiftFailure, "kind" | "detail">, context: VoiceContext): Voiced {
-  const voiced = HANDLERS[failure.kind](failure.detail, context);
+  const base = HANDLERS[failure.kind](failure.detail, context);
+  const voiced = context === "muster" && failure.kind !== "save" ? musterOther(base) : base;
   return voiced.recovery.length ? voiced : { ...voiced, recovery: [DISMISS] };
 }
 

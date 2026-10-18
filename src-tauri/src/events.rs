@@ -38,6 +38,9 @@ pub const DOWNLOAD_PROGRESS: &str = "rift://download-progress";
 /// v0.3: an nxm:// link reached the stone (cold start or a second launch) —
 /// `NxmReceivedEvent`. The spine also brings the window forward.
 pub const NXM_RECEIVED: &str = "rift://nxm-received";
+/// v0.4: a slot file appeared, changed or went (the game saved), or the game's names were
+/// rebuilt after a game update — `{}`.
+pub const MUSTER_CHANGED: &str = "rift://muster-changed";
 
 /// Every event the spine sends, as `src/types/rift.ts` `EVENTS` names them.
 pub const ALL: &[&str] = &[
@@ -50,6 +53,7 @@ pub const ALL: &[&str] = &[
     DOWNLOADS_CHANGED,
     DOWNLOAD_PROGRESS,
     NXM_RECEIVED,
+    MUSTER_CHANGED,
 ];
 
 /// Where events go.

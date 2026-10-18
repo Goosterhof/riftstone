@@ -2,7 +2,7 @@
 // THE RIFTSTONE — the window. Stone left, Rift centre, Your World right
 // (Design System #00015, direction A "The Monolith — Rift-Lit Basalt").
 // One shell: the pillar never moves; the rooms right of it change.
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { sleepRiftstone, wakeRiftstone } from "@/composables/boot";
 import { useStone } from "@/composables/useStone";
 import { useNavigation } from "@/composables/useNavigation";
@@ -18,12 +18,17 @@ import RiftPage from "@/pages/RiftPage.vue";
 import InstalledPage from "@/pages/InstalledPage.vue";
 import NexusPage from "@/pages/NexusPage.vue";
 import PreflightPage from "@/pages/PreflightPage.vue";
+import MusterPage from "@/pages/MusterPage.vue";
 
 const stone = useStone();
 const nav = useNavigation();
 const search = useSearch();
 const world = useWorld();
 const riftPage = ref<InstanceType<typeof RiftPage> | null>(null);
+
+/** #00015 R17.2: saves live under Steam, not in the game folder, so THE MUSTER
+ *  answers while no world does. During THE STONE WAKES it stays dark with the rest. */
+const musterAwake = computed(() => nav.page.value === "muster" && stone.phase.value === "nogame");
 
 useHotkeys();
 
@@ -58,11 +63,13 @@ onBeforeUnmount(() => sleepRiftstone());
 <template>
   <div class="riftstone">
     <RiftstonePillar @descend="descend" @submit="submit" />
-    <WakeScreen v-if="stone.phase.value !== 'ready'" :phase="stone.phase.value" />
+    <MusterPage v-if="musterAwake" />
+    <WakeScreen v-else-if="stone.phase.value !== 'ready'" :phase="stone.phase.value" />
     <template v-else>
       <RiftPage v-if="nav.page.value === 'rift'" ref="riftPage" />
       <InstalledPage v-else-if="nav.page.value === 'world'" />
       <NexusPage v-else-if="nav.page.value === 'nexus'" />
+      <MusterPage v-else-if="nav.page.value === 'muster'" />
       <PreflightPage v-else />
     </template>
     <ToastShelf />

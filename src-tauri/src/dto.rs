@@ -2212,13 +2212,262 @@ impl NexusCandidate {
 }
 
 // ---------------------------------------------------------------------------
+// v0.4 — the Muster (WINDOW-CONTRACT § v0.4): the party of a save slot.
+// ---------------------------------------------------------------------------
+
+/// A thing the game names: its id, and the game's English name or null.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Named {
+    pub id: i64,
+    pub name: Option<String>,
+}
+
+impl Named {
+    pub fn new(id: impl Into<i64>, name: Option<&str>) -> Self {
+        Named {
+            id: id.into(),
+            name: name.map(str::to_string),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NamesSource {
+    Game,
+    Missing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MusterFolderProblem {
+    NoSteam,
+    NoSaves,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusterSlotsView {
+    pub problem: Option<MusterFolderProblem>,
+    pub slots: Vec<MusterSlot>,
+    pub account_count: u32,
+    pub names: NamesSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusterSlot {
+    pub slot_id: String,
+    pub slot: i64,
+    pub saved_at: String,
+    pub account: Option<u32>,
+    pub arisen: Option<MusterSlotArisen>,
+    pub problem: Option<rift_core::SaveReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusterSlotArisen {
+    /// The player's own: shown, never logged.
+    pub name: Option<String>,
+    pub level: i64,
+    pub vocation: Named,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusterView {
+    pub slot_id: String,
+    pub slot: i64,
+    pub saved_at: String,
+    pub names: NamesSource,
+    pub names_note: Option<String>,
+    pub arisen: Option<MusterMember>,
+    pub main_pawn: Option<MusterMember>,
+    pub hired: Vec<MusterMember>,
+    pub gold: Option<i64>,
+    pub rift_crystals: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MusterRole {
+    Arisen,
+    MainPawn,
+    HiredPawn,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusterMember {
+    pub member_key: String,
+    pub role: MusterRole,
+    /// The player's own name for the Arisen or a pawn: shown, never logged.
+    pub name: Option<String>,
+    pub level: i64,
+    pub experience: i64,
+    pub vocation: Named,
+    pub vocations: Vec<MusterVocation>,
+    pub gains: MusterGains,
+    pub gear: Vec<MusterGear>,
+    pub augments: Vec<Named>,
+    pub skills: Vec<Named>,
+    pub pawn: Option<MusterPawnTraits>,
+    pub creator: Option<MusterCreator>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusterVocation {
+    pub vocation: Named,
+    pub experience: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusterGains {
+    pub health: i64,
+    pub stamina: i64,
+    pub strength: i64,
+    pub defence: i64,
+    pub magick: i64,
+    pub magick_defence: i64,
+    pub weight: i64,
+    pub knockdown: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MusterGearSlot {
+    MainWeapon,
+    SubWeapon,
+    Head,
+    Body,
+    Legs,
+    Cloak,
+    #[serde(rename = "ring1")]
+    Ring1,
+    #[serde(rename = "ring2")]
+    Ring2,
+}
+
+impl MusterGearSlot {
+    /// The game's slot order (`_EquipSlot` 0–7).
+    pub const ALL: [MusterGearSlot; 8] = [
+        MusterGearSlot::MainWeapon,
+        MusterGearSlot::SubWeapon,
+        MusterGearSlot::Head,
+        MusterGearSlot::Body,
+        MusterGearSlot::Legs,
+        MusterGearSlot::Cloak,
+        MusterGearSlot::Ring1,
+        MusterGearSlot::Ring2,
+    ];
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusterGear {
+    pub slot: MusterGearSlot,
+    pub item: Option<Named>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusterPawnTraits {
+    pub inclination: Option<Named>,
+    pub specialization: Option<Named>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusterCreator {
+    pub level: i64,
+    pub vocation: Named,
+}
+
+impl MusterMember {
+    /// The window's view of one member, named from `codex` (or, without one, by id only).
+    pub fn from_member(member: &rift_muster::Member, codex: Option<&rift_muster::Codex>) -> Self {
+        let vocation = |id: u32| Named::new(id, codex.and_then(|c| c.vocation(id)));
+        let mut vocations: Vec<MusterVocation> = (1u32..)
+            .zip(member.vocation_experience)
+            .filter(|(_, exp)| *exp > 0)
+            .map(|(id, experience)| MusterVocation {
+                vocation: vocation(id),
+                experience,
+            })
+            .collect();
+        vocations.sort_by(|a, b| {
+            b.experience
+                .cmp(&a.experience)
+                .then(a.vocation.id.cmp(&b.vocation.id))
+        });
+        MusterMember {
+            member_key: format!("{:016x}", member.key),
+            role: match member.role {
+                rift_muster::Role::Arisen => MusterRole::Arisen,
+                rift_muster::Role::MainPawn => MusterRole::MainPawn,
+                rift_muster::Role::HiredPawn => MusterRole::HiredPawn,
+            },
+            name: member.name.as_ref().map(|n| n.expose().to_string()),
+            level: member.level,
+            experience: member.experience,
+            vocation: vocation(member.vocation),
+            vocations,
+            gains: MusterGains {
+                health: member.gains.health,
+                stamina: member.gains.stamina,
+                strength: member.gains.strength,
+                defence: member.gains.defence,
+                magick: member.gains.magick,
+                magick_defence: member.gains.magick_defence,
+                weight: member.gains.weight,
+                knockdown: member.gains.knockdown,
+            },
+            gear: MusterGearSlot::ALL
+                .iter()
+                .zip(member.gear)
+                .map(|(slot, item)| MusterGear {
+                    slot: *slot,
+                    item: item.map(|id| Named::new(id, codex.and_then(|c| c.item(id)))),
+                })
+                .collect(),
+            augments: member
+                .augments
+                .iter()
+                .map(|&id| Named::new(id, codex.and_then(|c| c.augment(id))))
+                .collect(),
+            skills: member
+                .skills
+                .iter()
+                .map(|&id| Named::new(id, codex.and_then(|c| c.skill(id))))
+                .collect(),
+            pawn: member.pawn.map(|traits| MusterPawnTraits {
+                inclination: traits
+                    .inclination
+                    .map(|i| Named::new(i.id(), codex.and_then(|c| c.inclination(i)))),
+                specialization: traits
+                    .specialization
+                    .map(|s| Named::new(s, codex.and_then(|c| c.specialization(s)))),
+            }),
+            creator: member.creator.map(|c| MusterCreator {
+                level: c.level,
+                vocation: vocation(c.vocation),
+            }),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests — every key the TS reads, every union tag, every string literal.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rift_core::{NexusReason, RiftError};
+    use rift_core::{NexusReason, RiftError, SaveReason};
     use serde::de::DeserializeOwned;
     use serde_json::{json, Value};
 
@@ -4411,6 +4660,10 @@ mod tests {
                 detail: text(),
                 reason: None,
             },
+            RiftError::Save {
+                detail: text(),
+                reason: SaveReason::Damaged,
+            },
             RiftError::Io { detail: text() },
         ];
         for err in &all {
@@ -4425,6 +4678,7 @@ mod tests {
                 | RiftError::Refused { .. }
                 | RiftError::Journal { .. }
                 | RiftError::Nexus { .. }
+                | RiftError::Save { .. }
                 | RiftError::Io { .. } => {}
             }
         }
@@ -4509,6 +4763,257 @@ mod tests {
             reasons,
             union_after(&wire, "export type NexusReason ="),
             "rift-core's NexusReason and rift.ts's NexusReason are one list"
+        );
+    }
+
+    /// Every `SaveReason`, each once; a reason added to rift-core does not build here until
+    /// it is listed.
+    fn every_save_reason() -> Vec<SaveReason> {
+        use SaveReason as R;
+        let all = vec![
+            R::OtherAccount,
+            R::BeingWritten,
+            R::Damaged,
+            R::NoParty,
+            R::Gone,
+        ];
+        for reason in &all {
+            match reason {
+                R::OtherAccount | R::BeingWritten | R::Damaged | R::NoParty | R::Gone => {}
+            }
+        }
+        all
+    }
+
+    #[test]
+    fn save_reasons_are_the_literals_the_window_reads() {
+        let wire = without_comments(WIRE);
+        let mut reasons: Vec<String> = every_save_reason()
+            .iter()
+            .map(|reason| {
+                serde_json::to_value(reason)
+                    .unwrap()
+                    .as_str()
+                    .expect("a string")
+                    .to_string()
+            })
+            .collect();
+        reasons.sort();
+        assert_eq!(
+            reasons,
+            union_after(&wire, "export type SaveReason ="),
+            "rift-core's SaveReason and rift.ts's SaveReason are one list"
+        );
+        let err = serde_json::to_value(RiftError::save(
+            SaveReason::BeingWritten,
+            "data009Slot.bin is being written",
+        ))
+        .unwrap();
+        assert_eq!(err["kind"], "save");
+        assert_eq!(err["detail"]["reason"], "beingWritten");
+    }
+
+    #[test]
+    fn muster_shapes_carry_exactly_the_ts_keys() {
+        let warrior = Named::new(5, Some("Warrior"));
+        let named = round_trip(&warrior, &["id", "name"]);
+        assert_eq!(named, json!({ "id": 5, "name": "Warrior" }));
+        let nameless = round_trip(&Named::new(40_917, None), &["id", "name"]);
+        assert!(nameless["name"].is_null(), "null, never absent");
+        let gains = MusterGains {
+            health: 1240,
+            stamina: 610,
+            strength: 312,
+            defence: 268,
+            magick: 96,
+            magick_defence: 118,
+            weight: 6,
+            knockdown: 140,
+        };
+        round_trip(
+            &gains,
+            &[
+                "health",
+                "stamina",
+                "strength",
+                "defence",
+                "magick",
+                "magickDefence",
+                "weight",
+                "knockdown",
+            ],
+        );
+        let member = MusterMember {
+            member_key: "00000000000000ab".into(),
+            role: MusterRole::HiredPawn,
+            name: Some("Bramble".into()),
+            level: 49,
+            experience: 2_048_900,
+            vocation: Named::new(6, Some("Sorcerer")),
+            vocations: vec![MusterVocation {
+                vocation: Named::new(6, Some("Sorcerer")),
+                experience: 702_000,
+            }],
+            gains,
+            gear: MusterGearSlot::ALL
+                .iter()
+                .map(|slot| MusterGear {
+                    slot: *slot,
+                    item: None,
+                })
+                .collect(),
+            augments: vec![Named::new(29, Some("Deep Well"))],
+            skills: vec![Named::new(62, None)],
+            pawn: Some(MusterPawnTraits {
+                inclination: Some(Named::new(81_586_066, Some("Simple"))),
+                specialization: None,
+            }),
+            creator: Some(MusterCreator {
+                level: 52,
+                vocation: warrior.clone(),
+            }),
+        };
+        let json = round_trip(
+            &member,
+            &[
+                "memberKey",
+                "role",
+                "name",
+                "level",
+                "experience",
+                "vocation",
+                "vocations",
+                "gains",
+                "gear",
+                "augments",
+                "skills",
+                "pawn",
+                "creator",
+            ],
+        );
+        assert_eq!(
+            keys(&json["vocations"][0]),
+            sorted(&["vocation", "experience"])
+        );
+        assert_eq!(keys(&json["gear"][0]), sorted(&["slot", "item"]));
+        assert_eq!(
+            keys(&json["pawn"]),
+            sorted(&["inclination", "specialization"])
+        );
+        assert!(json["pawn"]["specialization"].is_null());
+        assert_eq!(keys(&json["creator"]), sorted(&["level", "vocation"]));
+        let gear: Vec<&str> = json["gear"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["slot"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            gear,
+            [
+                "mainWeapon",
+                "subWeapon",
+                "head",
+                "body",
+                "legs",
+                "cloak",
+                "ring1",
+                "ring2"
+            ]
+        );
+        let view = MusterView {
+            slot_id: "data009Slot".into(),
+            slot: 9,
+            saved_at: "2026-10-18T21:04:00Z".into(),
+            names: NamesSource::Missing,
+            names_note: Some("A sentence.".into()),
+            arisen: None,
+            main_pawn: None,
+            hired: vec![member],
+            gold: Some(284_310),
+            rift_crystals: None,
+        };
+        round_trip(
+            &view,
+            &[
+                "slotId",
+                "slot",
+                "savedAt",
+                "names",
+                "namesNote",
+                "arisen",
+                "mainPawn",
+                "hired",
+                "gold",
+                "riftCrystals",
+            ],
+        );
+        let slot = MusterSlot {
+            slot_id: "data009Slot@2".into(),
+            slot: 9,
+            saved_at: "2026-10-18T21:04:00Z".into(),
+            account: Some(2),
+            arisen: Some(MusterSlotArisen {
+                name: Some("Odalric".into()),
+                level: 41,
+                vocation: warrior,
+            }),
+            problem: Some(rift_core::SaveReason::OtherAccount),
+        };
+        let slot_json = round_trip(
+            &slot,
+            &["slotId", "slot", "savedAt", "account", "arisen", "problem"],
+        );
+        assert_eq!(
+            keys(&slot_json["arisen"]),
+            sorted(&["name", "level", "vocation"])
+        );
+        assert_eq!(slot_json["problem"], "otherAccount");
+        round_trip(
+            &MusterSlotsView {
+                problem: Some(MusterFolderProblem::NoSaves),
+                slots: vec![slot],
+                account_count: 2,
+                names: NamesSource::Game,
+            },
+            &["problem", "slots", "accountCount", "names"],
+        );
+    }
+
+    #[test]
+    fn muster_unions_are_the_literals_the_window_reads() {
+        let wire = without_comments(WIRE);
+        let as_text = |v: Value| v.as_str().unwrap().to_string();
+        let mut roles: Vec<String> = [
+            MusterRole::Arisen,
+            MusterRole::MainPawn,
+            MusterRole::HiredPawn,
+        ]
+        .iter()
+        .map(|r| as_text(serde_json::to_value(r).unwrap()))
+        .collect();
+        roles.sort();
+        assert_eq!(roles, union_after(&wire, "export type MusterRole ="));
+        let mut slots: Vec<String> = MusterGearSlot::ALL
+            .iter()
+            .map(|s| as_text(serde_json::to_value(s).unwrap()))
+            .collect();
+        slots.sort();
+        assert_eq!(slots, union_after(&wire, "export type MusterGearSlot ="));
+        let mut problems: Vec<String> =
+            [MusterFolderProblem::NoSteam, MusterFolderProblem::NoSaves]
+                .iter()
+                .map(|p| as_text(serde_json::to_value(p).unwrap()))
+                .collect();
+        problems.sort();
+        assert_eq!(
+            problems,
+            union_after(&wire, "export type MusterFolderProblem =")
+        );
+        assert_eq!(serde_json::to_value(NamesSource::Game).unwrap(), "game");
+        assert_eq!(
+            serde_json::to_value(NamesSource::Missing).unwrap(),
+            "missing"
         );
     }
 

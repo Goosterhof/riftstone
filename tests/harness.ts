@@ -39,7 +39,14 @@ export type SceneName =
   | "quotalow"
   | "running"
   | "nxmother"
-  | "nocreations";
+  | "nocreations"
+  // v0.4: THE MUSTER (#00015 R17.31)
+  | "muster"
+  | "musternosteam"
+  | "musternosaves"
+  | "musternames"
+  | "musterslow"
+  | "musterwriting";
 
 /** One scenario, or two combined: the mock reads its query string comma-separated. */
 export type Scene = SceneName | `${Exclude<SceneName, "">},${Exclude<SceneName, "">}`;
