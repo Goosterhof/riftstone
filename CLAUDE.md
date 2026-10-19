@@ -347,7 +347,11 @@ links back too: turn the switch on again after it (WINDOW-CONTRACT § v0.3 The o
   they ran there at f653d8b (913 passed, 0 failed), the installer was built, and a probe of THE
   MUSTER on a copy of a real save folder named 80 of 80 equipped things (BUILD-SPEC § v0.4, As
   built). For 0.4.1, after the General's review round, they ran at e24a73a (920 passed, 0
-  failed), and the installer and the probe passed again.
+  failed), and the installer and the probe passed again. For 0.5.0 they ran first at c372344
+  (953 passed, 0 failed), where the probe found no family on the investor's library and led to
+  ruling 10, and again at 2f410ea with the player's word (959 passed, 0 failed); the installer
+  was built and the probe asked about exactly the package the investor reported, a folder whose
+  file names are all in the pinned download.
   `cargo clippy` is not installed on the Windows bench and has never run
   there. Still owed: `cargo clippy` natively, and every press on a Windows desktop: Play by each
   route; Open mods folder, also after deleting it while the stone runs; the nxm switch on and

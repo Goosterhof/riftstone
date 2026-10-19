@@ -2650,6 +2650,16 @@ against the code they had left, and fixed what those specs found.
   `questionrefused`). A headless render pass at 1320 and 1024 looked at the question, the yes, the
   manual pick and THE FAR WORLD row: 0 page errors. Gates: Rust 973 passed, 0 failed, 11 ignored;
   window 452/452 in 40 files; typecheck, lint, format and build clean.
+- **The native Windows runs** (MSVC, Rust 1.98.0, `RUSTFLAGS=-D warnings`, `-j 4`). At c372344,
+  after `cargo clean -p riftstone` cleared the stale artifacts behind the first attempt's E0460:
+  953 passed, 0 failed, 11 ignored, and `npm run tauri build` built the 0.5.0 installer
+  (6.15 MiB). Its read-only probe, on copies of the app data and the save folder over the real
+  mods folder, read THE MUSTER by character with 0 page errors and wrote nothing, but found **no
+  family**: the investor's older version was a folder linked by mod id (ruling 10). At 2f410ea,
+  with the player's word: 959 passed, 0 failed, 11 ignored; the installer again (6.18 MiB); and
+  the probe asked about exactly one package, that folder, with all of its file names in the
+  pinned download of its own mod, again with 0 page errors, nothing written and the mods folder's
+  entries unchanged. The probe never answers a question: the yes is the investor's.
 - **Left for the native run:** the Windows-only code v0.5 adds (`landing::move_new`'s
   `MoveFileExW`, moved from `downloads.rs` unchanged) compiles nowhere but Windows, and THE
   UNDERCROFT's move has never crossed NTFS. Still open from §18.14: Q18.11 (whether a slot reads as
