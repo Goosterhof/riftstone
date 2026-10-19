@@ -2618,6 +2618,14 @@ against the code they had left, and fixed what those specs found.
   39 files, format:check clean, build clean. The privacy sweep, with the real library, journal,
   `nexus.json` and save folder as sources, read 0 hits over 332 files, 772 file versions in the
   history and 51 commit messages.
+- **The sweep at the tip** (2026-10-19): with the four commits pushed, the sweep's sources had
+  grown by one Nexus id, a mod the investor linked after v0.4.1. Its number was already the
+  repo's own, in files v0.5 never touched and in history public since v0.3: 11 hits, none from
+  v0.5. A collision, not a leak, and not a fixture that could be renumbered. Ruled by the
+  investor: the sweep sets aside, and counts, every Nexus id the public tree carried at
+  `SWEPT_CLEAN` (5a01aa5, v0.4.1, where it last passed clean), as it sets aside the save names
+  `BEFORE_SAVES` held; a Steam account's numbers never are. Four self-test checks pin the rule,
+  each seen to fail against its mutant. The rerun read 0 hits, 1 id set aside.
 - **Left for the native run:** the Windows-only code v0.5 adds (`landing::move_new`'s
   `MoveFileExW`, moved from `downloads.rs` unchanged) compiles nowhere but Windows, and THE
   UNDERCROFT's move has never crossed NTFS. Still open from §18.14: Q18.11 (whether a slot reads as

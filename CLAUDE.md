@@ -181,8 +181,13 @@ chain. A character's name counts even when it is a short word, which the library
 a short name matches in its own case only, because the same letters in another case are a code
 word far more often than anyone's name. A name the repo already held as a word before it read a
 save (`BEFORE_SAVES`, 830fdf0) is set aside and counted: a hit on it could not be told from the
-repo's own text. Two of the game's record types carry a `Name` that is the game's own id; their
-strings never count (2,767 of them on the bench's eight saves).
+repo's own text. The same holds for a Nexus id the public tree already carried where the sweep
+last passed clean (`SWEPT_CLEAN`, 5a01aa5, v0.4.1): it was the repo's own number before any link
+could have put it there, so a mod linked since that shares it is a collision, not a leak. It is
+set aside and counted; a Steam account's numbers never are. A hit on an untouched file, the day
+a new link joins the sources, is the shape of a collision: check `git diff` against the last
+clean commit before calling it a leak. Two of the game's record types carry a `Name` that is the
+game's own id; their strings never count (2,767 of them on the bench's eight saves).
 
 The sweep reads the live save folder, not a copy, on purpose. A copy goes stale the day a new
 pawn is hired, and a stale copy would pass a leak of exactly the newest names. The bench rule

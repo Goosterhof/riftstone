@@ -69,6 +69,12 @@ already held as a word before it ever read a save (the tree at BEFORE_SAVES)
 is set aside and counted, because a hit on it could not be told from the
 repo's own text.
 
+A Nexus id the public tree already carried where the sweep last passed clean
+(SWEPT_CLEAN, v0.4.1) is set aside and counted too: it was the repo's own
+number before any link could have put it there, so a mod linked since that
+shares it is a collision, not a leak. A Steam account's numbers are never set
+aside.
+
 Pictures carry their words in pixels, and no text gate reads them: the sweep
 counts the pictures in the tree by folder, so whoever pushes looks at them.
 
@@ -138,6 +144,10 @@ STAND_IN_PACKAGE = re.compile(r"^[0-9a-f]{16}$")
 # The last commit before the stone read a save (v0.3.1 and its Sentinel, public main on
 # 2026-10-18): no word in its tree can have come from one.
 BEFORE_SAVES = "830fdf09237a0ab87ede3b19a1a5c145666fa714"
+# Public main where the sweep last passed clean with every source it had (v0.4.1, merged
+# 2026-10-18): a number its tree carried was the repo's own before any link could have put
+# it there, and a mod linked since may share it (v0.5's tip sweep met one).
+SWEPT_CLEAN = "5a01aa50fc17d190f50f7991f4ca3f60de65f66b"
 # Folders every Windows or Steam install has, and the mods folder's own name: a
 # chain made only of these is nobody's layout (a default Steam library is no secret).
 STOCK_FOLDERS = {
@@ -335,6 +345,26 @@ class Identifiers:
             del self.words[word]
         return len(gone)
 
+    def set_aside_ids(self, known: Iterable[str]) -> int:
+        """Drop every Nexus id that one of these texts (the public tree where the sweep last
+        passed clean) already holds as a number: the repo's own number, which a mod linked
+        since happens to share. A Steam account's numbers are never set aside.
+        Returns how many went."""
+        texts = [EMBEDDED_DATA.sub(r"\1", text) for text in known]
+        gone = [
+            digits
+            for digits, kind in self.ids.items()
+            if not kind.startswith("Steam") and any(self.number_pattern(digits).search(text) for text in texts)
+        ]
+        for digits in gone:
+            del self.ids[digits]
+        return len(gone)
+
+    @staticmethod
+    def number_pattern(digits: str) -> re.Pattern[str]:
+        # Whole numbers only: an id is not a hit inside a longer number or a version.
+        return re.compile(rf"(?<![\d.]){digits}(?![\d.])")
+
     def word_pattern(self, word: str) -> re.Pattern[str]:
         # Whole words only: a name is not a hit inside a longer word.
         body = rf"(?<![A-Za-z0-9]){re.escape(word)}(?![A-Za-z0-9])"
@@ -342,7 +372,7 @@ class Identifiers:
 
     def patterns(self) -> list[tuple[re.Pattern[str], str]]:
         words = [(self.word_pattern(word), kind) for word, kind in self.words.items()]
-        numbers = [(re.compile(rf"(?<![\d.]){digits}(?![\d.])"), kind) for digits, kind in self.ids.items()]
+        numbers = [(self.number_pattern(digits), kind) for digits, kind in self.ids.items()]
         return words + numbers + [(chain_pattern(chain), kind) for chain, kind in self.places.items()]
 
 
@@ -684,6 +714,16 @@ def self_test() -> int:
         list(hits_in(font + " mod 2207", found.patterns(), any_of(found.patterns()))) == [(1, "Nexus mod id")],
     )
 
+    # ids the public tree already carried where the sweep last passed clean (v0.5)
+    shared = Identifiers(set())
+    for digits, kind in (("2207", "Nexus mod id"), ("2391", "Nexus file id"), ("4242001", "Steam account id")):
+        shared.number(digits, kind)
+    check("a number inside a longer one sets nothing aside", shared.set_aside_ids(["group 22070, v2.2391\n"]) == 0)
+    check("an embedded payload sets no id aside", shared.set_aside_ids(["src:url(data:font/woff2;base64,AA2207/x=)"]) == 0)
+    check("a Steam account's number is never set aside", shared.set_aside_ids(["userdata/4242001\n"]) == 0)
+    check("an id the clean tree carried is set aside, the rest kept",
+          shared.set_aside_ids(["let mod = 2207;\n"]) == 1 and "2207" not in shared.ids and {"2391", "4242001"} <= set(shared.ids))
+
     # the tip: a retired word committed at HEAD but edited away on disk still counts
     retired = forbidden_patterns(["Quillborne", "qbm"])
     tip = [("docs/a.md", "kept\nthe Quillborne ledger\n"), ("docs/b.md", "the qbm folder\n"), ("docs/c.md", "fine\n")]
@@ -837,6 +877,17 @@ def main() -> int:
             print(
                 f"privacy sweep: {aside} save name(s) were already words of this repo at {BEFORE_SAVES[:7]}, before it read a save; "
                 "a hit on one could not be told from the repo's own text, so they are set aside"
+            )
+    if found.ids:
+        try:
+            clean = read_blobs([blob for blob, _ in tree_entries(SWEPT_CLEAN)])
+        except (OSError, subprocess.CalledProcessError):
+            clean = []
+            print(f"privacy sweep: the tree where the sweep last passed clean ({SWEPT_CLEAN[:7]}) could not be read, so no id was set aside")
+        if aside := found.set_aside_ids(clean):
+            print(
+                f"privacy sweep: {aside} Nexus id(s) were already numbers of this repo at {SWEPT_CLEAN[:7]}, where the sweep last passed clean; "
+                "a mod linked since shares one of the repo's own numbers, so they are set aside"
             )
     patterns = found.patterns()
     anything = any_of(patterns)
