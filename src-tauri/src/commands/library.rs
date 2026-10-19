@@ -356,6 +356,7 @@ pub fn get_library_impl(state: &AppState) -> LibraryView {
     let is_installed = |id: &OptionId| installs.contains_key(id);
     let store = lock(&state.nexus);
     let families = Families::of_shelf(&shelf, &store);
+    let mut questions = family::version_questions(&shelf, &store, &families);
     let mut packages: Vec<LibraryPackage> = shelf
         .packages()
         .iter()
@@ -377,6 +378,7 @@ pub fn get_library_impl(state: &AppState) -> LibraryView {
                     .iter()
                     .any(|o| snapshot.conflicted.contains(&o.id.0)),
                 family: families.view(&shelf, &package.id, &is_installed),
+                version_question: questions.remove(&package.id),
                 tree: package_tree(package, &is_installed, &snapshot.conflicted),
             }
         })

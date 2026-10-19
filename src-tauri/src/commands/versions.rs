@@ -9,6 +9,11 @@
 //! existing name. A version's `nexus.json` record stays under its package id while it is away;
 //! when a move has to take another name (` (2)` …), the record follows it to the id that name
 //! gives, so the version finds its family again when it comes back.
+//!
+//! Ruling 10 adds the player's word ([`join_versions_impl`], [`part_versions_impl`],
+//! [`decline_version_question_impl`]): a version Nexus cannot pin (an unpacked folder, a link
+//! by mod id) joins the file group another package of the same mod is pinned to, at the
+//! player's yes. A join changes the link only: nothing moves.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -484,6 +489,148 @@ pub fn open_older_versions_folder_impl(state: &AppState) -> Result<(), RiftError
 }
 
 // -- wrappers ----------------------------------------------------------------
+
+/// The package and its link, for the player's word: refused when it has no link.
+fn linked<'a>(
+    shelf: &'a Shelf,
+    store: &crate::nexus::NexusStore,
+    package_id: &str,
+) -> Result<(&'a Package, rift_core::NexusLink), RiftError> {
+    let package = shelf
+        .package(&PackageId(package_id.to_string()))
+        .ok_or_else(|| not_found(package_id))?;
+    let link = store.link_for(package).ok_or_else(|| {
+        RiftError::refused(format!(
+            "\"{}\" is not linked to a Nexus mod. Link it first, then say which file it is a version of.",
+            package.file_name
+        ))
+    })?;
+    Ok((package, link))
+}
+
+/// `of`'s file group, for the player's word: refused when Nexus pinned it to none.
+fn pinned_group(of: &Package, link: &rift_core::NexusLink) -> Result<u64, RiftError> {
+    link.group_id.ok_or_else(|| {
+        RiftError::refused(format!(
+            "\"{}\" is not pinned to a file on Nexus, so there is no file to join a version to.",
+            of.file_name
+        ))
+    })
+}
+
+/// v0.5 (ruling 10): the player's yes. `package_id` is a version of `of_package_id`'s file: its
+/// link takes that file group, `source: "joined"`, and the family rule takes it from there.
+pub fn join_versions_impl(
+    state: &AppState,
+    package_id: &str,
+    of_package_id: &str,
+) -> Result<(), RiftError> {
+    let shelf = state.shelf();
+    {
+        let mut store = lock(&state.nexus);
+        let (package, link) = linked(&shelf, &store, package_id)?;
+        let (of, of_link) = linked(&shelf, &store, of_package_id)?;
+        if package.id == of.id {
+            return Err(RiftError::refused(format!(
+                "\"{}\" cannot be a version of itself.",
+                package.file_name
+            )));
+        }
+        let group_id = pinned_group(of, &of_link)?;
+        if link.mod_id != of_link.mod_id {
+            return Err(RiftError::refused(format!(
+                "\"{}\" and \"{}\" are linked to different Nexus mods, and versions of one file share their mod.",
+                package.file_name, of.file_name
+            )));
+        }
+        if link.group_id.is_some() {
+            return Err(RiftError::refused(format!(
+                "\"{}\" is already pinned to its own file on Nexus, which says whose version it is.",
+                package.file_name
+            )));
+        }
+        store.join(package, link, group_id);
+    }
+    drop(shelf);
+    state.save_nexus();
+    state.relabel();
+    state.events.changed(events::UPDATES_CHANGED);
+    Ok(())
+}
+
+/// v0.5 (ruling 10): takes a `joined` link back to the link the package had before, and
+/// remembers the answer as a no for that file group.
+pub fn part_versions_impl(state: &AppState, package_id: &str) -> Result<(), RiftError> {
+    let shelf = state.shelf();
+    {
+        let package = shelf
+            .package(&PackageId(package_id.to_string()))
+            .ok_or_else(|| not_found(package_id))?;
+        if !lock(&state.nexus).part(package) {
+            return Err(RiftError::refused(format!(
+                "\"{}\" was not joined to another file by your word, so there is nothing to take back.",
+                package.file_name
+            )));
+        }
+    }
+    drop(shelf);
+    state.save_nexus();
+    state.relabel();
+    state.events.changed(events::UPDATES_CHANGED);
+    Ok(())
+}
+
+/// v0.5 (ruling 10): the player's no. The stone does not ask again whether `package_id` is a
+/// version of `of_package_id`'s file group.
+pub fn decline_version_question_impl(
+    state: &AppState,
+    package_id: &str,
+    of_package_id: &str,
+) -> Result<(), RiftError> {
+    let shelf = state.shelf();
+    {
+        let mut store = lock(&state.nexus);
+        let package = shelf
+            .package(&PackageId(package_id.to_string()))
+            .ok_or_else(|| not_found(package_id))?;
+        let (of, of_link) = linked(&shelf, &store, of_package_id)?;
+        let group_id = pinned_group(of, &of_link)?;
+        store.decline(&package.id, group_id);
+    }
+    drop(shelf);
+    state.save_nexus();
+    state.events.changed(events::UPDATES_CHANGED);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn join_versions(
+    state: Spine<'_>,
+    package_id: String,
+    of_package_id: String,
+) -> Result<(), RiftError> {
+    blocking(&state, move |state| {
+        join_versions_impl(state, &package_id, &of_package_id)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn part_versions(state: Spine<'_>, package_id: String) -> Result<(), RiftError> {
+    blocking(&state, move |state| part_versions_impl(state, &package_id)).await
+}
+
+#[tauri::command]
+pub async fn decline_version_question(
+    state: Spine<'_>,
+    package_id: String,
+    of_package_id: String,
+) -> Result<(), RiftError> {
+    blocking(&state, move |state| {
+        decline_version_question_impl(state, &package_id, &of_package_id)
+    })
+    .await
+}
 
 #[tauri::command]
 pub async fn plan_keep_newest(

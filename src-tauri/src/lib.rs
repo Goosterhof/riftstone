@@ -224,5 +224,8 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         commands::versions::get_older_versions,
         commands::versions::bring_back,
         commands::versions::open_older_versions_folder,
+        commands::versions::join_versions,
+        commands::versions::part_versions,
+        commands::versions::decline_version_question,
     ])
 }

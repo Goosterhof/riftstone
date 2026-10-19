@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use rift_catalog::PackageLabels;
-use rift_core::{NexusLink, Package, PackageId};
+use rift_core::{LinkSource, NexusLink, Package, PackageId};
 use rift_nexus::{ModFilesReport, NexusError, NexusMod, V1Quota};
 
 use crate::dto::{self, NexusQuota, UpdateBadge, UpdateRow, UpdateStateView};
@@ -118,6 +118,13 @@ pub struct LinkRecord {
     pub state_mod_id: Option<u64>,
     #[serde(default)]
     pub checked_ms: Option<u64>,
+    /// v0.5 (ruling 10): the link the package had before the player joined it to another
+    /// package's file, `None` for the catalog's guess. Read only while the link is `joined`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub joined_over: Option<NexusLink>,
+    /// v0.5 (ruling 10): the file groups the player said this package is not a version of.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declined_groups: Vec<u64>,
 }
 
 impl NexusStore {
@@ -202,6 +209,58 @@ impl NexusStore {
         }
         record.link = Some(link);
         record.unlinked = false;
+    }
+
+    /// v0.5 (ruling 10): the player's word that `package`, whose link is `link`, is a version of
+    /// the file `group_id` names. The link keeps its mod, file id, version and upload time and
+    /// takes the group, `source: Joined`; the link the record held before stays beside it for
+    /// [`NexusStore::part`].
+    pub fn join(&mut self, package: &Package, link: NexusLink, group_id: u64) {
+        let before = self.record_link(&package.id);
+        self.set_link(
+            package,
+            NexusLink {
+                group_id: Some(group_id),
+                source: LinkSource::Joined,
+                ..link
+            },
+        );
+        if let Some(record) = self.packages.get_mut(&package.id.0) {
+            record.joined_over = before;
+        }
+    }
+
+    /// v0.5 (ruling 10): takes a `joined` link back to the one the package had before, and
+    /// remembers the group as a no. False when the link is not `joined`.
+    pub fn part(&mut self, package: &Package) -> bool {
+        let Some(record) = self.packages.get_mut(&package.id.0) else {
+            return false;
+        };
+        let Some(link) = record.link.take_if(|l| l.source == LinkSource::Joined) else {
+            return false;
+        };
+        record.link = record.joined_over.take();
+        if let Some(group_id) = link.group_id {
+            if !record.declined_groups.contains(&group_id) {
+                record.declined_groups.push(group_id);
+            }
+        }
+        true
+    }
+
+    /// v0.5 (ruling 10): the player's no, `package` is not a version of `group_id`'s file.
+    pub fn decline(&mut self, package_id: &PackageId, group_id: u64) {
+        let record = self.packages.entry(package_id.0.clone()).or_default();
+        if !record.declined_groups.contains(&group_id) {
+            record.declined_groups.push(group_id);
+        }
+    }
+
+    /// v0.5 (ruling 10): the file groups the player said this package is not a version of.
+    pub fn declined(&self, id: &PackageId) -> &[u64] {
+        self.packages
+            .get(&id.0)
+            .map_or(&[], |record| record.declined_groups.as_slice())
     }
 
     /// The player removed the link.

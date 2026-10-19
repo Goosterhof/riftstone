@@ -161,6 +161,8 @@ pub enum LinkSource {
     Manual,
     /// v0.3: the stone fetched this exact file from Nexus itself.
     Download,
+    /// v0.5: the player's word that it is a version of another package's file.
+    Joined,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -711,8 +713,27 @@ pub struct LibraryPackage {
     /// v0.5: its place among the versions of one Nexus file in the mods folder; `None` when no
     /// other version of the same file is there.
     pub family: Option<FamilyView>,
+    /// v0.5 (ruling 10): the stone asks whether this package is an older version of another
+    /// package's file; `None` when there is nothing to ask.
+    pub version_question: Option<VersionQuestionView>,
     /// Empty for a package that yielded no options (its problems say why).
     pub tree: Vec<TreeNode>,
+}
+
+/// v0.5 (ruling 10): is this package a version of another package's file? The file names say it
+/// is likely; only the player's answer joins them (WINDOW-CONTRACT § v0.5, The player's word).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionQuestionView {
+    /// The newest package of that file in the mods folder (its family's lead when it has one).
+    pub of_package_id: String,
+    pub of_file_name: String,
+    /// That package's Nexus file version, when Nexus named one.
+    pub of_version: Option<String>,
+    /// File names both hold, folders and case ignored, `modinfo.ini` and screenshots left out.
+    pub shared_files: usize,
+    /// How many file names this package holds, counted the same way.
+    pub files: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1609,6 +1630,7 @@ impl From<rift_core::LinkSource> for LinkSource {
             rift_core::LinkSource::Md5 => LinkSource::Md5,
             rift_core::LinkSource::Manual => LinkSource::Manual,
             rift_core::LinkSource::Download => LinkSource::Download,
+            rift_core::LinkSource::Joined => LinkSource::Joined,
         }
     }
 }
@@ -2877,6 +2899,7 @@ mod tests {
             (LinkSource::Md5, "md5"),
             (LinkSource::Manual, "manual"),
             (LinkSource::Download, "download"),
+            (LinkSource::Joined, "joined"),
         ]);
         literals(&[
             (GameSource::Steam, "steam"),
@@ -3808,6 +3831,13 @@ mod tests {
                     version: Some("8".into()),
                     older: vec![older_version()],
                 }),
+                version_question: Some(VersionQuestionView {
+                    of_package_id: "00000000000000bb".into(),
+                    of_file_name: "Lantern Glow Recolor 1.3.zip".into(),
+                    of_version: Some("1.3".into()),
+                    shared_files: 5,
+                    files: 5,
+                }),
                 tree: vec![tree_node()],
             }],
         };
@@ -3823,7 +3853,18 @@ mod tests {
                 "adult",
                 "conflicted",
                 "family",
+                "versionQuestion",
                 "tree",
+            ])
+        );
+        assert_eq!(
+            keys(&json["packages"][0]["versionQuestion"]),
+            sorted(&[
+                "ofPackageId",
+                "ofFileName",
+                "ofVersion",
+                "sharedFiles",
+                "files"
             ])
         );
         assert_eq!(
@@ -3847,11 +3888,13 @@ mod tests {
             update: None,
             labels: None,
             family: None,
+            version_question: None,
             tree: vec![],
             ..view.packages[0].clone()
         })
         .unwrap();
         assert!(bare["update"].is_null() && bare["labels"].is_null() && bare["family"].is_null());
+        assert!(bare["versionQuestion"].is_null());
         assert_eq!(bare["tree"], json!([]));
     }
 

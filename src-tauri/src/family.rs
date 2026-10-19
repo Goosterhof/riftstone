@@ -1,14 +1,15 @@
 //! Versions of one Nexus file in the mods folder (v0.5, WINDOW-CONTRACT § v0.5): the shelf's
 //! families by rift-nexus's family rule, the options an install of one version replaces, and
-//! where the older-versions folder sits.
+//! where the older-versions folder sits. Ruling 10 adds the question the stone asks before the
+//! player's word joins a version Nexus cannot pin ([`version_questions`]).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use rift_core::{lower_key, ModOption, NexusLink, OptionId, Package, PackageId};
+use rift_core::{lower_key, ArchiveEntry, ModOption, NexusLink, OptionId, Package, PackageId};
 use rift_nexus::FamilyMember;
 
-use crate::dto::{FamilyView, OlderOptionMatch, OlderVersionView};
+use crate::dto::{FamilyView, OlderOptionMatch, OlderVersionView, VersionQuestionView};
 use crate::library::Shelf;
 use crate::nexus::NexusStore;
 
@@ -259,9 +260,157 @@ pub fn replaced(
         .collect()
 }
 
+/// The file names a package holds as the version question compares them: without their
+/// folders, in any case, the catalog's own `modinfo.ini` and `screenshot.*` left out.
+fn compared_names(entries: &[ArchiveEntry]) -> BTreeSet<String> {
+    entries
+        .iter()
+        .filter_map(|entry| entry.path.rsplit(['/', '\\']).next())
+        .map(lower_key)
+        .filter(|name| {
+            !name.is_empty() && name != "modinfo.ini" && !name.starts_with("screenshot.")
+        })
+        .collect()
+}
+
+/// The question a package's file names make likely against another's: how many names they
+/// share, when they share one and one's names are all among the other's.
+fn likely_shared(own: &BTreeSet<String>, theirs: &BTreeSet<String>) -> Option<usize> {
+    let shared = own.intersection(theirs).count();
+    (shared > 0 && (own.is_subset(theirs) || theirs.is_subset(own))).then_some(shared)
+}
+
+/// Every package the stone asks about (ruling 10, WINDOW-CONTRACT § v0.5, The player's word): a
+/// package whose link names a mod and no file group, in no family, beside another package of
+/// the same mod pinned to a file group the player has not said no to, when their file names
+/// make it likely. Several groups: the most names in common, then the newest. The question
+/// names the group's newest package.
+pub fn version_questions(
+    shelf: &Shelf,
+    store: &NexusStore,
+    families: &Families,
+) -> HashMap<PackageId, VersionQuestionView> {
+    let packages = shelf.packages();
+    let links: Vec<_> = packages.iter().map(|p| store.link_for(p)).collect();
+    let pinned: Vec<(usize, &NexusLink, u64)> = links
+        .iter()
+        .enumerate()
+        .filter_map(|(i, link)| {
+            let link = link.as_ref()?;
+            Some((i, link, link.group_id?))
+        })
+        .collect();
+    let mut names: HashMap<usize, BTreeSet<String>> = HashMap::new();
+    let mut names_of = |i: usize| -> BTreeSet<String> {
+        names
+            .entry(i)
+            .or_insert_with(|| compared_names(shelf.entries(&packages[i].id)))
+            .clone()
+    };
+    // The newest package of a pinned one's file: its family's lead, else itself.
+    let newest = |i: usize| -> usize {
+        families
+            .lead(&packages[i].id)
+            .and_then(|lead| packages.iter().position(|p| &p.id == lead))
+            .unwrap_or(i)
+    };
+    let recency = |i: usize| links[i].as_ref().map(|l| (l.uploaded_ms, l.file_id));
+    let mut questions = HashMap::new();
+    for (i, package) in packages.iter().enumerate() {
+        let Some(link) = links[i].as_ref() else {
+            continue;
+        };
+        if link.group_id.is_some() || families.family(&package.id).is_some() {
+            continue;
+        }
+        let own = names_of(i);
+        let declined = store.declined(&package.id);
+        // (shared names, the group's newest package)
+        let mut best: Option<(usize, usize)> = None;
+        for &(j, other, group_id) in &pinned {
+            if other.mod_id != link.mod_id || declined.contains(&group_id) {
+                continue;
+            }
+            let Some(shared) = likely_shared(&own, &names_of(j)) else {
+                continue;
+            };
+            let lead = newest(j);
+            let better = best.is_none_or(|(best_shared, best_lead)| {
+                (shared, recency(lead)) > (best_shared, recency(best_lead))
+            });
+            if better {
+                best = Some((shared, lead));
+            }
+        }
+        if let Some((shared, lead)) = best {
+            let of = &packages[lead];
+            questions.insert(
+                package.id.clone(),
+                VersionQuestionView {
+                    of_package_id: of.id.0.clone(),
+                    of_file_name: of.file_name.clone(),
+                    of_version: links[lead].as_ref().and_then(|l| l.version.clone()),
+                    shared_files: shared,
+                    files: own.len(),
+                },
+            );
+        }
+    }
+    questions
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entries(paths: &[&str]) -> Vec<ArchiveEntry> {
+        paths
+            .iter()
+            .map(|path| ArchiveEntry {
+                path: (*path).to_string(),
+                size: 1,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_question_compares_file_names_without_folders_case_or_the_catalogs_own_files() {
+        let folder = compared_names(&entries(&[
+            "modinfo.ini",
+            "reframework/autorun/Lantern Glow.lua",
+            "reframework/data/lantern_glow.json",
+        ]));
+        let zip = compared_names(&entries(&[
+            "Lantern Glow Recolor/modinfo.ini",
+            "Lantern Glow Recolor/screenshot.png",
+            "Lantern Glow Recolor/reframework/autorun/lantern glow.lua",
+            "Lantern Glow Recolor/reframework/data/lantern_glow.json",
+            "Lantern Glow Recolor/reframework/data/lantern_glow_dusk.json",
+        ]));
+        assert_eq!(folder.len(), 2, "modinfo.ini never counts");
+        assert_eq!(zip.len(), 3, "nor does a screenshot");
+        assert_eq!(
+            likely_shared(&folder, &zip),
+            Some(2),
+            "the older one's names all reappear"
+        );
+        let other_file = compared_names(&entries(&["reframework/autorun/Cloak Sway.lua"]));
+        assert_eq!(likely_shared(&other_file, &zip), None, "nothing in common");
+        let crossing = compared_names(&entries(&[
+            "reframework/autorun/lantern glow.lua",
+            "reframework/autorun/Cloak Sway.lua",
+        ]));
+        assert_eq!(
+            likely_shared(&crossing, &zip),
+            None,
+            "one name in common, but neither holds only the other's names"
+        );
+        assert_eq!(
+            likely_shared(&compared_names(&entries(&["modinfo.ini"])), &zip),
+            None,
+            "a package of nothing but modinfo.ini is asked about nothing"
+        );
+    }
 
     #[test]
     fn the_older_versions_folder_sits_beside_the_mods_folder_named_for_it() {
