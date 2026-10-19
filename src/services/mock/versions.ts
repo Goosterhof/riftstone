@@ -14,8 +14,19 @@
 //   putawayfail  putaway, whose move fails after the install committed
 //   undercroft   v1.3 alone in the mods folder, v1.2 in mods (older versions)
 //   undercroftempty / undercroftnone   the folder empty / never made
+//
+// The player's word (#00015 R18.18.8): an unpacked folder, Lantern Glow
+// Recolor, linked by mod id as Find links (mod 2207, no file, no group, no
+// version, no upload time), beside the pinned v1.3:
+//   question          v1.3 alone (installed) and the folder, nothing installed;
+//                     the stone asks (all 4 of its file names are in v1.3)
+//   questioninstalled the same, the folder installed and v1.3 not
+//   questionjoined    after the yes: the folder joined (`source: "joined"`)
+//   questionmanual    a folder that shares no name, and a second pinned file of
+//                     mod 2207 (Lantern_Glow_Candles-2207-1-0-1730000000.zip)
+//   questionrefused   question, whose join answers `refused` once
 
-import type { PackageSummary } from "@/types/rift";
+import type { NexusLink, PackageSummary, VersionQuestion } from "@/types/rift";
 import { buildPackage, type MockPackage, type PackageSeed } from "./library";
 
 export const FAMILY_NAME = "Lantern Glow Recolor";
@@ -85,6 +96,174 @@ export const familyPackage = (version: "1.3" | "1.2" | "1.1"): MockPackage => {
   const at = VERSIONS.find((v) => v.version === version) ?? VERSIONS[0];
   return buildPackage(versionSeed(at));
 };
+
+// --- R18.18: the player's word -------------------------------------------------
+
+/** The folder's own name in the mods folder, and the version it holds. */
+export const FOLDER_NAME = "Lantern Glow Recolor";
+/** A second file of the same mod, in its own file group (questionmanual). */
+export const CANDLES_FILE = "Lantern_Glow_Candles-2207-1-0-1730000000.zip";
+export const CANDLES_NAME = "Lantern Glow Candles";
+
+/** The link Find makes: the mod, and nothing that pins a file. */
+const modOnlyLink = (): NexusLink => ({
+  modId: MOD_ID,
+  fileId: null,
+  groupId: null,
+  sqid: null,
+  version: null,
+  uploadedMs: null,
+  source: "manual",
+});
+
+/** The unpacked folder: v1.3's own four file names (question), or names it shares with no file (questionmanual). */
+export function folderPackage(sharesNames: boolean): MockPackage {
+  return buildPackage({
+    fileName: FOLDER_NAME,
+    displayName: FAMILY_NAME,
+    format: "folder",
+    size: 1_400_000,
+    modifiedMs: 1_729_500_000_000,
+    nexus: modOnlyLink(),
+    options: [
+      {
+        root: MAIN_ROOT,
+        name: MAIN_NAME,
+        info: { author: "Wilhelmina's Lamplighter", description: "Amber lantern light, unpacked by hand." },
+        payload: sharesNames
+          ? [{ rel: "LanternGlowRecolor.pak", size: 520_000 }, GLOW(0), GLOW(1), GLOW(2)]
+          : [
+              { rel: "natives/stm/effect/lantern_amber/amber_00.tex.251211553", size: 300_000 },
+              { rel: "natives/stm/effect/lantern_amber/amber_01.tex.251211553", size: 300_000 },
+            ],
+      },
+    ],
+  });
+}
+
+function candlesPackage(): MockPackage {
+  return buildPackage({
+    fileName: CANDLES_FILE,
+    displayName: CANDLES_NAME,
+    format: "zip",
+    size: 655_360,
+    modifiedMs: 1_730_000_000_000,
+    nexus: {
+      modId: MOD_ID,
+      fileId: 2380,
+      groupId: 220760,
+      sqid: null,
+      version: "1.0",
+      uploadedMs: 1_730_000_000_000,
+      source: "filename",
+    },
+    options: [
+      {
+        root: "Lantern Glow Candles/Main",
+        name: "Lantern Glow — Candles",
+        info: { version: "1.0", description: "The candles alone, as their own file." },
+        payload: [{ rel: "natives/stm/effect/lantern_glow/candles_00.tex.251211553", size: 262_144 }],
+      },
+    ],
+  });
+}
+
+const QUESTION_SCENES = ["question", "questioninstalled", "questionjoined", "questionmanual", "questionrefused"];
+
+export interface QuestionScene {
+  packages: MockPackage[];
+  installed: string[];
+  /** Links as they were before a join, by package id (questionjoined). */
+  priorLinks: Map<string, NexusLink>;
+  /** The next join answers `refused` (questionrefused). */
+  joinRefuses: boolean;
+}
+
+export function questionScene(scene: ReadonlySet<string>): QuestionScene | null {
+  if (!QUESTION_SCENES.some((s) => scene.has(s))) return null;
+  const lead = familyPackage("1.3");
+  const manual = scene.has("questionmanual");
+  const folder = folderPackage(!manual);
+  const out: QuestionScene = {
+    packages: [lead, folder],
+    installed: [],
+    priorLinks: new Map(),
+    joinRefuses: scene.has("questionrefused"),
+  };
+  if (scene.has("questioninstalled")) out.installed.push(mainOf(folder));
+  else out.installed.push(mainOf(lead));
+  if (manual) out.packages.push(candlesPackage());
+  if (scene.has("questionjoined")) {
+    out.priorLinks.set(folder.summary.id, folder.summary.nexus ?? modOnlyLink());
+    folder.summary.nexus = joinedLink(folder.summary.nexus, lead.summary.nexus);
+  }
+  return out;
+}
+
+/** The yes: the other's mod and file group, `source: "joined"`; the package's
+ *  own file id, version and upload time stay as they were. */
+export function joinedLink(own: NexusLink | null, of: NexusLink | null): NexusLink {
+  return {
+    modId: of?.modId ?? MOD_ID,
+    fileId: own?.fileId ?? null,
+    groupId: of?.groupId ?? null,
+    sqid: own?.sqid ?? null,
+    version: own?.version ?? null,
+    uploadedMs: own?.uploadedMs ?? null,
+    source: "joined",
+  };
+}
+
+/** The file names a package holds, folders and case ignored, the catalog's own
+ *  `modinfo.ini` and screenshots left out (WINDOW-CONTRACT § v0.5, The player's word). */
+export function fileNamesOf(pkg: MockPackage): Set<string> {
+  const names = new Set<string>();
+  for (const entry of pkg.entries) {
+    const name = (entry.path.split(/[\\/]/).at(-1) ?? "").toLowerCase();
+    if (!name || name === "modinfo.ini" || name.startsWith("screenshot.")) continue;
+    names.add(name);
+  }
+  return names;
+}
+
+/** The spine's question for one package, or null (the mock plays the spine). */
+export interface QuestionRules {
+  inFamily: (p: MockPackage) => boolean;
+  leadOf: (p: MockPackage) => MockPackage;
+  /** The player's noes, `packageId|groupId`. */
+  declined: ReadonlySet<string>;
+}
+
+export function questionOf(
+  pkg: MockPackage,
+  packages: readonly MockPackage[],
+  { inFamily, leadOf, declined }: QuestionRules,
+): VersionQuestion | null {
+  const link = pkg.summary.nexus;
+  if (link?.groupId !== null || inFamily(pkg)) return null;
+  const mine = fileNamesOf(pkg);
+  let best: { of: MockPackage; shared: number } | null = null;
+  for (const other of packages) {
+    const theirs = other.summary.nexus;
+    if (other === pkg || !theirs || theirs.modId !== link.modId || theirs.groupId === null) continue;
+    if (declined.has(`${pkg.summary.id}|${theirs.groupId}`)) continue;
+    const names = fileNamesOf(other);
+    const shared = [...mine].filter((n) => names.has(n)).length;
+    const contained = shared === mine.size || shared === names.size;
+    if (shared < 1 || !contained) continue;
+    const lead = leadOf(other);
+    const newer = (lead.summary.nexus?.uploadedMs ?? 0) > (best?.of.summary.nexus?.uploadedMs ?? 0);
+    if (!best || shared > best.shared || (shared === best.shared && newer)) best = { of: lead, shared };
+  }
+  if (!best) return null;
+  return {
+    ofPackageId: best.of.summary.id,
+    ofFileName: best.of.summary.fileName,
+    ofVersion: best.of.summary.nexus?.version ?? null,
+    sharedFiles: best.shared,
+    files: mine.size,
+  };
+}
 
 const FAMILY_SCENES = ["family", "familyfresh", "familythree", "putaway", "putawaytaken", "putawayfail"];
 const SHELF_SCENES = ["undercroft", "undercroftempty", "undercroftnone"];

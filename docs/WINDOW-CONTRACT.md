@@ -650,6 +650,9 @@ fields on the v0.4 Muster types and on `Settings`). The design is #00015 §18.
 | `get_older_versions` | — | `OlderShelfView` | What the older-versions folder holds. |
 | `bring_back` | `fileName: string` | `BringBackResult` | Moves an item of the older-versions folder back into the mods folder. A scan follows. |
 | `open_older_versions_folder` | — | `void` | Shows the older-versions folder in Explorer, Rust-side; refused before the first put-away makes it. |
+| `join_versions` | `packageId: string, ofPackageId: string` | `void` | The player's word (ruling 10): the package is a version of `ofPackageId`'s file. Its link takes that file group, `source: "joined"`. `rift://updates-changed`. |
+| `part_versions` | `packageId: string` | `void` | Takes a `joined` link back to the link it had before, and remembers the answer as a no. `rift://updates-changed`. |
+| `decline_version_question` | `packageId: string, ofPackageId: string` | `void` | The player's no to `versionQuestion`: the question is not asked again for that file group. `rift://updates-changed`. |
 
 `plan_install`, `install`, `get_library`, `get_updates`, `search`, `get_installed`,
 `get_muster_slots` and `set_settings` keep their names and arguments; what v0.5 adds to their
@@ -754,6 +757,46 @@ the OS's own words only (`Access is denied. (os error 5)`): the window voices it
 `olderVersions`, naming the file and what was tried itself. `putAwayFailed` is a whole sentence
 that names the files and the reason; the window shows it as it is and adds where the version
 stays. No sentence names more of a path than a file's own name.
+
+### The player's word (ruling 10, 2026-10-19)
+
+The family rule needs Nexus's proof, and some older versions can never carry it: an unpacked
+folder has no archive to look up by MD5, and a link by mod id (Find, a pasted mod page) names no
+file group, so no check can pin it. The native probe of 0.5.0 met exactly that on the investor's
+library: the older version of the very file that started v0.5 sat in the mods folder as a folder
+linked by mod id, beside the pinned download, as two entries. So the player's word is proof too.
+The stone asks; it never joins on its own.
+
+**The question.** `LibraryPackage.versionQuestion` is set on a package when all of these hold:
+- its link names a mod and no file group, and it is in no family;
+- another package in the mods folder links to the same mod with a file group (the question's
+  file group), and the player has not said no to that group for this package;
+- the file names they hold, compared without their folders and in any case, and leaving out the
+  catalog's own `modinfo.ini` and `screenshot.*`, have at least one in common, and one package's
+  names are all among the other's.
+
+When several file groups qualify, it asks about the one with the most names in common, then the
+newest. `ofPackageId` is that group's newest package in the mods folder (its family's lead when it
+has one), `sharedFiles` how many names they have in common and `files` how many this package
+holds. A question is a hint, not a proof: the answer is the proof.
+
+**Yes.** `join_versions(packageId, ofPackageId)` gives the package's link `ofPackageId`'s mod and
+file group and `source: "joined"`; its file id, version and upload time stay as they were (none,
+for a folder). The family rule then reads it unchanged: one entry, THE VERSIONS card, install
+replaces, put away, keep only the newest. A joined version with no upload time and no file id
+comes last in its family, so it never leads. It needs no question: any package whose link names a
+mod and no file group may be joined to a package of the same mod that names one. Anything else is
+`refused`: either package not in the mods folder, different mods, a package that already names a
+file group, or `ofPackageId` naming none. An update check keeps the joined group unless it pins
+the package to its own exact file, which then wins (Nexus's word over the player's).
+
+**No, and taking it back.** `decline_version_question(packageId, ofPackageId)` remembers, in the
+package's `nexus.json` record, that it is not a version of that file group, and the question goes.
+`part_versions(packageId)` takes a `joined` link back to the link the package had before it was
+joined (its record keeps that one), and counts as a no for that group. It is `refused` for a link
+that is not `joined`, and takes a package in the mods folder only: a put-away version answers
+`entryNotFound` (bring it back first). A put-away version that was joined keeps its joined link
+in the older-versions folder, like any other record.
 
 ### THE MUSTER by character
 

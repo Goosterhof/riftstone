@@ -17,16 +17,23 @@
 // version is a menu-node row inside it (no ground, its file name beside the
 // label), and a lead leaf in your world only from an older version reads
 // `INSTALLED v1.2`. The words carry every state (WCAG 1.4.1).
+//
+// v0.5 (#00015 R18.18.1): a package the stone asks about carries
+// `a version of v1.3?` in the older mark's slot, cyan, and its entry opens on
+// one question row (a leaf, the menu-node look, no button: Enter opens the
+// question card in Your World). A joined version row says `· by your word`.
 import { useId } from "vue";
 import type { LibraryRow } from "@/composables/useLibrary";
 import { FORMAT_LABEL, kindsPresent, plural } from "@/services/format";
 import { troubleProblem } from "@/services/voice";
 import {
+  askMark,
+  chipVersion,
   installedFromOlder,
   olderMark,
   versionLabel,
-  versionName,
   versionRowState,
+  type AskMark,
   type OlderMark,
 } from "@/services/versions";
 import KindBadge from "./KindBadge.vue";
@@ -74,8 +81,13 @@ function fromOlder(row: LibraryRow): string | null {
   const node = row.node;
   if (!node || !row.optionId || node.kind === "bundle" || node.menuOnly) return null;
   const older = installedFromOlder(row.pkg, row.optionId, node.installed);
-  return older ? versionName(older.version, older.fileName) : null;
+  // R18.18.7: a version Nexus never named reads `INSTALLED older`, never a file name in a chip
+  return older ? chipVersion(older.version) : null;
 }
+
+/** R18.18.1: the question's mark on the questioned package's own row (never on the other's). */
+const askOf = (row: LibraryRow): AskMark | null =>
+  row.kind === "package" && row.pkg.versionQuestion ? askMark(row.pkg.versionQuestion) : null;
 
 /** The state rail's colour (§7.3, R18.1): ember > warn (an older version still
  *  installed) > gold > cyan. A version row's rail is gold when it has installs. */
@@ -136,9 +148,11 @@ const idOf = (i: number, part: string): string => `${uid}-${i}-${part}`;
 /** What describes a row: the parts of its line that carry its state. */
 function stateIds(row: LibraryRow, i: number): string | undefined {
   if (row.kind === "version") return `${idOf(i, "file")} ${idOf(i, "count")}`;
+  if (row.kind === "question") return undefined;
   if (row.kind !== "package") return row.node ? idOf(i, "meta") : undefined;
   const parts = leadVersion(row) ? ["ver", "fmt", "count"] : ["fmt", "count"];
   if (markOf(row)) parts.push("older");
+  if (askOf(row)) parts.push("ask");
   if (row.pkg.update === "available") parts.push("update");
   if (row.pkg.conflicted) parts.push("conflict");
   return parts.map((part) => idOf(i, part)).join(" ");
@@ -169,7 +183,7 @@ function stateIds(row: LibraryRow, i: number): string | undefined {
         railOf(row) ? `rail--${railOf(row)}` : null,
         {
           'is-open': row.expanded,
-          'is-quiet': row.kind === 'bundle' || row.kind === 'version' || row.node?.menuOnly,
+          'is-quiet': row.kind === 'bundle' || row.kind === 'version' || row.kind === 'question' || row.node?.menuOnly,
           'is-sel': row.optionId !== null && row.optionId === selectedId,
           'is-drawn': row.parent !== null && drawn.has(row.packageId),
         },
@@ -183,7 +197,7 @@ function stateIds(row: LibraryRow, i: number): string | undefined {
       <span
         :id="idOf(i, 'name')"
         class="ltr__label"
-        :class="{ 'is-version': row.kind === 'version' }"
+        :class="{ 'is-version': row.kind === 'version', 'is-ask': row.kind === 'question' }"
         :title="row.label"
         >{{ row.label }}</span
       >
@@ -219,6 +233,12 @@ function stateIds(row: LibraryRow, i: number): string | undefined {
           ><span class="ltr__older-full" aria-hidden="true">{{ markOf(row)?.text }}</span
           ><span class="ltr__older-short" aria-hidden="true">{{ markOf(row)?.short }}</span
           ><span class="rs-sr-only">{{ markOf(row)?.hidden }}</span></span
+        >
+        <!-- R18.18.1: the question, cyan (it is about the mods folder, not your game); no rail change -->
+        <span v-if="askOf(row)" :id="idOf(i, 'ask')" class="ltr__older ltr__ask" :title="askOf(row)?.hidden"
+          ><span class="ltr__older-full" aria-hidden="true">{{ askOf(row)?.text }}</span
+          ><span class="ltr__older-short" aria-hidden="true">{{ askOf(row)?.short }}</span
+          ><span class="rs-sr-only">{{ askOf(row)?.hidden }}</span></span
         >
         <StateChip v-if="row.pkg.update === 'available'" :id="idOf(i, 'update')" state="update" />
         <span v-if="row.pkg.conflicted" :id="idOf(i, 'conflict')" class="ltr__sword"
@@ -421,6 +441,17 @@ function stateIds(row: LibraryRow, i: number): string | undefined {
 }
 .ltr__older-short {
   display: none;
+}
+/* R18.18.1: the question, in the older mark's slot, cyan (rift on mist 12.27) */
+.ltr__older.ltr__ask {
+  color: var(--rs-rift);
+  font: 400 14px var(--rs-font-sans);
+}
+/* R18.18.1: the question row, the menu-node look in Alegreya 500 cyan */
+.ltr__label.is-ask {
+  flex: 0 1 auto;
+  color: var(--rs-rift);
+  font: 500 14px var(--rs-font-sans);
 }
 /* R18.2: the version row's label keeps the menu-node look */
 .ltr__label.is-version {

@@ -56,7 +56,13 @@ export type SceneName =
   | "putawayfail"
   | "undercroft"
   | "undercroftempty"
-  | "undercroftnone";
+  | "undercroftnone"
+  // v0.5: the player's word (#00015 R18.18.8)
+  | "question"
+  | "questioninstalled"
+  | "questionjoined"
+  | "questionmanual"
+  | "questionrefused";
 
 /** One scenario, or two combined: the mock reads its query string comma-separated. */
 export type Scene = SceneName | `${Exclude<SceneName, "">},${Exclude<SceneName, "">}`;

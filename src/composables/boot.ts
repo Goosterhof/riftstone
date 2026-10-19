@@ -67,19 +67,25 @@ async function onGameChanged(): Promise<void> {
   await useLaunch().onGameChanged();
 }
 
-/** A check found (or cleared) updates, a link changed, a download landed or
- *  the account's standing changed: the far world, every card's badge and
+/** A check found (or cleared) updates, a link changed (the player's word
+ *  joining or parting versions too), a download landed or the account's
+ *  standing changed: the far world, every card's badge and
  *  labels, the tree, and the open detail — its labels decide the "adult"
  *  veil, so a stale detail would show what its card now blurs. */
 async function onUpdatesChanged(): Promise<void> {
-  await Promise.all([
+  const tasks: Promise<unknown>[] = [
     useFarWorld().load(),
     useSearch().run(),
     useStone().refreshOverview(),
     useLabels().load(),
     useLibrary().load(),
     useWorld().refresh(),
-  ]);
+  ];
+  // v0.5 (#00015 R18.18.9, 1): a join or a take-back relabels a package, and the
+  // spine reads YOUR WORLD's conflicts afresh after it, so a joined stacked pair
+  // drops its version-against-version conflict without a manual refresh.
+  if (useInstalled().view.value || useNavigation().page.value === "world") tasks.push(useInstalled().load());
+  await Promise.all(tasks);
 }
 
 /** v0.3: an nxm:// link reached the stone (the site's Mod Manager Download

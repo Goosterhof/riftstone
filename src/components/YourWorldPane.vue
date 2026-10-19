@@ -30,8 +30,9 @@ const nav = useNavigation();
 const farWorld = useFarWorld();
 const preflight = usePreflight();
 
-/** v0.5 (R18.4): THE VERSIONS card stands over what the pane held; closing it returns there. */
-const versionsOpen = computed(() => versions.leadId.value !== null);
+/** v0.5 (R18.4): THE VERSIONS card stands over what the pane held; closing it returns there.
+ *  R18.18.6: its question form may stand with no file picked yet. */
+const versionsOpen = computed(() => versions.leadId.value !== null || versions.asking.value !== null);
 const selected = computed(() => world.selectedId.value !== null || versionsOpen.value);
 const railWorld = computed(() => !versionsOpen.value && world.isInstalled.value);
 // picking an option (or closing it) is a new thing for the pane: the card steps aside

@@ -197,6 +197,12 @@ export interface RiftBackend {
   bringBack(fileName: string): Promise<BringBackResult>;
   /** v0.5: show the older-versions folder in Explorer, Rust-side (refused before it exists). */
   openOlderVersionsFolder(): Promise<void>;
+  /** v0.5 (ruling 10): the player's word that `packageId` is a version of `ofPackageId`'s file. */
+  joinVersions(packageId: string, ofPackageId: string): Promise<void>;
+  /** v0.5: takes a `joined` link back to the link it had before; counts as a no. */
+  partVersions(packageId: string): Promise<void>;
+  /** v0.5: the player's no to `versionQuestion`; the stone does not ask about that file again. */
+  declineVersionQuestion(packageId: string, ofPackageId: string): Promise<void>;
   /** Subscribe to a backend event; resolves to an unsubscribe function. */
   on<T>(event: RiftEvent, handler: (payload: T) => void): Promise<() => void>;
   openUrl(url: string): Promise<void>;
@@ -273,6 +279,9 @@ async function tauriBackend(): Promise<RiftBackend> {
     getOlderVersions: () => invoke("get_older_versions"),
     bringBack: (fileName) => invoke("bring_back", { fileName }),
     openOlderVersionsFolder: () => invoke("open_older_versions_folder"),
+    joinVersions: (packageId, ofPackageId) => invoke("join_versions", { packageId, ofPackageId }),
+    partVersions: (packageId) => invoke("part_versions", { packageId }),
+    declineVersionQuestion: (packageId, ofPackageId) => invoke("decline_version_question", { packageId, ofPackageId }),
     on: async (event, handler) => {
       const unlisten = await listen(event, (e) => {
         handler(e.payload as never);

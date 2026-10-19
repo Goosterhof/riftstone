@@ -5,20 +5,28 @@
 // closing it returns the pane to that (the option's detail, or the summary).
 // stage walks:  card → keepPlan → keeping → kept | failed
 
-import { computed, nextTick, ref } from "vue";
-import type { KeepNewestPlanView, KeepNewestResultView, PutAwayView } from "@/types/rift";
+import { computed, nextTick, ref, watch } from "vue";
+import type { KeepNewestPlanView, KeepNewestResultView, LibraryPackage, PutAwayView } from "@/types/rift";
 import { asRiftFailure, rift } from "@/services/rift";
-import { failureDetails, voice, voicedLine, type Voiced } from "@/services/voice";
+import { failureDetails, voice, voicedLine, type RecoveryKind, type Voiced } from "@/services/voice";
 import {
+  JOINED_LINE,
+  askedKind,
+  askedOf,
   broughtBackToast,
   familyNames,
+  joinCandidates,
+  keptApartToast,
   keptToast,
   olderPlace,
+  partedToast,
   putAwayToast,
   versionName,
   type FamilyEntry,
+  type JoinCandidate,
 } from "@/services/versions";
-import { useLibrary } from "./useLibrary";
+import { questionKey, useLibrary } from "./useLibrary";
+import { useStone } from "./useStone";
 import { useNavigation } from "./useNavigation";
 import { useToasts } from "./useToasts";
 import { useUndercroft } from "./useUndercroft";
@@ -40,6 +48,30 @@ const keptNames = ref<ReadonlyMap<string, string>>(new Map());
 /** Put-away lines by their landed name. */
 const lines = ref<ReadonlyMap<string, PutAwayLineState>>(new Map());
 
+// --- R18.18: the player's word --------------------------------------------------
+
+/** The package the card asks about, when it stands in its question form; `manual`
+ *  for R18.18.6's door (no question, the player names the file). */
+const asking = ref<{ packageId: string; manual: boolean } | null>(null);
+/** R18.18.6: the file the player picked when two or more qualify; else the one. */
+const picked = ref<string | null>(null);
+/** The word in flight: the yes (until the library draws the join) or the no. */
+const word = ref<"idle" | "joining" | "declining">("idle");
+/** The package `Take it back` is parting now. */
+const parting = ref<string | null>(null);
+/** R18.18.5: a word that did not land, voiced inside the card. */
+type WordAct = "join" | "decline" | "part";
+const wordFailure = ref<{ voiced: Voiced; details: string; act: WordAct; packageId: string } | null>(null);
+/** R18.18.3: `Joined by your word…`, above the rows once the join is drawn. */
+const joinedLine = ref<string | null>(null);
+/** The one watch waiting for the library's next answer (a join or a take-back landing). */
+let landing: (() => void) | null = null;
+
+function stopLanding(): void {
+  landing?.();
+  landing = null;
+}
+
 /** The open card's entry, read from the library the tree draws. */
 const entry = computed<FamilyEntry | null>(
   () => useLibrary().entries.value.find((e) => e.lead.package.id === leadId.value) ?? null,
@@ -54,6 +86,7 @@ function open(packageId: string): void {
   keepPlan.value = null;
   kept.value = null;
   failure.value = null;
+  forgetWord();
 }
 
 function close(): void {
@@ -62,6 +95,210 @@ function close(): void {
   keepPlan.value = null;
   kept.value = null;
   failure.value = null;
+  forgetWord();
+}
+
+function forgetWord(): void {
+  stopLanding();
+  asking.value = null;
+  picked.value = null;
+  word.value = "idle";
+  wordFailure.value = null;
+  joinedLine.value = null;
+}
+
+const libraryPackage = (packageId: string): LibraryPackage | null =>
+  useLibrary().packages.value.find((p) => p.package.id === packageId) ?? null;
+
+/** The questioned package, read from the library as it is now. */
+const askedPackage = computed<LibraryPackage | null>(() =>
+  asking.value ? libraryPackage(asking.value.packageId) : null,
+);
+
+/** R18.18.6: the files the manual join may name (read from the contract's fields). */
+const candidates = computed<JoinCandidate[]>(() => {
+  const pkg = askedPackage.value;
+  return pkg && asking.value?.manual ? joinCandidates(pkg, useLibrary().packages.value) : [];
+});
+
+/** R18.18.1 / R18.18.6: THE VERSIONS card in its question form. With a question
+ *  the card draws the file it names; without one (the manual door) the one file
+ *  that qualifies, or none until the player picks among two or more. */
+function openQuestion(packageId: string): void {
+  close();
+  const pkg = libraryPackage(packageId);
+  if (!pkg) return;
+  const q = pkg.versionQuestion;
+  if (q) {
+    asking.value = { packageId, manual: false };
+    leadId.value = q.ofPackageId;
+    return;
+  }
+  asking.value = { packageId, manual: true };
+  const offered = candidates.value;
+  if (offered.length === 1) pick(offered[0]?.packageId ?? null);
+}
+
+/** R18.18.6: the radio list's pick; the card draws that file's versions above the folder. */
+function pick(packageId: string | null): void {
+  picked.value = packageId;
+  leadId.value = packageId;
+}
+
+/** The file the yes or the no names: always `versionQuestion`'s own id, never
+ *  recomputed; the manual door's pick when there is no question. */
+function ofIdNow(): string | null {
+  const a = asking.value;
+  if (!a) return null;
+  return a.manual ? picked.value : (askedPackage.value?.versionQuestion?.ofPackageId ?? null);
+}
+
+/** The file asked about as the copy names it (`v1.3`, else the file's name). */
+function ofNameNow(): string {
+  const q = askedPackage.value?.versionQuestion;
+  if (q) return askedOf(q).text;
+  const chosen = candidates.value.find((c) => c.packageId === picked.value);
+  return chosen ? versionName(chosen.version, chosen.fileName) : "that file";
+}
+
+function wordFailed(raw: unknown, act: WordAct, packageId: string, extra: Record<string, string>): void {
+  const f = asRiftFailure(raw);
+  const failed = { kind: f.kind, detail: { ...f.detail, act, ...extra } };
+  wordFailure.value = {
+    voiced: voice(failed, "olderVersions"),
+    details: failureDetails(failed, "olderVersions"),
+    act,
+    packageId,
+  };
+}
+
+/** Waits for the library's next answer to show `done`, then runs `then` once. */
+function whenLibrary(done: () => boolean, then: () => void): void {
+  stopLanding();
+  const stop = watch(
+    () => useLibrary().packages.value,
+    () => {
+      if (!done()) return;
+      stopLanding();
+      then();
+    },
+    { immediate: false },
+  );
+  landing = stop;
+}
+
+/** R18.18.3: the yes. Both ids from `versionQuestion` (or the manual pick). The
+ *  card changes at the library's next answer, never when the command resolves. */
+async function join(): Promise<void> {
+  const a = asking.value;
+  const ofId = ofIdNow();
+  const pkg = askedPackage.value;
+  if (!a || !ofId || !pkg || word.value !== "idle") return;
+  const packageId = a.packageId;
+  const of = ofNameNow();
+  word.value = "joining";
+  wordFailure.value = null;
+  try {
+    const backend = await rift();
+    await backend.joinVersions(packageId, ofId);
+  } catch (raw) {
+    word.value = "idle";
+    wordFailed(raw, "join", packageId, { of, what: askedKind(pkg), file: pkg.package.fileName });
+    return;
+  }
+  whenLibrary(
+    () => {
+      const now = libraryPackage(packageId);
+      return now?.package.nexus?.source === "joined" && !!now.family;
+    },
+    () => {
+      const now = libraryPackage(packageId);
+      const lead = now?.family?.lead ?? ofId;
+      asking.value = null;
+      picked.value = null;
+      word.value = "idle";
+      leadId.value = lead;
+      joinedLine.value = JOINED_LINE;
+      // the lead's entry opens in the expansion memory; the roving stop moves to the joined row
+      const library = useLibrary();
+      library.expand(lead);
+      library.focusedKey.value = packageId;
+    },
+  );
+}
+
+/** R18.18.4: the no. The card closes once the spine remembers it. */
+async function decline(): Promise<void> {
+  const a = asking.value;
+  const ofId = ofIdNow();
+  const pkg = askedPackage.value;
+  if (!a || a.manual || !ofId || !pkg || word.value !== "idle") return;
+  word.value = "declining";
+  wordFailure.value = null;
+  try {
+    const backend = await rift();
+    await backend.declineVersionQuestion(a.packageId, ofId);
+  } catch (raw) {
+    word.value = "idle";
+    wordFailed(raw, "decline", a.packageId, { of: ofNameNow(), what: askedKind(pkg), file: pkg.package.fileName });
+    return;
+  }
+  const kind = askedKind(pkg);
+  close();
+  useToasts().push("rift", keptApartToast(kind));
+}
+
+/** R18.18.3: `Take it back`, on a joined row of THE VERSIONS card only. No
+ *  confirm (R18.18.6 joins it again). A family left with one member closes the card. */
+async function takeBack(packageId: string): Promise<void> {
+  const pkg = libraryPackage(packageId);
+  if (pkg?.package.nexus?.source !== "joined" || parting.value) return;
+  const fileName = pkg.package.fileName;
+  parting.value = packageId;
+  wordFailure.value = null;
+  joinedLine.value = null;
+  try {
+    const backend = await rift();
+    await backend.partVersions(packageId);
+  } catch (raw) {
+    wordFailed(raw, "part", packageId, { file: fileName });
+    return;
+  } finally {
+    parting.value = null;
+  }
+  useToasts().push("rift", partedToast(fileName));
+  whenLibrary(
+    () => libraryPackage(packageId)?.package.nexus?.source !== "joined",
+    () => {
+      if (!entry.value || entry.value.older.length === 0) close();
+    },
+  );
+}
+
+/** R18.18.5's doors: `Scan again`, `Try again`, `Copy details`. */
+async function recoverWord(kind: RecoveryKind): Promise<void> {
+  const failed = wordFailure.value;
+  if (!failed) return;
+  if (kind === "copyDetails") {
+    await copy(failed.details);
+    return;
+  }
+  wordFailure.value = null;
+  if (kind === "rescan") {
+    await useStone().startScan();
+    return;
+  }
+  if (kind !== "retry") return;
+  if (failed.act === "join") await join();
+  else if (failed.act === "decline") await decline();
+  else await takeBack(failed.packageId);
+}
+
+/** THE FAR WORLD's door (R18.18.1): the Rift, the package open, its question row
+ *  focused, and the question card. */
+async function showQuestion(packageId: string): Promise<void> {
+  await showInRift(packageId, questionKey(packageId));
+  openQuestion(packageId);
 }
 
 const familyName = (): string => entry.value?.lead.package.displayName ?? "this file";
@@ -255,12 +492,28 @@ export function useVersions() {
     showInRift,
     showVersions,
     copy,
+    asking,
+    askedPackage,
+    candidates,
+    picked,
+    word,
+    parting,
+    wordFailure,
+    joinedLine,
+    openQuestion,
+    pick,
+    join,
+    decline,
+    takeBack,
+    recoverWord,
+    showQuestion,
   };
 }
 
 export function resetVersions(): void {
   close();
   puttingAway.value = null;
+  parting.value = null;
   lines.value = new Map();
   keptNames.value = new Map();
 }

@@ -2474,6 +2474,8 @@ The wire is WINDOW-CONTRACT § v0.5, the design #00015 §18.
    It is never a delete or an edit, and it never lands on an existing file.
 2. **A family is proven by Nexus, never guessed.** The same mod and the same file group, or a
    check that named the other's exact file as newer. Names and sizes never make a family.
+   *Amended by ruling 10:* the player's word is proof too; names may make a question, never a
+   family.
 3. **One entry per file.** The window folds; the spine keeps listing every package, with
    `family` on each.
 4. **Installing a version replaces the other versions' installs of the same option** in one
@@ -2490,6 +2492,15 @@ The wire is WINDOW-CONTRACT § v0.5, the design #00015 §18.
 8. **The chosen character is remembered in `settings.json`.** v0.4 kept the pick for the session
    only; the investor's "that's the one that will show up" overrides that.
 9. **Version 0.5.0.**
+10. **The player's word (investor, 2026-10-19).** The native probe of 0.5.0 on the investor's own
+    library found 0 families. The older version of the very file that started v0.5 is an
+    unpacked folder linked by mod id through Find: no MD5 can pin a folder, and a mod-id link
+    names no file group, so ruling 2 could never tie it to the pinned download beside it. Asked,
+    the investor ruled that the player's word pins it. A package whose link names a mod and no
+    file group may be joined to a file group another package of the same mod is pinned to
+    (`source: "joined"`), and the family rule takes it from there unchanged. The stone asks only
+    when the file names say it is likely, and never joins on its own. A no is remembered per file
+    group, and a join can be taken back (WINDOW-CONTRACT § v0.5, The player's word).
 
 ### § rift-nexus (grows: families)
 
@@ -2626,6 +2637,19 @@ against the code they had left, and fixed what those specs found.
   `SWEPT_CLEAN` (5a01aa5, v0.4.1, where it last passed clean), as it sets aside the save names
   `BEFORE_SAVES` held; a Steam account's numbers never are. Four self-test checks pin the rule,
   each seen to fail against its mutant. The rerun read 0 hits, 1 id set aside.
+- **The player's word** (ruling 10, 2026-10-19). The spine (`9efd0e3`): `LinkSource::Joined`; a
+  `nexus.json` record keeps the link it had before a join (`joinedOver`) and the groups the player
+  declined (`declinedGroups`), both skipped when empty; `LibraryPackage.versionQuestion`; the
+  three commands. `spine_word.rs` (5 tests) rebuilds the investor's shape with invented names, and
+  five mutants (a no ignored, a take-back losing the old link, a pinned package asked, the mod
+  check dropped, `modinfo.ini` counted) each turn a test red. The window (#00015 §18.18, Bold
+  Choice 23): the tree's mark and question row, THE VERSIONS card's question form, `by your word`
+  and *Take it back*, the option detail's line and the one manual door, THE FAR WORLD's sub-row,
+  `INSTALLED older`, and YOUR WORLD reloaded on `rift://updates-changed`. `playersWord.spec.ts`
+  (19), five mock scenes (`question`, `questioninstalled`, `questionjoined`, `questionmanual`,
+  `questionrefused`). A headless render pass at 1320 and 1024 looked at the question, the yes, the
+  manual pick and THE FAR WORLD row: 0 page errors. Gates: Rust 973 passed, 0 failed, 11 ignored;
+  window 452/452 in 40 files; typecheck, lint, format and build clean.
 - **Left for the native run:** the Windows-only code v0.5 adds (`landing::move_new`'s
   `MoveFileExW`, moved from `downloads.rs` unchanged) compiles nowhere but Windows, and THE
   UNDERCROFT's move has never crossed NTFS. Still open from §18.14: Q18.11 (whether a slot reads as

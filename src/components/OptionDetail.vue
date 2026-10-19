@@ -22,6 +22,11 @@ import { useLibrary } from "@/composables/useLibrary";
 import { useVersions } from "@/composables/useVersions";
 import {
   installedFromOlder,
+  ASK_DETAIL_DOOR,
+  MANUAL_DOOR,
+  MANUAL_LINE,
+  askDetailLine,
+  joinCandidates,
   leadOptionLine,
   olderOptionLine,
   olderPlace,
@@ -89,6 +94,18 @@ const familyLine = computed<{ text: string; door: DetailLine | null } | null>(()
   if (!older) return null;
   const line = leadOptionLine(versionName(older.version, older.fileName), lead, installed);
   return { text: line.text, door: line };
+});
+/** R18.18.1 / R18.18.6: the player's word in the family slot. A question shows
+ *  its line and `Show both versions…` (no yes or no here: you answer where the
+ *  two are drawn); a package the stone does not ask about, linked to its mod and
+ *  to no file while a file of that mod is pinned, gets the one manual door. */
+const wordLine = computed<{ text: string; door: string } | null>(() => {
+  if (familyLine.value) return null;
+  const packages = library.packages.value;
+  const pkg = packages.find((p) => p.package.id === detail.package.id);
+  if (!pkg) return null;
+  if (pkg.versionQuestion) return { text: askDetailLine(pkg.versionQuestion), door: ASK_DETAIL_DOOR };
+  return joinCandidates(pkg, packages).length ? { text: MANUAL_LINE, door: MANUAL_DOOR } : null;
 });
 const installLabel = computed(() =>
   familyLine.value?.door?.door === "install" ? familyLine.value.door.doorLabel : "Install…",
@@ -234,6 +251,10 @@ function crumb(name: string): void {
     </div>
 
     <p v-if="familyLine && !planning" class="odetail__family">{{ familyLine.text }}</p>
+    <div v-if="wordLine && !planning" class="odetail__word">
+      <p class="odetail__family">{{ wordLine.text }}</p>
+      <RiftButton @click="versions.openQuestion(detail.package.id)">{{ wordLine.door }}</RiftButton>
+    </div>
 
     <div v-if="!planning" class="odetail__doors">
       <RiftButton
@@ -411,6 +432,16 @@ function crumb(name: string): void {
   color: var(--rs-text);
   font-size: var(--rs-text-sm);
   line-height: 1.45;
+}
+/* R18.18.1 / R18.18.6: the player's word, one line and one Secondary door */
+.odetail__word {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rs-space-2) var(--rs-space-3);
+}
+.odetail__word .odetail__family {
+  flex: 1 1 24ch;
 }
 .odetail__doors {
   display: flex;

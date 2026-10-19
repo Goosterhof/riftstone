@@ -209,7 +209,7 @@ defineExpose({ focusCard, focusTree });
     class="room"
     :class="{
       'is-lookbook': lookbookMode,
-      'has-overlay': (world.selectedId.value || versions.leadId.value) && !lookbookMode,
+      'has-overlay': (world.selectedId.value || versions.leadId.value || versions.asking.value) && !lookbookMode,
     }"
   >
     <main class="rift" aria-label="The Rift">

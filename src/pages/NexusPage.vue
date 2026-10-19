@@ -24,7 +24,7 @@ import { usePreflight, NEXUS_KEY_URL } from "@/composables/usePreflight";
 import { keyStateOf, type NexusKeyState } from "@/services/pending";
 import type { RecoveryKind } from "@/services/voice";
 import { formatAgo, formatDate, plural } from "@/services/format";
-import { farSubRow, versionName, type FarSubRow } from "@/services/versions";
+import { FAR_ASK_DOOR, farAskLine, farSubRow, linkSourceText, versionName, type FarSubRow } from "@/services/versions";
 import { nodeKey, useLibrary } from "@/composables/useLibrary";
 import { useVersions } from "@/composables/useVersions";
 import FailureNotice from "@/components/FailureNotice.vue";
@@ -241,6 +241,11 @@ function olderDoor(row: UpdateRow, line: FarSubRow): void {
   }
   const first = library.packages.value.find((p) => p.package.id === row.packageId)?.tree[0];
   void versions.showInRift(row.packageId, first ? nodeKey(first, row.packageId) : null);
+}
+/** R18.18.1: the stone's question under the questioned package's own row (no yes or no here). */
+function askLine(row: UpdateRow): string | null {
+  const q = library.packages.value.find((p) => p.package.id === row.packageId)?.versionQuestion;
+  return q ? farAskLine(q) : null;
 }
 const nexus = useNexusAccount();
 const scroller = ref<HTMLElement | null>(null);
@@ -573,7 +578,7 @@ onBeforeUnmount(() => {
                 <td>
                   <span class="far__name">{{ row.packageName }}</span>
                   <span class="far__dim rs-mono">
-                    mod {{ row.link?.modId }} · {{ row.link?.source === "md5" ? "by MD5" : row.link?.source }}</span
+                    mod {{ row.link?.modId }} · {{ row.link ? linkSourceText(row.link.source) : "" }}</span
                   >
                 </td>
                 <td class="rs-mono">{{ row.localVersion ? `v${row.localVersion}` : "—" }}</td>
@@ -646,6 +651,19 @@ onBeforeUnmount(() => {
                       @click="olderDoor(row, line)"
                       >{{ line.doorLabel }}</RiftButton
                     >
+                  </p>
+                </td>
+              </tr>
+              <tr
+                v-for="line in [askLine(row)].filter((l): l is string => l !== null)"
+                :key="`ask-${row.packageId}`"
+                class="far__subrow"
+              >
+                <td colspan="5">
+                  <p class="far__older far__ask">
+                    <span class="far__older-glyph" aria-hidden="true">↳</span>
+                    <span>{{ line }}</span>
+                    <RiftButton size="sm" @click="versions.showQuestion(row.packageId)">{{ FAR_ASK_DOOR }}</RiftButton>
                   </p>
                 </td>
               </tr>
@@ -1065,6 +1083,10 @@ onBeforeUnmount(() => {
 .far__linkedrow:has(+ .far__subrow) td,
 .far__subrow:has(+ .far__subrow) td {
   border-bottom: 0;
+}
+/* R18.18.1: the stone's question, Alegreya 14 muted (8.84 on void) */
+.far__older.far__ask {
+  color: var(--rs-muted);
 }
 /* R18.8: the older versions' line, the row's own (↳), never a column */
 .far__older {

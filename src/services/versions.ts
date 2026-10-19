@@ -8,7 +8,7 @@
 // version is the same option as which of another (`OlderVersionView.matches`):
 // this module only groups by the one and reads the other, never works either out.
 
-import type { LibraryPackage, OlderVersionView, ReplacesView } from "@/types/rift";
+import type { LibraryPackage, LinkSource, OlderVersionView, ReplacesView, VersionQuestion } from "@/types/rift";
 import { plural } from "./format";
 
 /** The folder's plain name, in every label and sentence (the inscription is THE UNDERCROFT). */
@@ -140,15 +140,19 @@ export function olderMark(older: readonly OlderVersionView[]): OlderMark | null 
   };
 }
 
-/** R18.2: a version row's label. */
-export const versionRowLabel = (version: string | null): string =>
-  version ? `${versionLabel(version)} · older version` : "older version";
+/** R18.2: a version row's label; R18.18.3: a joined member says whose word it is. */
+export const versionRowLabel = (version: string | null, joined = false): string =>
+  `${version ? `${versionLabel(version)} · older version` : "older version"}${joined ? ` · ${BY_YOUR_WORD}` : ""}`;
 
 export const versionRowState = (installed: number): string =>
   installed > 0 ? `${installed} in your world` : "nothing installed";
 
 /** R18.3: the lead leaf's chip suffix when its option is in your world only from
  *  an older version (a match whose `leadOptionId` is the leaf's is installed). */
+/** R18.3 / R18.18.7: the chip's version: `v1.2`, or `older` for a version
+ *  Nexus never named (never a file name in a chip). */
+export const chipVersion = (version: string | null): string => (version ? versionLabel(version) : "older");
+
 export function installedFromOlder(
   lead: Pick<LibraryPackage, "family">,
   leadOptionId: string,
@@ -333,4 +337,150 @@ export function broughtBackToast(
   return lead
     ? `${what} is back in your mods folder. It sits under ${lead} in the Rift.`
     : `${what} is back in your mods folder.`;
+}
+
+// --- R18.18: the player's word (a question Nexus can't answer) ---------------
+//
+// The spine sets `versionQuestion` and decides which file it asks about; the
+// window reads `ofPackageId`, `sharedFiles` and `files` as given and never
+// counts a file name or picks a lead itself (Pattern 013).
+
+export const BY_YOUR_WORD = "by your word";
+export const ASKING_HEAD = "VERSIONS OF ONE FILE?";
+
+/** A link source as THE FAR WORLD's row prints it (R18.18.3): never the raw `joined`. */
+export const linkSourceText = (source: LinkSource): string => {
+  if (source === "md5") return "by MD5";
+  if (source === "joined") return BY_YOUR_WORD;
+  return source;
+};
+
+/** What the questioned package is called in the question: a folder or an archive. */
+export type AskedKind = "folder" | "archive";
+export const askedKind = (pkg: Pick<LibraryPackage, "package">): AskedKind =>
+  pkg.package.format === "folder" ? "folder" : "archive";
+
+/** The file the question is about: `v1.3`, else its file name (drawn in mono). */
+export interface AskedOf {
+  text: string;
+  mono: boolean;
+}
+export const askedOf = (q: Pick<VersionQuestion, "ofVersion" | "ofFileName">): AskedOf =>
+  q.ofVersion ? { text: versionLabel(q.ofVersion), mono: false } : { text: q.ofFileName, mono: true };
+
+/** R18.18.1: the tree's mark after the counts, its folded form and its hidden words. */
+export interface AskMark {
+  text: string;
+  short: string;
+  hidden: string;
+}
+export function askMark(q: VersionQuestion): AskMark {
+  const of = askedOf(q).text;
+  return {
+    text: `a version of ${of}?`,
+    short: "?",
+    hidden: `The stone asks whether this is a version of the same file as ${of}`,
+  };
+}
+
+/** R18.18.1: the question row, the entry's first child. */
+export const askRowLabel = (q: VersionQuestion): string => `Is this a version of ${askedOf(q).text}?`;
+
+/** R18.18.1: the World pane's line under an option of the questioned package. */
+export const askDetailLine = (q: VersionQuestion): string =>
+  `The stone thinks this may be a version of the same file as ${askedOf(q).text}.`;
+export const ASK_DETAIL_DOOR = "Show both versions…";
+
+/** R18.18.2: the evidence, read only from the spine's two counts. `of` is the
+ *  file's name in the sentence (`v1.3`, or `it` in THE FAR WORLD's row). */
+export function evidenceLine(q: Pick<VersionQuestion, "sharedFiles" | "files">, of: string): string {
+  if (q.files === 1) return `Its one file name is in ${of} too.`;
+  if (q.sharedFiles === q.files) return `All ${q.files} of its file names are in ${of} too.`;
+  return `${q.sharedFiles} of its ${q.files} file names are in ${of} too.`;
+}
+export const NEXUS_CANT_TELL = "Nexus can't tell: its link names the mod, not the file. Your word can.";
+
+/** R18.18.1: THE FAR WORLD's sub-row under the questioned package's own row. */
+export function farAskLine(q: VersionQuestion): string {
+  const evidence = evidenceLine(q, "it");
+  return `The stone thinks this may be a version of the same file as ${askedOf(q).text}: ${evidence.charAt(0).toLowerCase()}${evidence.slice(1)}`;
+}
+export const FAR_ASK_DOOR = "Show both versions in the Rift";
+
+/** R18.18.2: the question, around the file's name (drawn in mono when it is a file name). */
+export const askedQuestion = (kind: AskedKind): { before: string; after: string } => ({
+  before: `Is this ${kind} a version of the same file as `,
+  after: "?",
+});
+/** R18.18.6: the question before the player picks among two or more files. */
+export const askedQuestionOpen = (kind: AskedKind): string => `Is this ${kind} a version of one of these files?`;
+/** R18.18.6: the radio list's name. */
+export const PICK_LEGEND = "Which file is it a version of?";
+/** R18.18.6: one file in the radio list: `v1.3 · Lantern_Glow_Recolor-….zip`. */
+export const candidateLabel = (c: JoinCandidate): string =>
+  c.version ? `${versionLabel(c.version)} · ${c.fileName}` : c.fileName;
+/** R18.18.2: the questioned package's row label: never a version. */
+export const askedRowLabel = (kind: AskedKind): string => `this ${kind}`;
+
+export const JOIN_DOOR = "Yes, join them";
+export const KEEP_APART_DOOR = "No, keep them apart";
+export const JOINING_HELD = "The stone is joining them.";
+export const DECLINING_HELD = "The stone is remembering your no.";
+export const PICK_HELD = "Pick the file this is a version of first.";
+export const TAKE_IT_BACK = "Take it back";
+
+/** R18.18.3: the one line above the rows once the join is drawn (and the live region's). */
+export const JOINED_LINE = "Joined by your word. The Rift shows one entry for this file now.";
+
+/** R18.18.3: `Take it back` landed. */
+export const partedToast = (fileName: string): string =>
+  `${fileName} is its own entry in the Rift again. The stone won't ask about it again.`;
+
+/** R18.18.4: the no landed. */
+export const keptApartToast = (kind: AskedKind): string => `Kept apart. The stone won't ask about this ${kind} again.`;
+
+// --- R18.18.6: join without the question, one door -----------------------------
+
+export const MANUAL_LINE = "Nexus links this to its mod but not to one of its files.";
+export const MANUAL_DOOR = "This is a version of…";
+export const MANUAL_NOTE =
+  "The stone isn't asking: their file names don't say so. Join them only if you know they are.";
+
+/** One file the manual join may name: its group's newest package, read from the spine's `family.lead`. */
+export interface JoinCandidate {
+  packageId: string;
+  version: string | null;
+  fileName: string;
+}
+
+/** R18.18.6's predicate, on the contract's own fields only: the package's link
+ *  names a mod and no file group, it is in no family and asked nothing, and the
+ *  library holds a package of the same mod with a file group. Each such group
+ *  is offered once, by its lead (the spine's `family.lead`, else the package). */
+/** The modId of a package the manual door may offer for: linked to a mod, to no file group, in no family, asked nothing. */
+function unpinnedMod(pkg: LibraryPackage): number | null {
+  const link = pkg.package.nexus;
+  if (link?.groupId !== null || pkg.family !== null || pkg.versionQuestion !== null) return null;
+  return link.modId;
+}
+
+/** Another package pinned to a file group of the same mod. */
+const pinnedOf = (other: LibraryPackage, modId: number): boolean =>
+  other.package.nexus?.modId === modId && other.package.nexus.groupId !== null;
+
+export function joinCandidates(pkg: LibraryPackage, packages: readonly LibraryPackage[]): JoinCandidate[] {
+  const modId = unpinnedMod(pkg);
+  if (modId === null) return [];
+  const byId = new Map(packages.map((p) => [p.package.id, p]));
+  const leads = new Map<string, LibraryPackage>();
+  for (const other of packages) {
+    if (other === pkg || !pinnedOf(other, modId)) continue;
+    const lead = byId.get(other.family?.lead ?? other.package.id) ?? other;
+    leads.set(lead.package.id, lead);
+  }
+  return [...leads.values()].map((lead) => ({
+    packageId: lead.package.id,
+    version: lead.package.nexus?.version ?? null,
+    fileName: lead.package.fileName,
+  }));
 }

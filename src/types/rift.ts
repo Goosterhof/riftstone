@@ -99,8 +99,10 @@ export interface ModOption {
   trail: string[];
 }
 
-/** v0.3: "download" — the stone fetched this exact file from Nexus itself. */
-export type LinkSource = "filename" | "homepage" | "md5" | "manual" | "download";
+/** v0.3: "download" — the stone fetched this exact file from Nexus itself. v0.5: "joined" — the
+ *  player's word that the package is a version of a file another package in the mods folder is
+ *  pinned to (WINDOW-CONTRACT § v0.5, The player's word). */
+export type LinkSource = "filename" | "homepage" | "md5" | "manual" | "download" | "joined";
 
 export interface NexusLink {
   modId: number;
@@ -584,6 +586,10 @@ export interface LibraryPackage {
   /** v0.5: its place among the versions of one Nexus file in the mods folder; null when no other
    *  version of the same file is there (WINDOW-CONTRACT § v0.5, Versions of one file). */
   family: FamilyView | null;
+  /** v0.5 (ruling 10): the stone asks whether this package is an older version of another
+   *  package's file; null when there is nothing to ask (WINDOW-CONTRACT § v0.5, The player's
+   *  word). */
+  versionQuestion: VersionQuestion | null;
   /** Empty for a package that yielded no options (its `problems` say why). */
   tree: TreeNode[];
 }
@@ -1251,6 +1257,20 @@ export interface FamilyView {
   /** On the lead only: the older versions still in the mods folder, newest first. Empty on
    *  an older version. */
   older: OlderVersionView[];
+}
+
+/** v0.5 (ruling 10): is this package a version of another package's file? The file names say
+ *  it is likely; only the player's answer joins them. */
+export interface VersionQuestion {
+  /** The newest package of that file in the mods folder (its family's lead when it has one). */
+  ofPackageId: string;
+  ofFileName: string;
+  /** That package's Nexus file version, when Nexus named one. */
+  ofVersion: string | null;
+  /** File names both hold, folders and case ignored, modinfo.ini and screenshots left out. */
+  sharedFiles: number;
+  /** How many file names this package holds, counted the same way. */
+  files: number;
 }
 
 /** v0.5: an older version of a file, still in the mods folder. */

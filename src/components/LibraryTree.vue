@@ -95,6 +95,11 @@ async function toTrouble(row: LibraryRow): Promise<void> {
 }
 
 function activate(row: LibraryRow): void {
+  // R18.18.1: the question row opens the question card in Your World (R18.4's door form)
+  if (row.kind === "question") {
+    versions.openQuestion(row.packageId);
+    return;
+  }
   // R18.4: a version row opens THE VERSIONS card in Your World and expands, as a leaf with children does
   if (row.kind === "version") {
     versions.open(row.packageId);

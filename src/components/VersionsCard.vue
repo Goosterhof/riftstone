@@ -5,6 +5,13 @@
 // that clean up live here, never on a tree row (Bold Choice 11). Esc or Cancel
 // returns the pane to what it held before. Nothing moves, nothing is drawn for
 // a move: the row is simply not there at the next render (Gold #2).
+//
+// v0.5 (#00015 R18.18, Bold Choice #23): the question is asked in the shape of
+// its answer. When the stone asks whether a package is a version of a pinned
+// file, this card draws the file's rows as a yes would make them, the
+// questioned package beneath them with the evidence, and two doors; a yes takes
+// the `?` away at the library's next answer and nothing else moves. A joined
+// member carries `by your word` and `Take it back`.
 import { computed, onBeforeUnmount, onMounted } from "vue";
 import { useNavigation } from "@/composables/useNavigation";
 import { useVersions } from "@/composables/useVersions";
@@ -12,6 +19,24 @@ import { useUndercroft } from "@/composables/useUndercroft";
 import { plural } from "@/services/format";
 import type { RecoveryKind } from "@/services/voice";
 import {
+  ASKING_HEAD,
+  BY_YOUR_WORD,
+  DECLINING_HELD,
+  JOINING_HELD,
+  JOIN_DOOR,
+  KEEP_APART_DOOR,
+  MANUAL_NOTE,
+  NEXUS_CANT_TELL,
+  PICK_HELD,
+  PICK_LEGEND,
+  TAKE_IT_BACK,
+  askedKind,
+  askedOf,
+  askedQuestion,
+  askedQuestionOpen,
+  askedRowLabel,
+  candidateLabel,
+  evidenceLine,
   KEEP_NEWEST_HEAD,
   NEWEST_BADGE,
   PUT_AWAY_ROW,
@@ -43,13 +68,20 @@ interface MemberRow {
   installed: number;
   under: string | null;
   canPutAway: boolean;
+  /** R18.18.3: joined by the player's word (only such a row offers `Take it back`). */
+  joined: boolean;
 }
 
 const members = computed<MemberRow[]>(() => {
   const entry = versions.entry.value;
   if (!entry) return [];
   const list = [
-    { pkg: entry.lead, version: entry.lead.family?.version ?? null, installed: entry.lead.installed },
+    // R18.18.2: a file asked about may stand alone, in no family yet: its link's version
+    {
+      pkg: entry.lead,
+      version: entry.lead.family?.version ?? entry.lead.package.nexus?.version ?? null,
+      installed: entry.lead.installed,
+    },
     ...entry.older.map((o) => ({ pkg: o.pkg, version: o.version.version, installed: o.version.installed })),
   ];
   return list.map((m, i) => {
@@ -62,6 +94,7 @@ const members = computed<MemberRow[]>(() => {
       installed: m.installed,
       under: newerInstalled ? versionName(newerInstalled.version, newerInstalled.pkg.package.fileName) : null,
       canPutAway: i > 0 && m.installed === 0,
+      joined: m.pkg.package.nexus?.source === "joined",
     };
   });
 });
@@ -84,6 +117,42 @@ const notInstalledLine = computed(() => {
 });
 
 const inPlan = computed(() => versions.stage.value !== "card");
+
+// --- R18.18.2: the question form ------------------------------------------------
+const asking = computed(() => versions.asking.value !== null);
+const manual = computed(() => versions.asking.value?.manual ?? false);
+const asked = computed(() => versions.askedPackage.value);
+const question = computed(() => asked.value?.versionQuestion ?? null);
+const kind = computed(() => (asked.value ? askedKind(asked.value) : "folder"));
+/** The file the question names: `v1.3`, else its file name in mono; the manual pick's own. */
+const of = computed<{ text: string; mono: boolean } | null>(() => {
+  if (question.value) return askedOf(question.value);
+  const chosen = versions.candidates.value.find((c) => c.packageId === versions.picked.value);
+  if (!chosen) return null;
+  return askedOf({ ofVersion: chosen.version, ofFileName: chosen.fileName });
+});
+/** The questioned package's row: drawn last, claiming no order (the spine places it after a yes). */
+const askedRow = computed(() => {
+  const pkg = asked.value;
+  if (!pkg) return null;
+  const above = members.value.find((m) => m.installed > 0);
+  return {
+    label: askedRowLabel(kind.value),
+    fileName: pkg.package.fileName,
+    installed: pkg.installed,
+    under: pkg.installed > 0 && above ? above.version : null,
+  };
+});
+const evidence = computed(() =>
+  question.value && of.value ? `${evidenceLine(question.value, of.value.text)} ${NEXUS_CANT_TELL}` : MANUAL_NOTE,
+);
+const choosing = computed(() => manual.value && versions.candidates.value.length > 1);
+const yesHeld = computed<string | null>(() => {
+  if (versions.word.value === "declining") return DECLINING_HELD;
+  if (manual.value && !versions.picked.value) return PICK_HELD;
+  return null;
+});
+const name = computed(() => versions.entry.value?.lead.package.displayName ?? asked.value?.package.displayName ?? "");
 const plan = computed(() => versions.keepPlan.value);
 const keeps = computed(() => (plan.value?.keeps ? versions.nameOfFile(plan.value.keeps) : null));
 const removing = computed(() => (plan.value?.uninstalls ?? []).reduce((n, u) => n + u.removals, 0));
@@ -137,11 +206,13 @@ const lineFailure = (landedAs: string) => {
   <section class="vc" :aria-label="inPlan ? KEEP_NEWEST_HEAD : VERSIONS_HEAD">
     <template v-if="!inPlan">
       <header class="vc__head">
-        <h3 class="vc__title rs-inscription">{{ VERSIONS_HEAD }}</h3>
+        <h3 class="vc__title rs-inscription">{{ asking ? ASKING_HEAD : VERSIONS_HEAD }}</h3>
         <RiftButton size="sm" @click="versions.close()">Close</RiftButton>
       </header>
-      <p class="vc__name">{{ versions.entry.value?.lead.package.displayName ?? "" }}</p>
-      <ol class="vc__rows">
+      <p class="vc__name">{{ name }}</p>
+      <!-- R18.18.3: the yes, drawn; its words reach the polite live region below too -->
+      <p v-if="versions.joinedLine.value && !asking" class="vc__note vc__joined">{{ versions.joinedLine.value }}</p>
+      <ol v-if="members.length" class="vc__rows">
         <li
           v-for="m in members"
           :key="m.packageId"
@@ -152,6 +223,8 @@ const lineFailure = (landedAs: string) => {
           <p class="vc__line1">
             <span class="vc__ver">{{ m.version }}</span>
             <span v-if="m.newest" class="vc__badge">{{ NEWEST_BADGE }}</span>
+            <!-- R18.18.3: a fact about the folder, set beside Nexus's fact -->
+            <span v-if="m.joined" class="vc__badge">{{ BY_YOUR_WORD }}</span>
             <span class="vc__file rs-tail" :title="m.fileName"
               ><span class="rs-tail__text">{{ m.fileName }}</span></span
             >
@@ -166,21 +239,101 @@ const lineFailure = (landedAs: string) => {
                 memberWorldLine(m.installed, m.under).under
               }}</span></span
             >
-            <RiftButton
-              v-if="m.canPutAway"
-              size="sm"
-              class="vc__away"
-              :busy="versions.puttingAway.value === m.packageId"
-              @click="versions.putAway(m.packageId)"
-              >Put it away</RiftButton
-            >
+            <span v-if="(m.canPutAway || m.joined) && !asking" class="vc__rowdoors">
+              <!-- R18.18.3: only on a row joined by your word, and only in the mods folder -->
+              <RiftButton
+                v-if="m.joined"
+                size="sm"
+                :busy="versions.parting.value === m.packageId"
+                @click="versions.takeBack(m.packageId)"
+                >{{ TAKE_IT_BACK }}</RiftButton
+              >
+              <RiftButton
+                v-if="m.canPutAway"
+                size="sm"
+                class="vc__away"
+                :busy="versions.puttingAway.value === m.packageId"
+                @click="versions.putAway(m.packageId)"
+                >Put it away</RiftButton
+              >
+            </span>
           </p>
         </li>
       </ol>
-      <p v-if="notInstalledLine" class="vc__note">{{ notInstalledLine }}</p>
-      <div v-if="canKeepNewest" class="vc__doors">
+
+      <!-- R18.18.2, Bold Choice #23: the question in the shape of its answer -->
+      <template v-if="asking && askedRow">
+        <p class="vc__ask">
+          <template v-if="of"
+            >{{ askedQuestion(kind).before }}<span :class="{ 'vc__ask-file': of.mono }">{{ of.text }}</span
+            >{{ askedQuestion(kind).after }}</template
+          >
+          <template v-else>{{ askedQuestionOpen(kind) }}</template>
+        </p>
+        <div class="vc__row is-asked" :class="{ 'has-world': askedRow.installed > 0 }">
+          <p class="vc__line1">
+            <span class="vc__asklabel">{{ askedRow.label }}</span>
+            <span class="vc__file rs-tail" :title="askedRow.fileName"
+              ><span class="rs-tail__text">{{ askedRow.fileName }}</span></span
+            >
+          </p>
+          <p class="vc__line2">
+            <span
+              ><span :class="askedRow.installed > 0 ? 'is-world' : 'is-faint'">{{
+                memberWorldLine(askedRow.installed, askedRow.under).text
+              }}</span
+              ><span v-if="memberWorldLine(askedRow.installed, askedRow.under).under" class="is-warn">{{
+                memberWorldLine(askedRow.installed, askedRow.under).under
+              }}</span></span
+            >
+          </p>
+        </div>
+        <p class="vc__note vc__evidence">{{ evidence }}</p>
+        <!-- R18.18.6: two or more files qualify; none is picked for the player -->
+        <fieldset v-if="choosing" class="vc__pick">
+          <legend class="vc__pick-legend">{{ PICK_LEGEND }}</legend>
+          <label v-for="c in versions.candidates.value" :key="c.packageId" class="vc__pick-row">
+            <input
+              type="radio"
+              name="rs-join-file"
+              :value="c.packageId"
+              :checked="versions.picked.value === c.packageId"
+              @change="versions.pick(c.packageId)"
+            />
+            <span class="vc__pick-text">{{ candidateLabel(c) }}</span>
+          </label>
+        </fieldset>
+        <div class="vc__worddoors">
+          <RiftButton
+            variant="primary"
+            :busy="versions.word.value === 'joining'"
+            :refused="yesHeld !== null"
+            :reason="yesHeld"
+            @click="versions.join()"
+            >{{ JOIN_DOOR }}</RiftButton
+          >
+          <RiftButton
+            v-if="!manual"
+            :busy="versions.word.value === 'declining'"
+            :refused="versions.word.value === 'joining'"
+            :reason="versions.word.value === 'joining' ? JOINING_HELD : null"
+            @click="versions.decline()"
+            >{{ KEEP_APART_DOOR }}</RiftButton
+          >
+        </div>
+      </template>
+
+      <p v-if="notInstalledLine && !asking" class="vc__note">{{ notInstalledLine }}</p>
+      <div v-if="canKeepNewest && !asking" class="vc__doors">
         <RiftButton variant="primary" @click="versions.beginKeepNewest()">Keep only the newest…</RiftButton>
       </div>
+      <!-- R18.18.5: a word that did not land, ember, inside the card -->
+      <FailureNotice
+        v-if="versions.wordFailure.value"
+        :voiced="versions.wordFailure.value.voiced"
+        @recover="versions.recoverWord"
+      />
+      <p class="rs-sr-only" aria-live="polite">{{ asking ? "" : (versions.joinedLine.value ?? "") }}</p>
     </template>
 
     <!-- R18.10: THE RETURN — OLDER VERSIONS, in the plan's register -->
@@ -347,8 +500,69 @@ const lineFailure = (landedAs: string) => {
   color: var(--rs-faint);
   font: 400 12px var(--rs-font-mono);
 }
-.vc__away {
+.vc__rowdoors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rs-space-2);
   margin-left: auto;
+}
+/* R18.18.2: the question, Alegreya 700 14 */
+.vc__ask {
+  margin: var(--rs-space-2) 0 0;
+  color: var(--rs-text);
+  font: 700 14px / 1.45 var(--rs-font-sans);
+}
+.vc__ask-file {
+  font: 400 12px var(--rs-font-mono);
+  overflow-wrap: anywhere;
+}
+.vc__asklabel {
+  flex: none;
+  color: var(--rs-rift);
+  font: 500 14px var(--rs-font-sans);
+}
+/* the doors wrap on a narrow card and never truncate */
+.vc__worddoors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rs-space-2);
+  margin-top: var(--rs-space-2);
+}
+.vc__pick {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: var(--rs-space-2) 0 0;
+  padding: 0;
+  border: 0;
+}
+.vc__pick-legend {
+  margin-bottom: var(--rs-space-1);
+  padding: 0;
+  color: var(--rs-muted);
+  font-size: var(--rs-text-sm);
+}
+.vc__pick-row {
+  display: flex;
+  align-items: center;
+  gap: var(--rs-space-2);
+  min-height: 32px;
+  padding: 0 var(--rs-space-2);
+  background: var(--rs-hearthhi);
+  cursor: pointer;
+}
+.vc__pick-row input {
+  accent-color: var(--rs-rift);
+}
+.vc__pick-row input:focus-visible {
+  outline: 2px solid var(--rs-rift);
+  outline-offset: 2px;
+}
+.vc__pick-text {
+  min-width: 0;
+  color: var(--rs-text);
+  font: 400 12px var(--rs-font-mono);
+  overflow-wrap: anywhere;
 }
 .vc__note {
   margin: var(--rs-space-1) 0 0;

@@ -28,7 +28,10 @@ again and marks what changed (THE RE-CARVING, #00015 R17.25).
 
 Since v0.5 the stone knows **versions of one file**. Two packages are one Nexus file's versions
 when Nexus proves it: the same mod and file group, or a check that named the other's file as
-newer; names and sizes never do. The Rift and THE FAR WORLD show one entry per file, the newest
+newer; names and sizes never do. Where Nexus cannot prove it (an unpacked folder, a link by mod id
+alone), **the player's word** can: when their file names make it likely, the stone asks whether a
+package is a version of a pinned file of the same mod, and a yes joins it (ruling 10, #00015
+§18.18). The Rift and THE FAR WORLD show one entry per file, the newest
 leading with the older ones inside it. Installing a version replaces the other versions' install
 of the same option in one journaled step, and then the older versions left without an install move
 whole to `mods (older versions)` beside the mods folder (THE UNDERCROFT), from which they come
@@ -254,7 +257,9 @@ over v1.2, both installed, as v0.4 stacked them), `familyfresh` (v1.3 downloaded
 `familythree` (and a v1.1 with nothing installed), `putaway` (installing v1.3 puts v1.2 away),
 `putawaytaken` (it lands as ` (2)`), `putawayfail` (the move fails after the install committed),
 `undercroft` (v1.2 already put away), `undercroftempty` and `undercroftnone` (the folder empty, or
-never made).
+never made). The player's word (#00015 §18.18): `question` (the unpacked Lantern Glow Recolor folder,
+linked by mod id, beside the pinned v1.3, and the stone asks), `questioninstalled`, `questionjoined`,
+`questionmanual` (no question, two pinned files to pick from) and `questionrefused` (the join refused once).
 
 ```sh
 npm run dev            # the window in a browser on the mock backend (?mock=empty|emptymods|nofloor|gonemods|nogame|scanning|refoff|patched|offline|fresh|firstrun|key|premium|rejected|quotalow|running|nxmother|nocreations, comma-separated)
@@ -368,8 +373,12 @@ links back too: turn the switch on again after it (WINDOW-CONTRACT § v0.3 The o
   window says the slot is damaged.
 - **Versions (v0.5)** are known only when Nexus proves them: both packages linked to the same mod
   and pinned to one file group (an update check or a download pins a link), or a check that named
-  the other's file as newer. A package linked by name alone, or unlinked, joins no family: its
-  install stacks over another version's as in v0.4, and both keep an entry. A modder who uploads a
+  the other's file as newer, or by the player's word (ruling 10). A package linked by name alone
+  joins a family only when the player says so; the stone asks only when one package's file names
+  are all among the other's, so a version that renamed or dropped a file is never asked about
+  (the option detail's *This is a version of…* joins it all the same). An unlinked package joins
+  nothing: link it first. Without a join, its install stacks over another version's as in v0.4,
+  and both keep an entry. A modder who uploads a
   new version as a new file in another group, never marked as the old one's update, gets two
   entries too.
 - The older-versions folder sits outside every watcher: an archive moved into it by hand shows

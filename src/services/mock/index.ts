@@ -69,6 +69,11 @@
 // (get_muster answers after 2 s) | musterwriting (Slot 9 rejects as being
 // written once, then the save settles and rift://muster-changed fires).
 // Under nogame the names are missing too: they live in the game's own text.
+//
+// v0.5, the player's word (./versions.ts, #00015 R18.18.8): ?mock= gains
+// question | questioninstalled | questionjoined | questionmanual |
+// questionrefused. join_versions, decline_version_question and part_versions
+// change the library as the spine would and fire rift://updates-changed.
 
 import type {
   BringBackResult,
@@ -98,6 +103,7 @@ import type {
   NexusCandidate,
   NexusFileCategory,
   NexusKeyStanding,
+  NexusLink,
   NexusLabels,
   NexusReason,
   NexusStandings,
@@ -145,6 +151,9 @@ import {
   sameOptionIn,
   versionScene,
   type ShelfEntry,
+  joinedLink,
+  questionOf,
+  questionScene,
 } from "./versions";
 import {
   MOCK_DAY,
@@ -335,6 +344,19 @@ export function createMockBackend(): MockBackend {
   if (versionsAt.packages.length && !scene.has("empty")) {
     packages = [...packages.filter((p) => p.summary.displayName !== FAMILY_NAME), ...versionsAt.packages];
   }
+  // v0.5 (R18.18.8): the player's word's scenes bring the folder Nexus can't pin
+  const asking = questionScene(scene);
+  if (asking && !scene.has("empty")) {
+    // the library's wardrobe shares the invented mod id 2207: these scenes set it aside, so
+    // the only files of mod 2207 are the ones R18.18.8 names (two in questionmanual)
+    const otherOfMod = (p: MockPackage) => p.summary.nexus?.modId === 2207 && p.summary.displayName !== FAMILY_NAME;
+    packages = [...packages.filter((p) => p.summary.displayName !== FAMILY_NAME && !otherOfMod(p)), ...asking.packages];
+  }
+  /** The links joined packages had before the yes, kept for `part_versions` (the record keeps them). */
+  const priorLinks = new Map<string, NexusLink>(asking?.priorLinks ?? []);
+  /** The player's noes, `packageId|groupId` (the record remembers them). */
+  const declined = new Set<string>();
+  let joinRefuses = asking?.joinRefuses ?? false;
   /** The older-versions folder beside the mods folder (THE UNDERCROFT). */
   const shelf: { exists: boolean; items: ShelfEntry[] } = versionsAt.shelf;
   let putAwayFails = versionsAt.putAwayFails;
@@ -397,7 +419,7 @@ export function createMockBackend(): MockBackend {
       const installedAt = new Date(MOCK_NOW - (10 - i) * MOCK_DAY).toISOString();
       preinstall(name, { seq: i + 3, installedAt }, "riftstone");
     }
-    for (const [i, optionId] of versionsAt.installed.entries()) {
+    for (const [i, optionId] of [...versionsAt.installed, ...(asking?.installed ?? [])].entries()) {
       const found = packages.flatMap((pkg) => pkg.options.map((o) => ({ pkg, o }))).find((x) => x.o.id === optionId);
       const installedAt = new Date(MOCK_NOW - (3 - i) * MOCK_DAY).toISOString();
       if (found) installs.push(recordOf(found.o, found.pkg, { seq: installs.length + 1, installedAt }));
@@ -1225,6 +1247,11 @@ export function createMockBackend(): MockBackend {
       adult: labels?.adult ?? false,
       conflicted: pkg.options.some((o) => conflicted(o.id)),
       family: familyView(pkg),
+      versionQuestion: questionOf(pkg, packages, {
+        inFamily: (p) => membersOf(p) !== null,
+        leadOf: (p) => membersOf(p)?.[0] ?? p,
+        declined,
+      }),
       tree: nest(pkg),
     };
   }
@@ -2464,6 +2491,50 @@ export function createMockBackend(): MockBackend {
       if (!shelf.exists) {
         throw refusedWith("The stone hasn't put anything away yet, so the older-versions folder is not there to show.");
       }
+    },
+    // --- v0.5 (ruling 10): the player's word (WINDOW-CONTRACT § v0.5) -------
+    async joinVersions(packageId, ofPackageId) {
+      await wait(120);
+      const pkg = packages.find((p) => p.summary.id === packageId);
+      const of = packages.find((p) => p.summary.id === ofPackageId);
+      if (!pkg) throw notFound(packageId);
+      if (!of) throw notFound(ofPackageId);
+      if (joinRefuses) {
+        joinRefuses = false;
+        throw refusedWith("The folder's file names changed since the stone asked, so it no longer reads as that file.");
+      }
+      const own = pkg.summary.nexus;
+      const theirs = of.summary.nexus;
+      if (!own || !theirs || own.modId !== theirs.modId) throw refusedWith("The two packages link to different mods.");
+      if (own.groupId !== null) throw refusedWith("That package already names a file of its own.");
+      if (theirs.groupId === null) throw refusedWith("The other package names no file to join.");
+      priorLinks.set(packageId, own);
+      pkg.summary = { ...pkg.summary, nexus: joinedLink(own, theirs) };
+      emit(EVENTS.updatesChanged, {});
+    },
+    async partVersions(packageId) {
+      await wait(80);
+      const pkg = packages.find((p) => p.summary.id === packageId);
+      if (!pkg) throw notFound(packageId);
+      const link = pkg.summary.nexus;
+      if (link?.source !== "joined") throw refusedWith("That package was not joined by your word.");
+      if (link.groupId !== null) declined.add(`${packageId}|${link.groupId}`);
+      pkg.summary = {
+        ...pkg.summary,
+        nexus: priorLinks.get(packageId) ?? { ...link, groupId: null, source: "manual" },
+      };
+      priorLinks.delete(packageId);
+      emit(EVENTS.updatesChanged, {});
+    },
+    async declineVersionQuestion(packageId, ofPackageId) {
+      await wait(60);
+      const pkg = packages.find((p) => p.summary.id === packageId);
+      const of = packages.find((p) => p.summary.id === ofPackageId);
+      if (!pkg) throw notFound(packageId);
+      const group = of?.summary.nexus?.groupId ?? null;
+      if (group === null) throw refusedWith("The other package names no file to ask about.");
+      declined.add(`${packageId}|${group}`);
+      emit(EVENTS.updatesChanged, {});
     },
     // --- the dev hooks: the world outside the window ------------------------
     gameSaved() {

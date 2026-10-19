@@ -63,6 +63,9 @@ export const VOICE_CONTEXTS = [
   // read of it (put_away, keep_newest's moves, bring_back, get_older_versions,
   // open_older_versions_folder). The caller adds `act` ("putAway" | "bringBack"
   // | "read" | "open") and `file` (the file's own name, never a path).
+  // v0.5 (#00015 R18.18.5): the player's word, too: `act` "join" | "decline" |
+  // "part", with `of` (the file asked about, `v1.3`), `what` ("folder" |
+  // "archive") and `file` (the questioned package's file name).
   "olderVersions",
 ] as const;
 
@@ -185,9 +188,63 @@ const IO_VOICES: Partial<Record<VoiceContext, (why: string) => Voiced>> = {
   }),
 };
 
+const SCAN_AGAIN: Recovery = { kind: "rescan", label: "Scan again" };
+
+/** R18.18.5: a join that did not land. A refusal quotes the spine verbatim (its
+ *  sentence carries its own stop) and offers a scan first; an `io` the OS's words. */
+function joinFailed(d: Detail, refusal: boolean): Voiced {
+  const what = `this ${pick(d, "what") ?? "folder"}`;
+  const of = pick(d, "of") ?? "that file";
+  const empathy = "Nothing changed; both are still their own entries.";
+  if (refusal) {
+    return {
+      kind: "refused",
+      inscription: null,
+      voice: `The stone couldn't join ${what} to ${of}: ${reasonOf(d, "the stone held it back.")}`,
+      empathy,
+      recovery: [SCAN_AGAIN, COPY],
+    };
+  }
+  return {
+    kind: "io",
+    inscription: null,
+    voice: `The stone couldn't join ${what} to ${of}: ${stripStop(reasonOf(d, "Windows refused"))}.`,
+    empathy,
+    recovery: [RETRY, COPY],
+  };
+}
+
+/** v0.5 (#00015 R18.18.5): the player's word that did not land, voiced inside
+ *  THE VERSIONS card. A refused join quotes the spine verbatim and offers a
+ *  scan (a refusal means the folder changed); the rest say what still holds. */
+function playersWord(d: Detail, refusal: boolean): Voiced | null {
+  const act = pick(d, "act");
+  if (act !== "join" && act !== "decline" && act !== "part") return null;
+  const kind: RiftError["kind"] = refusal ? "refused" : "io";
+  const said = (voice: string, empathy: string, recovery: Recovery[] = [RETRY, COPY]): Voiced => ({
+    kind,
+    inscription: null,
+    voice,
+    empathy,
+    recovery,
+  });
+  if (act === "join") return joinFailed(d, refusal);
+  const fallback = refusal ? "the stone held it back" : "Windows refused";
+  const why = stripStop(reasonOf(d, fallback));
+  if (act === "decline") {
+    return said(`The stone couldn't remember your no: ${why}.`, "The question stays; nothing changed.");
+  }
+  return said(
+    `The stone couldn't take your word back: ${why}.`,
+    `${pick(d, "file") ?? "It"} is still a version of this file.`,
+  );
+}
+
 /** v0.5 (#00015 §18.11): a move the stone could not make names the file by its
  *  own name and says where it still is. */
 function olderVersionsIo(d: Detail): Voiced {
+  const word = playersWord(d, false);
+  if (word) return word;
   const why = stripStop(reasonOf(d, "Windows refused the move"));
   const file = pick(d, "file") ?? "the archive";
   const act = pick(d, "act");
@@ -304,6 +361,8 @@ function refused(d: Detail, context: VoiceContext): Voiced {
   if (context === "parked") return parkedRefused(d);
   // v0.5 (#00015 §18.11): the spine's sentence, verbatim, and what it left alone
   if (context === "olderVersions") {
+    const word = playersWord(d, true);
+    if (word) return word;
     return {
       kind: "refused",
       inscription: null,
