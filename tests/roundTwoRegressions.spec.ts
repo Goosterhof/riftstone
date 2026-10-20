@@ -43,6 +43,26 @@ function holdWrite(act: "install" | "uninstall", ready: Promise<void>, committed
   return vi.spyOn(backend, "uninstall").mockImplementation((id) => hold(() => uninstall(id)));
 }
 
+/** Leave a toast whose Undo performs `act`, then return to the option's detail. */
+async function prepareUndo(act: "install" | "uninstall") {
+  await wakeOn();
+  await typeQuery("ermine");
+  const backend = spine();
+  const choices = await Promise.all(useSearch().results.value.map((h) => backend.getOption(h.optionId)));
+  const first = must(choices.find((d) => !d.option.menuOnly && Boolean(d.installed) === (act === "install")));
+  const world = useWorld();
+  await world.open(first.option.id);
+  await (act === "install" ? world.beginUninstall() : world.beginInstall());
+  await (act === "install" ? world.confirmUninstall() : world.confirmInstall());
+  const undo = must(
+    useToasts()
+      .toasts.value.flatMap((t) => t.actions)
+      .find((a) => a.label === "Undo"),
+  );
+  world.backToDetail();
+  return { world, undo, optionId: first.option.id };
+}
+
 it("refreshes an install's status after leaving and returning before it finishes", async () => {
   await wakeOn();
   await typeQuery("ermine");
@@ -238,6 +258,47 @@ it.each(["install", "uninstall"] as const)(
     expect(button(act === "install" ? "Install…" : "Uninstall…").getAttribute("aria-busy")).toBeNull();
   },
 );
+
+it.each(["install", "uninstall"] as const)("refuses a drawn %s plan while Undo already owns its write", async (act) => {
+  const { world, undo } = await prepareUndo(act);
+  await (act === "install" ? world.beginInstall() : world.beginUninstall());
+  expect(world.stage.value).toBe(act === "install" ? "plan" : "returnPlan");
+  const finish = deferred<void>();
+  const writes = holdWrite(act, finish.promise);
+  const pendingUndo = undo.run();
+  await until(() => writes.mock.calls.length === 1, "Undo owns the write");
+  const pendingConfirm = act === "install" ? world.confirmInstall() : world.confirmUninstall();
+  await flushPromises();
+  expect.soft(writes).toHaveBeenCalledTimes(1);
+  finish.resolve();
+  await Promise.all([pendingUndo, pendingConfirm]);
+  expect(writes).toHaveBeenCalledTimes(1);
+  expect(world.isInstalled.value).toBe(act === "install");
+});
+
+it("ignores a late install plan while Undo owns its option", async () => {
+  const { world, undo, optionId } = await prepareUndo("install");
+  const backend = spine();
+  const answer = await backend.planInstall(optionId);
+  const finishPlan = deferred<void>();
+  const plans = vi.spyOn(backend, "planInstall").mockImplementation(async () => {
+    await finishPlan.promise;
+    return answer;
+  });
+  const pendingPlan = world.beginInstall();
+  await until(() => plans.mock.calls.length === 1, "the plan was requested");
+  const finishWrite = deferred<void>();
+  const writes = holdWrite("install", finishWrite.promise);
+  const pendingUndo = undo.run();
+  await until(() => writes.mock.calls.length === 1, "Undo owns the option");
+  finishPlan.resolve();
+  await pendingPlan;
+  expect.soft(world.plan.value).toBeNull();
+  expect.soft(world.stage.value).toBe("detail");
+  finishWrite.resolve();
+  await pendingUndo;
+  expect(world.isInstalled.value).toBe(true);
+});
 
 it("keeps room shortcuts in the screenshot viewer even after focus leaves its controls", async () => {
   await wakeOn();
