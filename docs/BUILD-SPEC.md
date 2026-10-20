@@ -2769,3 +2769,16 @@ against the code they had left, and fixed what those specs found.
   a revisited door was not busy, and one pending write drew three plans. `roundTwoRegressions.spec.ts`
   now holds 12 cases, four of them red at `7622333`, and each of the viewer's two lines the
   General named fails its own spec when mutated.
+- **The General's fourth round on PR #2** (2026-10-20, at `0f9226e`): approved, with three nits,
+  fixed before the merge at the investor's word. The family procedure held, and every docblock
+  and contract sentence was true of the code; 5 of the reviewers' 8 mutants failed the property
+  gate and 3 failed unit tests only. Those three (a block ordered oldest first, the name
+  tie-break reversed, the name alone as tie-break) passed the four properties, so the gate gains
+  three: each cycle sits together, a cycle's members go by rank (own recency, then file name),
+  and between two blocks of one priority a higher-ranked block comes later only when it had to
+  wait on a member outside it not yet placed. The draw now repeats a file id now and then and
+  adds a package of another mod in a quarter of the families, which must stay out of the family.
+  Each of the three mutants now fails the gate (cases 20, 2 and 7). The window contract no longer
+  says THE VERSIONS card keeps the busy-door rule: it guards its landings by card number, and its
+  own writes rely on the spine's deploy lock, under which keep-newest works out its set again.
+  The Heretic's nit, the in-flight check no spec held, is the Heretic's own commit.

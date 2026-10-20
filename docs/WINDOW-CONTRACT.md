@@ -889,4 +889,8 @@ the window's alone: they add no command, event or type, and the two library acti
   start until the write and its detail refresh finish; success and failure both release it.
   Other options remain browsable. This holds for the option detail's own writes; YOUR WORLD's
   load-order list (`useInstalled`) returns its own way and is not part of it. THE VERSIONS card
-  follows the same rule by its card number (§ Versions of one file).
+  guards its landings by its card number (§ Versions of one file): an answer for a card the
+  player left never draws on the card open now. Its own writes (*Keep only the newest*, *Put it
+  away*, *Bring it back*) do not wait on a write the option detail has in flight. The spine takes
+  every write one at a time under its deploy lock and works each one out again when its turn
+  comes, so a keep-newest after an uninstall of the same version finds that install gone.
