@@ -87,6 +87,12 @@ async function loadDetail(optionId: string): Promise<void> {
   }
 }
 
+/** A completed write still changes the option if the player left and came
+ *  back. Refresh its data without reviving the earlier selection's plan. */
+async function refreshRevisited(optionId: string): Promise<void> {
+  if (selectedId.value === optionId) await loadDetail(optionId);
+}
+
 async function open(optionId: string): Promise<void> {
   if (selectedId.value !== optionId) {
     selectionSeq += 1;
@@ -195,7 +201,10 @@ async function confirmInstall(): Promise<void> {
     const result = await backend.install(current.optionId);
     landedToast(result, current.name, current, packageId);
     if (result.putAway.length) void useUndercroft().load();
-    if (selection !== selectionSeq) return;
+    if (selection !== selectionSeq) {
+      await refreshRevisited(current.optionId);
+      return;
+    }
     landed.value = result;
     stage.value = "landed";
     crossingSeq.value += 1;
@@ -255,7 +264,10 @@ async function confirmUninstall(): Promise<void> {
     useToasts().push("rift", returnedLine(current), [
       { label: "Undo", run: () => quietInstall(current.optionId, current.name) },
     ]);
-    if (selection !== selectionSeq) return;
+    if (selection !== selectionSeq) {
+      await refreshRevisited(current.optionId);
+      return;
+    }
     returned.value = result;
     stage.value = "returned";
     await loadDetail(current.optionId);
