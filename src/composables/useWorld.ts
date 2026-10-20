@@ -45,6 +45,10 @@ const landed = ref<InstallResultView | null>(null);
 const returned = ref<UninstallResultView | null>(null);
 const failure = ref<WorldFailure | null>(null);
 const planning = ref(false);
+/** Writes outlive their card selection. Keep its door busy through the
+ *  completion refresh, so returning to the card cannot start another one. */
+const writesInFlight = ref(new Set<string>());
+const writing = computed(() => selectedId.value !== null && writesInFlight.value.has(selectedId.value));
 const crossingSeq = ref(0);
 /** v0.5: the landed install's family, file name → version, read before the scan moves one away. */
 const landedNames = ref<ReadonlyMap<string, string>>(new Map());
@@ -56,20 +60,28 @@ let detailSeq = 0;
 
 const isInstalled = computed(() => Boolean(detail.value?.installed));
 
-function selectedOption(optionId: string, selection: number): boolean {
-  return selection === selectionSeq && selectedId.value === optionId;
+function canPlan(optionId: string, selection: number): boolean {
+  return selection === selectionSeq && selectedId.value === optionId && !writesInFlight.value.has(optionId);
 }
 
 function currentPlanRequest(request: number, selection: number): boolean {
-  return request === planningSeq && selection === selectionSeq;
+  return request === planningSeq && selection === selectionSeq && !writing.value;
 }
 
 function installCanStart(current: InstallPlanView | null): current is InstallPlanView {
-  return Boolean(current && !current.refused && current.optionId === selectedId.value && stage.value === "plan");
+  return Boolean(
+    current && !current.refused && current.optionId === selectedId.value && stage.value === "plan" && !writing.value,
+  );
 }
 
 function uninstallCanStart(current: UninstallPlanView | null): current is UninstallPlanView {
-  return Boolean(current && !current.refused && current.optionId === selectedId.value && stage.value === "returnPlan");
+  return Boolean(
+    current &&
+    !current.refused &&
+    current.optionId === selectedId.value &&
+    stage.value === "returnPlan" &&
+    !writing.value,
+  );
 }
 
 async function loadDetail(optionId: string): Promise<void> {
@@ -141,7 +153,7 @@ async function beginInstall(optionId: string | null = selectedId.value): Promise
   const opening = optionId !== selectedId.value ? open(optionId) : null;
   const selection = selectionSeq;
   await opening;
-  if (!selectedOption(optionId, selection)) return;
+  if (!canPlan(optionId, selection)) return;
   const mine = ++planningSeq;
   planning.value = true;
   try {
@@ -187,6 +199,7 @@ async function confirmInstall(): Promise<void> {
   if (!installCanStart(current)) return;
   const selection = selectionSeq;
   const packageId = detail.value?.package.id;
+  writesInFlight.value.add(current.optionId);
   stage.value = "crossing";
   landedNames.value = familyNames(useLibrary().packages.value, detail.value?.package.id ?? "");
   progress.value = {
@@ -213,6 +226,7 @@ async function confirmInstall(): Promise<void> {
     if (selection === selectionSeq) fail(raw, "install");
     else useToasts().push("ember", voice(asRiftFailure(raw), "install").voice);
   } finally {
+    writesInFlight.value.delete(current.optionId);
     if (selection === selectionSeq) progress.value = null;
   }
 }
@@ -222,7 +236,7 @@ async function beginUninstall(optionId: string | null = selectedId.value): Promi
   const opening = optionId !== selectedId.value ? open(optionId) : null;
   const selection = selectionSeq;
   await opening;
-  if (!selectedOption(optionId, selection)) return;
+  if (!canPlan(optionId, selection)) return;
   const mine = ++planningSeq;
   planning.value = true;
   try {
@@ -257,6 +271,7 @@ async function confirmUninstall(): Promise<void> {
   const current = returnPlan.value;
   if (!uninstallCanStart(current)) return;
   const selection = selectionSeq;
+  writesInFlight.value.add(current.optionId);
   stage.value = "returning";
   try {
     const backend = await rift();
@@ -274,11 +289,15 @@ async function confirmUninstall(): Promise<void> {
   } catch (raw) {
     if (selection === selectionSeq) fail(raw, "uninstall");
     else useToasts().push("ember", voice(asRiftFailure(raw), "uninstall").voice);
+  } finally {
+    writesInFlight.value.delete(current.optionId);
   }
 }
 
 /** Undo paths: straight through, no plan (the user just saw it). */
 async function quietUninstall(optionId: string, name: string): Promise<void> {
+  if (writesInFlight.value.has(optionId)) return;
+  writesInFlight.value.add(optionId);
   try {
     const backend = await rift();
     await backend.uninstall(optionId);
@@ -289,10 +308,14 @@ async function quietUninstall(optionId: string, name: string): Promise<void> {
     }
   } catch (raw) {
     useToasts().push("ember", voice(asRiftFailure(raw), "uninstall").voice);
+  } finally {
+    writesInFlight.value.delete(optionId);
   }
 }
 
 async function quietInstall(optionId: string, name: string): Promise<void> {
+  if (writesInFlight.value.has(optionId)) return;
+  writesInFlight.value.add(optionId);
   try {
     const backend = await rift();
     const result = await backend.install(optionId);
@@ -304,6 +327,8 @@ async function quietInstall(optionId: string, name: string): Promise<void> {
     }
   } catch (raw) {
     useToasts().push("ember", voice(asRiftFailure(raw), "install").voice);
+  } finally {
+    writesInFlight.value.delete(optionId);
   }
 }
 
@@ -386,6 +411,7 @@ export function useWorld() {
     returned,
     failure,
     planning,
+    writing,
     crossingSeq,
     landedNames,
     retryingPutAway,
@@ -410,6 +436,7 @@ export function resetWorld(): void {
   landed.value = null;
   returned.value = null;
   planning.value = false;
+  writesInFlight.value.clear();
   crossingSeq.value = 0;
   detailFailure.value = null;
   retryingPutAway.value = false;

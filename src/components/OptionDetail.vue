@@ -260,13 +260,17 @@ function crumb(name: string): void {
       <RiftButton
         v-if="!installedHere"
         variant="primary"
-        :busy="world.planning.value"
+        :busy="world.planning.value || world.writing.value"
         :disabled="option.menuOnly"
         reason="A menu entry installs nothing. Pick one of its variants."
         @click="world.beginInstall()"
         >{{ installLabel }}</RiftButton
       >
-      <RiftButton v-else variant="danger" :busy="world.planning.value" @click="world.beginUninstall()"
+      <RiftButton
+        v-else
+        variant="danger"
+        :busy="world.planning.value || world.writing.value"
+        @click="world.beginUninstall()"
         >Uninstall…</RiftButton
       >
       <RiftButton v-if="familyLine?.door?.door === 'keepNewest'" variant="primary" @click="keepOnlyTheNewest()">{{
