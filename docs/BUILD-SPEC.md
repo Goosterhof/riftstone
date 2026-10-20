@@ -2506,8 +2506,10 @@ The wire is WINDOW-CONTRACT § v0.5, the design #00015 §18.
 
 `family.rs`, pure: `families(members: &[FamilyMember]) -> Vec<Family>`.
 - A member is a package id with its effective link (`link_for`) and its last check's newer file id.
-- A family is the connected set under the two ties of ruling 2, ordered newest first: upload
-  time, then file id, then file name. A set of one is no family.
+- A family is the connected set under the two ties of ruling 2, ordered newest first. A check
+  that named another member's file as newer puts that member first, before the upload times
+  decide (the General's review, below); then upload time, file id and file name. A set of one
+  is no family.
 - Tested on invented links, including the transitive tie and a mixed pinned and unpinned pair
   that must not fold.
 
@@ -2664,3 +2666,36 @@ against the code they had left, and fixed what those specs found.
   `MoveFileExW`, moved from `downloads.rs` unchanged) compiles nowhere but Windows, and THE
   UNDERCROFT's move has never crossed NTFS. Still open from §18.14: Q18.11 (whether a slot reads as
   being written mid-save) needs the game itself.
+- **The General's review of PR #2** (2026-10-20, at `3df7eb4`): five issues and six nits. Each
+  issue now has a spec that fails at `3df7eb4` and passes with its fix, each seen failing.
+  - **Install… and Uninstall… stood side by side.** `Keep only the newest…` sat between the
+    Install `v-if` and the Uninstall `v-else`, so the `v-else` paired with it. The door now
+    follows the pair, as R18.4 has it (an extra door, never Uninstall's place). The specs now
+    read the doors in order.
+  - **A named-newer pair lost to the upload times.** A link pasted as a file URL has a file id and
+    no upload time, so the older version led its family. `rift-nexus::family` now orders by that
+    proof first: a member goes next only when no member still waiting was named newer than it.
+    It is a pass over the recency order and not a comparator, because `sort_by` must be given a
+    total order and the proof is a relation between two members.
+  - **A late answer drew on whatever card was open.** A keep-newest plan or result, a yes's
+    landing and a no's close all landed on the card open when the answer came, not the card that
+    asked. `useVersions` now numbers each card the pane shows, and every press that awaits the
+    spine takes that number first. A late answer for a card the player left draws nothing there.
+    A finished keep-newest still says so in a toast, and a failed one in ember.
+  - **Try again lost a move that worked.** The window put the older versions away one by one, and
+    a failure on the second dropped the first from the landing. A new spine command,
+    `retry_put_away(packageId)`, makes the install's own put-away again, under one turn, and
+    answers `{ putAway, putAwayFailed }` as the install does. The window no longer works out the
+    set. The mock's `putawayhalf` scene moves v1.2 on the retry while v1.1 still stays.
+  - Nits: the older mark counts the installed ones (`+2 older, 1 installed`; the README frame was
+    shot again and looked at). The privacy sweep keeps a colliding id in the search and sets aside
+    only its hits on lines the repo held at or before `SWEPT_CLEAN`, so a new fixture still
+    counts. `put_away` reads the family under the turn. A check keeps a joined link's group
+    (v1 lists files with none). The version question needs two shared names, or one name that
+    both packages hold alone: measured read-only on the investor's library, the folder ruling 10
+    was built for shares 5 of 5 and still asks. THE MUSTER follows the slot that following
+    opens, not the newest slot by time, so picking it while the newest is written stays following.
+  - New: 4 Rust tests (2 rift-nexus, 1 spine store, 1 spine_versions, and 2 extended), 8 window
+    specs, 3 sweep self-test checks. Gates on the Linux bench: cargo fmt clean, clippy with
+    warnings denied clean, 977 passed, 0 failed, 11 ignored; npm typecheck 0, lint 0 warnings,
+    460/460 in 40 files, format:check clean, build clean.

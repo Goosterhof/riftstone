@@ -256,6 +256,7 @@ The versions' scenes (v0.5, `src/services/mock/versions.ts`): `family` (Lantern 
 over v1.2, both installed, as v0.4 stacked them), `familyfresh` (v1.3 downloaded, v1.2 installed),
 `familythree` (and a v1.1 with nothing installed), `putaway` (installing v1.3 puts v1.2 away),
 `putawaytaken` (it lands as ` (2)`), `putawayfail` (the move fails after the install committed),
+`putawayhalf` (with v1.1 too, and Try again moves v1.2 while v1.1 still stays),
 `undercroft` (v1.2 already put away), `undercroftempty` and `undercroftnone` (the folder empty, or
 never made). The player's word (#00015 §18.18): `question` (the unpacked Lantern Glow Recolor folder,
 linked by mod id, beside the pinned v1.3, and the stone asks), `questioninstalled`, `questionjoined`,
@@ -379,7 +380,8 @@ links back too: turn the switch on again after it (WINDOW-CONTRACT § v0.3 The o
   and pinned to one file group (an update check or a download pins a link), or a check that named
   the other's file as newer, or by the player's word (ruling 10). A package linked by name alone
   joins a family only when the player says so; the stone asks only when one package's file names
-  are all among the other's, so a version that renamed or dropped a file is never asked about
+  are all among the other's and they share two or more (or each holds just the one same name),
+  so a version that renamed or dropped a file is never asked about
   (the option detail's *This is a version of…* joins it all the same). An unlinked package joins
   nothing: link it first. Without a join, its install stacks over another version's as in v0.4,
   and both keep an entry. A modder who uploads a

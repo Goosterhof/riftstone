@@ -647,6 +647,7 @@ fields on the v0.4 Muster types and on `Settings`). The design is #00015 §18.
 | `plan_keep_newest` | `packageId: string` | `KeepNewestPlanView` | What keeping only the newest version of the package's file would uninstall and put away. Any member names the family. Nothing is written. |
 | `keep_newest` | `packageId: string` | `KeepNewestResultView` | Uninstalls the older versions' installs, each by its own uninstall, then puts those versions away; one turn of the deploy lock. `rift://game-changed` when anything was uninstalled, a scan when anything moved. |
 | `put_away` | `packageId: string` | `PutAwayView` | Moves one older version with no installs to the older-versions folder. A scan follows. |
+| `retry_put_away` | `packageId: string` | `PutAwayResultView` | The put-away an install of the package makes, made again (the landing's `Try again`): every member older than it left without installs, the family read under one turn of the deploy lock. Moves what it can; `putAwayFailed` names what would not move. A scan when anything moved. |
 | `get_older_versions` | — | `OlderShelfView` | What the older-versions folder holds. |
 | `bring_back` | `fileName: string` | `BringBackResult` | Moves an item of the older-versions folder back into the mods folder. A scan follows. |
 | `open_older_versions_folder` | — | `void` | Shows the older-versions folder in Explorer, Rust-side; refused before the first put-away makes it. |
@@ -664,8 +665,11 @@ answers is below.
 linked to the same mod and either both links name the same file group (Nexus gives every version
 of one file the same group id; an update check or a download pins it), or one package's last
 check named the other's exact file as its newer file. Packages tied that way, directly or through
-each other, form a family. The newest leads: the latest upload time, then the higher file id; a
-member whose link states neither comes last, by file name. A package with no link, or with an
+each other, form a family. The newest leads. A check that named another member's file as newer is
+the one proof of age the rule holds, so that member comes before the one whose check named it,
+whatever the upload times say (a link pasted as a file URL has a file id and no upload time).
+Among members no check orders: the latest upload time, then the higher file id; a member whose
+link states neither comes last, by file name. A package with no link, or with an
 unpinned link no check named, is in no family. Names and sizes alone never make a family.
 
 **The same option.** An option of one version is the same option as an option of another when
@@ -720,7 +724,10 @@ is outside the library: no scan reads it and no watcher wakes for it. The move:
 
 A move that fails leaves the install standing and the file where it was; `putAwayFailed` says so
 in one sentence that names the files and the reason, and the entry keeps showing the older
-version. A mods folder at the root of a drive has no folder beside it: every put-away there fails
+version. The landing's `Try again` calls `retry_put_away(packageId)` with the installed package:
+the spine works out the set again and answers as the install did, what moved and what would not,
+so a move that worked is never lost to a later one that failed. The window never works out the
+set itself. A mods folder at the root of a drive has no folder beside it: every put-away there fails
 that way. A member newer than the install (an older version installed on purpose) is never put
 away, and an uninstall never puts anything away.
 
@@ -736,7 +743,8 @@ error. An uninstall that fails stops it there: what it uninstalled stays uninsta
 (`rift://game-changed` follows), nothing is put away, and the error says why.
 
 **Put one away.** `put_away(packageId)` moves an older member with no installs to the folder, at
-the player's press, under the deploy lock. It is refused (a `refused` error) for a family's lead,
+the player's press, under the deploy lock; the family is read under it too, so a join taken back
+since the press cannot let the newest version move. It is refused (a `refused` error) for a family's lead,
 a package in no family, or a member with installs, and needs the journal (no game found, a
 damaged journal: that error).
 
@@ -772,8 +780,10 @@ The stone asks; it never joins on its own.
 - another package in the mods folder links to the same mod with a file group (the question's
   file group), and the player has not said no to that group for this package;
 - the file names they hold, compared without their folders and in any case, and leaving out the
-  catalog's own `modinfo.ini` and `screenshot.*`, have at least one in common, and one package's
-  names are all among the other's.
+  catalog's own `modinfo.ini` and `screenshot.*`, have at least two in common (or both packages
+  hold just the one same name), and one package's names are all among the other's. A single
+  name in common beside others never asks: an optional file of the same mod that holds only a
+  `config.json` its main file holds too is no version of it.
 
 When several file groups qualify, it asks about the one with the most names in common, then the
 newest. `ofPackageId` is that group's newest package in the mods folder (its family's lead when it
@@ -784,7 +794,9 @@ holds. A question is a hint, not a proof: the answer is the proof.
 file group and `source: "joined"`; its file id, version and upload time stay as they were (none,
 for a folder). The family rule then reads it unchanged: one entry, THE VERSIONS card, install
 replaces, put away, keep only the newest. A joined version with no upload time and no file id
-comes last in its family, so it never leads. It needs no question: any package whose link names a
+comes last in its family, so it never leads. A later update check keeps the joined group: a pin
+adds the file's id, version and upload time, but a listed file with no group (v1 lists none) or
+another group never parts the join; only *Take it back* does. It needs no question: any package whose link names a
 mod and no file group may be joined to a package of the same mod that names one. Anything else is
 `refused`: either package not in the mods folder, different mods, a package that already names a
 file group, or `ofPackageId` naming none. An update check keeps the joined group unless it pins

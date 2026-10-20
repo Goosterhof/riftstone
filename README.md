@@ -26,7 +26,7 @@ The Riftstone is a Windows desktop mod manager for **Dragon's Dogma 2**. Its lib
 </p>
 
 <p>
-  <img src="docs/images/riftstone-versions.png" width="49%" alt="One entry per file: Lantern Glow Recolor v1.3 on an amber rail, +2 older, installed. Inside it, v1.2 open to its own two options and v1.1 with nothing installed. Beside it, VERSIONS OF THIS FILE lists all three, v1.2 installed under v1.3, with Put it away on v1.1 and Keep only the newest.">
+  <img src="docs/images/riftstone-versions.png" width="49%" alt="One entry per file: Lantern Glow Recolor v1.3 on an amber rail, +2 older, 1 installed. Inside it, v1.2 open to its own two options and v1.1 with nothing installed. Beside it, VERSIONS OF THIS FILE lists all three, v1.2 installed under v1.3, with Put it away on v1.1 and Keep only the newest.">
   <img src="docs/images/riftstone-put-away.png" width="49%" alt="The newer version installed in the older one's place: THE CROSSING carves IN YOUR WORLD, v1.2 is put away in mods (older versions) with Bring it back, the foot of the Rift carves 1 PUT AWAY, and a toast says Lantern Glow Recolor v1.3 is in your world, in v1.2's place.">
 </p>
 
