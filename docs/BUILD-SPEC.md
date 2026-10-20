@@ -2506,10 +2506,12 @@ The wire is WINDOW-CONTRACT § v0.5, the design #00015 §18.
 
 `family.rs`, pure: `families(members: &[FamilyMember]) -> Vec<Family>`.
 - A member is a package id with its effective link (`link_for`) and its last check's newer file id.
-- A family is the connected set under the two ties of ruling 2, ordered newest first. A member
-  a check named as newer takes the newer of its own recency (upload time, then file id) and its
-  namer's, carried up a chain of proofs, and comes before its namer; then file name (the
-  General's review, rounds 1 and 2, below). A set of one is no family.
+- A family is the connected set under the two ties of ruling 2, ordered newest first: every
+  proof kept (a named member before its namer, a circle of proofs condensed into one block),
+  and among the blocks no proof holds back, the highest priority first (the newest recency among
+  a member and every member whose proofs reach it), then own recency, then file name (the
+  General's review, rounds 1–3, below). `tests/family_order.rs` holds it to that over 30,000
+  invented families. A set of one is no family.
 - Tested on invented links, including the transitive tie and a mixed pinned and unpinned pair
   that must not fold.
 
@@ -2743,3 +2745,20 @@ against the code they had left, and fixed what those specs found.
   and the two search frames the `×` in the well. One thing the frames show that no spec states:
   at 860 px the pillar's taller rooms push the Nexus tags below the fold of the filter column, so
   only the categories show without a scroll.
+- **The General's third round on PR #2** (2026-10-20, at `7622333`): one issue and two nits.
+  The issue (the Uninstall… door live while an answer is in flight) and one nit (two lines of
+  the viewer no spec held) are the Heretic's. Mine was the family order's third defect in three
+  rounds: A named D newer while B and D named each other, so every member of that group waited,
+  and A went out first. The reviewer's property run (30,000 random families) found 0 violations
+  without a cycle and 480 with one, all this shape. On the General's advice the pass gave way
+  to a procedure with no special cases: the proofs' closure, its circles condensed into blocks,
+  and a topological order taking the ready block with the highest priority. A named member's
+  priority is never below its namer's, so the order is sorted by priority as well as keeping
+  every proof. The hand-picked cases were not enough three times, so `tests/family_order.rs`
+  now gates the rule: 30,000 families of two to five versions, drawn from a fixed seed, with
+  random upload times and file ids, chains, cycles and proofs naming files outside the family.
+  An oracle works out the proofs by search, and each family must keep every member once, keep
+  every proof that no proof leads back from, never let priority rise down the order, and give
+  the same order for four shuffles of its input. At `7622333` it failed at case 249. With the
+  new order it passes, with 952 families carrying a cycle. A mutant that ignores priority fails
+  at case 45. The docblock's claim that Nexus never gives a cycle is gone; the rule handles one.

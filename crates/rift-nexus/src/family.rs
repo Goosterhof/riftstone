@@ -8,12 +8,17 @@
 //! and sizes alone never tie anything: they cannot tell a new version from another file.
 //!
 //! The newest leads. A check that named another member's file as newer is the one proof of age
-//! the rule holds: that member is at least as new as the one whose check named it, whatever its
-//! own link says (a link pasted as a file URL carries a file id and no upload time). So it is
-//! ordered by the newer of its own recency and the namer's, carried up a chain of such proofs,
-//! and then placed before the member that named it. Recency is the latest upload time, then the
-//! higher file id; a member whose link states neither, and that no proof lifts, comes last, by
-//! file name.
+//! the rule holds: the named member is at least as new as the member that named it, whatever its
+//! own link says (a link pasted as a file URL carries a file id and no upload time). The order
+//! keeps every proof, condensing the members whose proofs run in a circle (two checks at
+//! different times can name each other) into one block, and among the blocks a proof leaves free
+//! it takes the one with the highest priority first. A member's priority is the newest recency
+//! among itself and every member whose proofs reach it, so the newest version leads and a
+//! version between a proven pair never leads over them. Recency is the latest upload time, then
+//! the higher file id; a member whose link states neither, and that no proof lifts, comes last.
+//! Ties fall to the member's own recency, then the file name, so the order is the same however
+//! the members are given. `tests/family_order.rs` holds the rule to all of that over 30,000
+//! invented families.
 
 use std::collections::BTreeMap;
 
@@ -68,61 +73,88 @@ fn recency(m: &FamilyMember) -> Recency {
     )
 }
 
-/// Each member's recency lifted by the proofs: a member a check named as newer is at least as
-/// new as the member whose check named it, so it takes the newer of the two, and a chain of
-/// proofs carries it on. A fixed point over the family; every round lifts at least one member
-/// or stops, and no recency rises above the family's newest, so a cycle of proofs (which Nexus
-/// never gives) ends too.
-fn lifted(members: &[FamilyMember], set: &[usize]) -> BTreeMap<usize, Recency> {
-    let mut at: BTreeMap<usize, Recency> = set.iter().map(|&i| (i, recency(&members[i]))).collect();
-    for _ in 0..set.len() {
-        let mut moved = false;
-        for &namer in set {
-            for &named in set {
-                if namer != named
-                    && named_newer(&members[namer], &members[named])
-                    && at[&namer] > at[&named]
-                {
-                    at.insert(named, at[&namer]);
-                    moved = true;
+/// One family's members, newest first (the rule in the module's head).
+///
+/// 1. `reach[a][b]`: `a`'s proofs reach `b`, directly or through others; `b` must come before
+///    `a` unless `b`'s proofs reach `a` back, which puts the two in one block.
+/// 2. A member's priority is the newest recency among itself and every member that reaches it.
+///    A named member's priority is never below its namer's, so the order below is sorted by
+///    priority as well as keeping every proof.
+/// 3. A block is ready once every member its members reach outside it is placed. The ready block
+///    with the highest priority goes next, then the higher own recency, then the first file name;
+///    inside a block, own recency, then file name.
+///
+/// The family is a handful of versions, so the search is a plain closure over a small matrix.
+fn newest_order(members: &[FamilyMember], set: Vec<usize>) -> Vec<usize> {
+    let n = set.len();
+    let at = |k: usize| &members[set[k]];
+    let mut reach = vec![vec![false; n]; n];
+    for (a, row) in reach.iter_mut().enumerate() {
+        for (b, cell) in row.iter_mut().enumerate() {
+            *cell = a != b && named_newer(at(a), at(b));
+        }
+    }
+    for via in 0..n {
+        let onward = reach[via].clone();
+        for row in &mut reach {
+            if row[via] {
+                for (cell, &next) in row.iter_mut().zip(&onward) {
+                    *cell |= next;
                 }
             }
         }
-        if !moved {
-            break;
+    }
+    let priority: Vec<Recency> = (0..n)
+        .map(|k| {
+            (0..n)
+                .filter(|&j| j == k || reach[j][k])
+                .map(|j| recency(at(j)))
+                .max()
+                .unwrap_or((None, None))
+        })
+        .collect();
+    let together = |a: usize, b: usize| a == b || (reach[a][b] && reach[b][a]);
+    // Each member's block, by its first member; a member's place inside it, by own recency.
+    let own = |a: usize, b: usize| {
+        recency(at(b))
+            .cmp(&recency(at(a)))
+            .then_with(|| at(a).file_name.cmp(at(b).file_name))
+    };
+    let mut blocks: Vec<Vec<usize>> = Vec::new();
+    for k in 0..n {
+        match blocks.iter_mut().find(|block| together(block[0], k)) {
+            Some(block) => block.push(k),
+            None => blocks.push(vec![k]),
         }
     }
-    at
-}
-
-/// One family's members, newest first. They are sorted by their lifted recency, then their own,
-/// then file name. A member a check named as newer has a lifted recency no lower than its
-/// namer's, so it never sorts into a later group than its namer; within one group of equal lifted
-/// recency the pass puts the named one first: a member goes next only when no member of its group
-/// still waiting was named newer than it. That is a pass and not a comparator, because the proof
-/// is a relation between two members and not a total order (`sort_by` must be given one). It
-/// runs one group at a time, so a member outside a cycle of proofs never jumps ahead of the
-/// cycle while its members wait on each other: a cycle falls back to the sorted order inside its
-/// own group, the same however the members were given.
-fn newest_order(members: &[FamilyMember], mut set: Vec<usize>) -> Vec<usize> {
-    let at = lifted(members, &set);
-    set.sort_by(|&a, &b| {
-        at[&b]
-            .cmp(&at[&a])
-            .then_with(|| recency(&members[b]).cmp(&recency(&members[a])))
-            .then_with(|| members[a].file_name.cmp(members[b].file_name))
-    });
-    let mut out = Vec::with_capacity(set.len());
-    for group in set.chunk_by(|a, b| at[a] == at[b]) {
-        let mut waiting = group.to_vec();
-        while !waiting.is_empty() {
-            let ready = |&i: &usize| {
-                !waiting
-                    .iter()
-                    .any(|&j| j != i && named_newer(&members[i], &members[j]))
-            };
-            let next = waiting.iter().position(ready).unwrap_or(0);
-            out.push(waiting.remove(next));
+    for block in &mut blocks {
+        block.sort_by(|&a, &b| own(a, b));
+    }
+    let mut placed = vec![false; n];
+    let mut out = Vec::with_capacity(n);
+    while !blocks.is_empty() {
+        let ready = |block: &Vec<usize>| {
+            block
+                .iter()
+                .all(|&a| (0..n).all(|b| !reach[a][b] || placed[b] || block.contains(&b)))
+        };
+        // A block's key: its priority (one for all its members), then its newest member.
+        let key = |block: &Vec<usize>| (priority[block[0]], block[0]);
+        let next = blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, block)| ready(block))
+            .min_by(|(_, x), (_, y)| {
+                key(y)
+                    .0
+                    .cmp(&key(x).0)
+                    .then_with(|| own(key(x).1, key(y).1))
+            })
+            .map(|(i, _)| i)
+            .expect("the blocks of a family form no cycle, so one is always ready");
+        for k in blocks.remove(next) {
+            placed[k] = true;
+            out.push(set[k]);
         }
     }
     out
@@ -431,6 +463,23 @@ mod tests {
         for given in permutations(&members) {
             assert_eq!(order_of(&given), first);
         }
+    }
+
+    #[test]
+    fn a_proof_into_a_cycle_waits_for_the_cycle() {
+        // The General's round 3: B and D name each other newer (a cycle), A named D newer, and C
+        // is ordered by nothing. A must wait for D, cycle or no cycle; it went out first.
+        let a = link(7140, Some(1), Some(9), Some(20));
+        let b = link(7140, Some(2), Some(9), Some(10));
+        let c = link(7140, Some(3), Some(9), None);
+        let d = link(7140, Some(4), Some(9), None);
+        let members = [
+            member("a.zip", Some(&a), Some(4)),
+            member("b.zip", Some(&b), Some(4)),
+            member("c.zip", Some(&c), None),
+            member("d.zip", Some(&d), Some(2)),
+        ];
+        assert_eq!(order_of(&members), ["b.zip", "d.zip", "a.zip", "c.zip"]);
     }
 
     #[test]

@@ -666,12 +666,15 @@ linked to the same mod and either both links name the same file group (Nexus giv
 of one file the same group id; an update check or a download pins it), or one package's last
 check named the other's exact file as its newer file. Packages tied that way, directly or through
 each other, form a family. The newest leads. A check that named another member's file as newer is
-the one proof of age the rule holds: that member is at least as new as the one whose check named
-it, whatever its own link says (a link pasted as a file URL has a file id and no upload time). So
-it is ordered by the newer of its own recency and the namer's, carried up a chain of such proofs,
-and comes before the member that named it. Recency is the latest upload time, then the higher
-file id; a member whose link states neither, and that no proof lifts, comes last, by file name. A
-version that sits between the two by upload time alone never leads over them. A package with no link, or with an
+the one proof of age the rule holds: the named member comes before the member that named it,
+whatever its own link says (a link pasted as a file URL has a file id and no upload time).
+Members whose proofs run in a circle (two checks at different times can name each other) are
+placed together. Among the members no proof holds back, the one with the highest priority goes
+next: the newest recency among itself and every member whose proofs reach it. So the newest
+version leads, and a version that sits between a proven pair by upload time alone never leads over
+them. Recency is the latest upload time, then the higher file id; a member whose link states
+neither, and that no proof lifts, comes last. Ties fall to a member's own recency, then its file
+name, so the order is the same however the mods folder lists the packages. A package with no link, or with an
 unpinned link no check named, is in no family. Names and sizes alone never make a family.
 
 **The same option.** An option of one version is the same option as an option of another when
