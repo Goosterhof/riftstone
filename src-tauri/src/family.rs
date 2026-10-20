@@ -273,15 +273,32 @@ fn compared_names(entries: &[ArchiveEntry]) -> BTreeSet<String> {
         .collect()
 }
 
+/// Settings and text files: a name a mod's files share with any other package of the mod, so it
+/// never makes a version likely on its own.
+const SETTINGS_EXTENSIONS: &[&str] = &[
+    "json", "ini", "cfg", "toml", "yaml", "yml", "xml", "txt", "md", "log",
+];
+
+fn is_settings(name: &str) -> bool {
+    name.rsplit_once('.')
+        .is_some_and(|(_, ext)| SETTINGS_EXTENSIONS.contains(&ext))
+}
+
 /// The question a package's file names make likely against another's: how many names they
 /// share, when one's names are all among the other's and they share at least two, or both hold
-/// just the one same name (a one-file mod's other version). A single shared name beside others
-/// is too thin: an optional file of the same mod holding only a `config.json` its main file
-/// holds too is no version of it (General, PR #2).
+/// just the one same name and it is the mod itself (a one-file mod's other version: a pak, a
+/// script, an asset), never a settings or text file. A single shared name beside others is too
+/// thin: an optional file of the same mod holding only a `config.json` its main file holds too
+/// is no version of it, and two packages that each hold only that `config.json` are two
+/// settings, not two versions (General, PR #2, rounds 1 and 2).
 fn likely_shared(own: &BTreeSet<String>, theirs: &BTreeSet<String>) -> Option<usize> {
-    let shared = own.intersection(theirs).count();
-    let enough = shared >= 2 || (shared == 1 && own.len() == 1 && theirs.len() == 1);
-    (enough && (own.is_subset(theirs) || theirs.is_subset(own))).then_some(shared)
+    let shared: Vec<&String> = own.intersection(theirs).collect();
+    let lone_mod = match shared.as_slice() {
+        [name] => own.len() == 1 && theirs.len() == 1 && !is_settings(name),
+        _ => false,
+    };
+    let enough = shared.len() >= 2 || lone_mod;
+    (enough && (own.is_subset(theirs) || theirs.is_subset(own))).then_some(shared.len())
 }
 
 /// Every package the stone asks about (ruling 10, WINDOW-CONTRACT § v0.5, The player's word): a
@@ -426,6 +443,28 @@ mod tests {
             likely_shared(&pak, &pak_again),
             Some(1),
             "a one-file mod's other version still asks"
+        );
+        let settings = compared_names(&entries(&["reframework/data/Config.json"]));
+        let settings_again =
+            compared_names(&entries(&["Lantern Glow/reframework/data/config.json"]));
+        assert_eq!(
+            likely_shared(&settings, &settings_again),
+            None,
+            "two packages that each hold only the same config.json are settings, not versions"
+        );
+        for lone in ["notes.TXT", "preset.ini", "readme.md"] {
+            let one = compared_names(&entries(&[lone]));
+            assert_eq!(
+                likely_shared(&one, &one.clone()),
+                None,
+                "{lone} alone never asks"
+            );
+        }
+        let script = compared_names(&entries(&["reframework/autorun/lantern_glow.lua"]));
+        assert_eq!(
+            likely_shared(&script, &script.clone()),
+            Some(1),
+            "a one-script mod still asks"
         );
     }
 

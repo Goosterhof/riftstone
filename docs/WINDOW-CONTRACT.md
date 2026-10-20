@@ -666,10 +666,12 @@ linked to the same mod and either both links name the same file group (Nexus giv
 of one file the same group id; an update check or a download pins it), or one package's last
 check named the other's exact file as its newer file. Packages tied that way, directly or through
 each other, form a family. The newest leads. A check that named another member's file as newer is
-the one proof of age the rule holds, so that member comes before the one whose check named it,
-whatever the upload times say (a link pasted as a file URL has a file id and no upload time).
-Among members no check orders: the latest upload time, then the higher file id; a member whose
-link states neither comes last, by file name. A package with no link, or with an
+the one proof of age the rule holds: that member is at least as new as the one whose check named
+it, whatever its own link says (a link pasted as a file URL has a file id and no upload time). So
+it is ordered by the newer of its own recency and the namer's, carried up a chain of such proofs,
+and comes before the member that named it. Recency is the latest upload time, then the higher
+file id; a member whose link states neither, and that no proof lifts, comes last, by file name. A
+version that sits between the two by upload time alone never leads over them. A package with no link, or with an
 unpinned link no check named, is in no family. Names and sizes alone never make a family.
 
 **The same option.** An option of one version is the same option as an option of another when
@@ -780,10 +782,13 @@ The stone asks; it never joins on its own.
 - another package in the mods folder links to the same mod with a file group (the question's
   file group), and the player has not said no to that group for this package;
 - the file names they hold, compared without their folders and in any case, and leaving out the
-  catalog's own `modinfo.ini` and `screenshot.*`, have at least two in common (or both packages
-  hold just the one same name), and one package's names are all among the other's. A single
-  name in common beside others never asks: an optional file of the same mod that holds only a
-  `config.json` its main file holds too is no version of it.
+  catalog's own `modinfo.ini` and `screenshot.*`, have at least two in common, or both packages
+  hold just the one same name and it is no settings or text file (`.json`, `.ini`, `.cfg`,
+  `.toml`, `.yaml`, `.yml`, `.xml`, `.txt`, `.md`, `.log`); and one package's names are all among
+  the other's. A single name in common beside others never asks: an optional file of the same
+  mod that holds only a `config.json` its main file holds too is no version of it, and two
+  packages that each hold only that `config.json` are two settings. A one-file mod's other
+  version (one pak, one script) still asks.
 
 When several file groups qualify, it asks about the one with the most names in common, then the
 newest. `ofPackageId` is that group's newest package in the mods folder (its family's lead when it

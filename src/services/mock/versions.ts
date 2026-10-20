@@ -251,8 +251,10 @@ export function questionOf(
     const names = fileNamesOf(other);
     const shared = [...mine].filter((n) => names.has(n)).length;
     const contained = shared === mine.size || shared === names.size;
-    // two names in common, or the one name each holds (the spine's `likely_shared`)
-    const enough = shared >= 2 || (shared === 1 && mine.size === 1 && names.size === 1);
+    // two names in common, or the one name each holds when it is the mod and no settings
+    // file (the spine's `likely_shared`)
+    const lone = [...mine].find((n) => names.has(n)) ?? "";
+    const enough = shared >= 2 || (shared === 1 && mine.size === 1 && names.size === 1 && !SETTINGS_FILE.test(lone));
     if (!enough || !contained) continue;
     const lead = leadOf(other);
     const newer = (lead.summary.nexus?.uploadedMs ?? 0) > (best?.of.summary.nexus?.uploadedMs ?? 0);
@@ -332,6 +334,9 @@ export function versionScene(scene: ReadonlySet<string>): VersionScene {
 }
 
 // --- the spine's rules, over the mock's packages -------------------------------
+
+/** A settings or text file: never a version's proof on its own (the spine's `SETTINGS_EXTENSIONS`). */
+const SETTINGS_FILE = /\.(?:json|ini|cfg|toml|ya?ml|xml|txt|md|log)$/i;
 
 const familyKey = (summary: PackageSummary): string | null => {
   const link = summary.nexus;

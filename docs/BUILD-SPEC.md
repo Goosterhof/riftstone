@@ -2506,10 +2506,10 @@ The wire is WINDOW-CONTRACT § v0.5, the design #00015 §18.
 
 `family.rs`, pure: `families(members: &[FamilyMember]) -> Vec<Family>`.
 - A member is a package id with its effective link (`link_for`) and its last check's newer file id.
-- A family is the connected set under the two ties of ruling 2, ordered newest first. A check
-  that named another member's file as newer puts that member first, before the upload times
-  decide (the General's review, below); then upload time, file id and file name. A set of one
-  is no family.
+- A family is the connected set under the two ties of ruling 2, ordered newest first. A member
+  a check named as newer takes the newer of its own recency (upload time, then file id) and its
+  namer's, carried up a chain of proofs, and comes before its namer; then file name (the
+  General's review, rounds 1 and 2, below). A set of one is no family.
 - Tested on invented links, including the transitive tie and a mixed pinned and unpinned pair
   that must not fold.
 
@@ -2699,3 +2699,17 @@ against the code they had left, and fixed what those specs found.
     specs, 3 sweep self-test checks. Gates on the Linux bench: cargo fmt clean, clippy with
     warnings denied clean, 977 passed, 0 failed, 11 ignored; npm typecheck 0, lint 0 warnings,
     460/460 in 40 files, format:check clean, build clean.
+- **The General's second round on PR #2** (2026-10-20, at `43652f1`): 10 of round 1's 11
+  threads resolved, and the specs for issues 1, 3 and 4 went red when their fixes were reverted.
+  Three issues and one nit were left; two issues are on the Heretic's `43652f1` (the
+  `useWorld` landing that returns before its detail reloads, and the lightbox's keys once focus
+  leaves it) and are the Heretic's to fix. Mine:
+  - **Round 1's family order was half fixed.** With X (uploaded 50), A (uploaded 100, which named
+    B newer) and B (no upload time), recency gave A, X, B; A waited on B, so X went first and
+    the oldest led. The order now lifts a named member's recency to its namer's, up a chain of
+    proofs, before it sorts, so the pair sits together and the pass only settles ties. The
+    General's case and a three-step chain each failed at `43652f1`.
+  - **Nit: the lone shared name still asked for two packages that each hold only the same
+    `config.json`.** The lone-name clause now counts only a name that is no settings or text
+    file, so a one-pak or one-script mod's other version still asks. Its assertion failed
+    against the old clause.

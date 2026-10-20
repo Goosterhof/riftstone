@@ -8,12 +8,13 @@
 //! and sizes alone never tie anything: they cannot tell a new version from another file.
 //!
 //! The newest leads. A check that named another member's file as newer is the one proof of age
-//! the rule holds, so that member comes before the one whose check named it, whatever their links
-//! say about upload times (a link pasted as a file URL carries a file id and no upload time).
-//! Among members no check orders, the latest upload time comes first, then the higher file id. A
-//! member whose link states neither comes last, by file name.
+//! the rule holds: that member is at least as new as the one whose check named it, whatever its
+//! own link says (a link pasted as a file URL carries a file id and no upload time). So it is
+//! ordered by the newer of its own recency and the namer's, carried up a chain of such proofs,
+//! and then placed before the member that named it. Recency is the latest upload time, then the
+//! higher file id; a member whose link states neither, and that no proof lifts, comes last, by
+//! file name.
 
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use rift_core::NexusLink;
@@ -56,23 +57,58 @@ fn named_newer(a: &FamilyMember, b: &FamilyMember) -> bool {
     matches!((a.newer_file_id, b.link.and_then(|l| l.file_id)), (Some(n), Some(f)) if n == f)
 }
 
-/// Newest first: the latest upload, then the higher file id, then the file name.
-fn newest_first(a: &FamilyMember, b: &FamilyMember) -> Ordering {
-    let uploaded = |m: &FamilyMember| m.link.and_then(|l| l.uploaded_ms);
-    let file = |m: &FamilyMember| m.link.and_then(|l| l.file_id);
-    uploaded(b)
-        .cmp(&uploaded(a))
-        .then_with(|| file(b).cmp(&file(a)))
-        .then_with(|| a.file_name.cmp(b.file_name))
+/// A member's recency as its own link states it: the upload time, then the file id. `None`
+/// sorts below any time or id, so a member stating neither comes last.
+type Recency = (Option<u64>, Option<u64>);
+
+fn recency(m: &FamilyMember) -> Recency {
+    (
+        m.link.and_then(|l| l.uploaded_ms),
+        m.link.and_then(|l| l.file_id),
+    )
 }
 
-/// One family's members, newest first. The named-newer proof decides before the upload times
-/// do: a member goes next only when no member still waiting was named newer than it. That is a
-/// pass over the recency order, not a comparator, because the proof is a relation between two
-/// members and not a total order (`sort_by` must be given one). A cycle of proofs, which Nexus
-/// never gives, falls back to the recency order.
+/// Each member's recency lifted by the proofs: a member a check named as newer is at least as
+/// new as the member whose check named it, so it takes the newer of the two, and a chain of
+/// proofs carries it on. A fixed point over the family; every round lifts at least one member
+/// or stops, and no recency rises above the family's newest, so a cycle of proofs (which Nexus
+/// never gives) ends too.
+fn lifted(members: &[FamilyMember], set: &[usize]) -> BTreeMap<usize, Recency> {
+    let mut at: BTreeMap<usize, Recency> = set.iter().map(|&i| (i, recency(&members[i]))).collect();
+    for _ in 0..set.len() {
+        let mut moved = false;
+        for &namer in set {
+            for &named in set {
+                if namer != named
+                    && named_newer(&members[namer], &members[named])
+                    && at[&namer] > at[&named]
+                {
+                    at.insert(named, at[&namer]);
+                    moved = true;
+                }
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    at
+}
+
+/// One family's members, newest first. They are sorted by their lifted recency, then their own,
+/// then file name; a member a check named as newer has a lifted recency no lower than its namer's,
+/// so the two sit together, and the pass below puts the named one first where they tie: a member
+/// goes next only when no member still waiting was named newer than it. That is a pass and not a
+/// comparator, because the proof is a relation between two members and not a total order
+/// (`sort_by` must be given one). A cycle of proofs falls back to the sorted order.
 fn newest_order(members: &[FamilyMember], mut set: Vec<usize>) -> Vec<usize> {
-    set.sort_by(|&a, &b| newest_first(&members[a], &members[b]));
+    let at = lifted(members, &set);
+    set.sort_by(|&a, &b| {
+        at[&b]
+            .cmp(&at[&a])
+            .then_with(|| recency(&members[b]).cmp(&recency(&members[a])))
+            .then_with(|| members[a].file_name.cmp(members[b].file_name))
+    });
     let mut out = Vec::with_capacity(set.len());
     while !set.is_empty() {
         let ready = |&i: &usize| {
@@ -273,6 +309,49 @@ mod tests {
             families(&members),
             [Family {
                 members: vec![2, 1, 0]
+            }]
+        );
+    }
+
+    #[test]
+    fn a_version_between_the_named_pair_never_leads_over_them() {
+        // The General's round 2: A (uploaded 100) named B newer, and B has no upload time.
+        // X (uploaded 50) is older than A. B is newer than A by proof, A newer than X by
+        // time, so B leads; recency alone put A first, and A waiting on B let X out first.
+        let x = link(7140, Some(3), Some(9), Some(50));
+        let a = link(7140, Some(1), Some(9), Some(100));
+        let b = link(7140, Some(2), Some(9), None);
+        let members = [
+            member("x.zip", Some(&x), None),
+            member("a.zip", Some(&a), Some(2)),
+            member("b.zip", Some(&b), None),
+        ];
+        assert_eq!(
+            families(&members),
+            [Family {
+                members: vec![2, 1, 0]
+            }]
+        );
+    }
+
+    #[test]
+    fn a_chain_of_proofs_carries_the_newest_time_up_the_chain() {
+        // A (uploaded 300) named B newer, B named C newer; neither B nor C has a time.
+        // Y (uploaded 200) sits between by time only. The chain leads: C, B, A, then Y.
+        let a = link(7140, Some(1), Some(9), Some(300));
+        let b = link(7140, Some(2), Some(9), None);
+        let c = link(7140, Some(3), Some(9), None);
+        let y = link(7140, Some(4), Some(9), Some(200));
+        let members = [
+            member("y.zip", Some(&y), None),
+            member("a.zip", Some(&a), Some(2)),
+            member("b.zip", Some(&b), Some(3)),
+            member("c.zip", Some(&c), None),
+        ];
+        assert_eq!(
+            families(&members),
+            [Family {
+                members: vec![3, 2, 1, 0]
             }]
         );
     }
