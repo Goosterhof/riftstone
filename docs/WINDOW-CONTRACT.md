@@ -839,7 +839,46 @@ one character, and the slot menu tells their saves apart by level and time.
   `musterCharacter`, which is null too.
 - The window groups the slots by `character`, newest save first. A slot that would not open is
   listed apart, under its problem. The slot menu holds the character's slots, newest first.
-  - **Following:** on the newest slot, the sheet follows the character. When the game writes a
+  - **Following:** on the newest slot that opens (the newest, unless the game is writing it),
+    the sheet follows the character. Picking that slot from the menu keeps following. When the game writes a
     newer save of that character, in any slot, the sheet moves to it and is re-carved against the
     party it showed (members matched by `memberKey`).
   - **Pinned:** a slot picked from the menu stays, and the menu marks the newer save.
+
+### The Rift's library tools and filters, and answers in flight (window only)
+
+Added on this branch by the Heretic (`43652f1`) and kept on v0.5 by the investor. These rows are
+the window's alone: they add no command, event or type, and the two library actions call commands
+§ v0.3 already defines.
+
+- **The rooms say what they hold.** Each room in the pillar carries a plain line under its name:
+  THE RIFT *Mod library*, YOUR WORLD *Installed mods & load order*, NEXUS *Browse, download &
+  update*, PREFLIGHT *Game checks & settings*, THE MUSTER *Characters & saves*. The names and keys
+  `1`–`5` are unchanged.
+- **Clear search.** While the search well holds text, a `×` (`Clear search`) stands where the `/`
+  key hint stood. It empties the query and puts the focus back in the well.
+- **Library actions.** The Rift's answers, over a library that is there (not empty, the mods
+  folder not missing), carry `Open mods folder` (`open_mods_folder`) and `Scan` (`rescan`), each
+  busy while its command runs.
+- **Active filters.** While a state other than *All*, *Show menu-only* or a Nexus label filters
+  the answers, a line under the heading reads them, joined by ` · ` (*Update available ·
+  Menu-only included · Armour, carrying Fashion*), with `Clear filters`. It resets the state to
+  *All*, turns *Show menu-only* off and clears every category and tag; the typed query stays.
+  With no query, the heading reads `{n} options · filtered library` (or the label reading
+  instead of *filtered library* when labels filter).
+- **Filters that hide everything.** When a state filter or *Show menu-only* leaves no answer, the
+  Rift reads `NO MODS MATCH THESE FILTERS` instead of an empty list, with `Clear filters`
+  (Primary). Under *Update available* it says only mods with a newer file identified on Nexus
+  appear there and adds `Check on Nexus`. Nexus labels that leave no answer keep their own
+  inscription and its recovery, `THE LABELS HIDE EVERY ANSWER`, ahead of this one.
+- **The screenshot viewer keeps the keyboard.** While it is open, whatever holds the focus
+  (a click on the picture keeps it inside), Esc and Space close it, Left and Right step through
+  the pictures in the lookbook, Tab stays inside it, and the room keys never reach the app
+  behind it.
+- **An answer belongs to the selection that asked.** An option's detail, its plan and its landing
+  are drawn only on the option they were asked for. An answer that comes back after the player
+  opened another option never draws on that one. A landing that finished elsewhere is still told
+  in its toast, and the option shows its new state when it is opened again. When the player
+  returns to the same option before its install or uninstall finishes, the finish refreshes that
+  option's current detail; it never brings the earlier plan or landing back. THE VERSIONS card
+  follows the same rule by its card number (§ Versions of one file).

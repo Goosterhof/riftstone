@@ -2703,13 +2703,43 @@ against the code they had left, and fixed what those specs found.
   threads resolved, and the specs for issues 1, 3 and 4 went red when their fixes were reverted.
   Three issues and one nit were left; two issues are on the Heretic's `43652f1` (the
   `useWorld` landing that returns before its detail reloads, and the lightbox's keys once focus
-  leaves it) and are the Heretic's to fix. Mine:
+  leaves it) and are the Heretic's, fixed in `75ebf56`: a return to the same option before its
+  write finishes now refreshes that option's detail without reviving the earlier plan, and the
+  viewer takes its keys whatever holds the focus, a click on the picture keeping it inside.
+  Four new checks in `roundTwoRegressions.spec.ts` failed at `43652f1`; a fifth, Esc with THE
+  VERSIONS card under the viewer, was already right and stays as a control. Mine:
   - **Round 1's family order was half fixed.** With X (uploaded 50), A (uploaded 100, which named
     B newer) and B (no upload time), recency gave A, X, B; A waited on B, so X went first and
     the oldest led. The order now lifts a named member's recency to its namer's, up a chain of
     proofs, before it sorts, so the pair sits together and the pass only settles ties. The
-    General's case and a three-step chain each failed at `43652f1`.
+    General's case and a three-step chain each failed at `43652f1`. Asked about cycles (two
+    checks at different times can name each other newer), two- and three-member cycles were
+    specced over every ordering of the input. The lift ends: it runs at most once per member and
+    only raises a member to a recency some member already has. The three-member cycle caught a
+    flaw in the pass: with every cycle member waiting on another, an older outsider went first.
+    The pass now runs one group of equal lifted recency at a time, so a cycle falls back to its
+    sorted order inside its own group, the same however the members are given.
   - **Nit: the lone shared name still asked for two packages that each hold only the same
     `config.json`.** The lone-name clause now counts only a name that is no settings or text
     file, so a one-pak or one-script mod's other version still asks. Its assertion failed
-    against the old clause.
+    against the old clause. The spine, the mock and WINDOW-CONTRACT each name the list, and
+    `settingsExtensions.spec.ts` reads all three and fails when they differ (seen failing on a
+    spine list missing one extension).
+- **The Heretic's usability pass** (`43652f1`, 2026-10-20, from its whole-app Assay at the lab
+  root, `documents/assessments/2026-10-20-riftstone.md`). The investor ruled it stays on v0.5
+  rather than splitting off. Window only: no command, event or type, and the library actions call
+  `open_mods_folder` and `rescan`. Each room in the pillar carries a plain line under its name.
+  The search well gains `Clear search`, and the Rift's answers gain `Open mods folder` and `Scan`,
+  a line reading the active filters with `Clear filters` (the query kept), and `NO MODS MATCH
+  THESE FILTERS` in place of an empty list. The screenshot viewer keeps the keyboard, and an
+  option's detail, plan and landing draw only on the selection that asked
+  (WINDOW-CONTRACT § v0.5, The Rift's library tools). Specs: `selectionLifetime.spec.ts` and
+  `libraryUsability.spec.ts`. The Assay's finding RS-A2 stays open in Known Limitations: a
+  collision rename moves the package before `nexus.json` saves its new id, so a failed save
+  loses a joined folder's family after a restart.
+- **The README frames, round 2** (2026-10-20): all nine shot again from the mock at 1320 × 860
+  on the combined head (`c69dba5` with the docs), 0 page errors each, and each looked at. Every
+  frame shows the pillar's new room lines; the Rift's frames show `Open mods folder` and `Scan`,
+  and the two search frames the `×` in the well. One thing the frames show that no spec states:
+  at 860 px the pillar's taller rooms push the Nexus tags below the fold of the filter column, so
+  only the categories show without a scroll.

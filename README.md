@@ -2,7 +2,7 @@
 
 *Touch the stone and the Rift answers. Mods from other worlds wait inside; the stone shows you every one of them and pulls through the one you choose.*
 
-![The Riftstone at rest: the Rift opens on the tree of its mods folder, eleven packages with their formats and counts and the fold of three that won't answer above them, one collection open down to the variations of a cape, each marked with its kinds and whether it is in your world. Play waits on the stone.](docs/images/riftstone-tree.png)
+![The Riftstone at rest: the Rift opens on the tree of its mods folder, eleven packages with their formats and counts and the fold of three that won't answer above them, one collection open down to the variations of a cape, each marked with its kinds and whether it is in your world. Open mods folder and Scan sit above the tree, and each room in the pillar says what it holds. Play waits on the stone.](docs/images/riftstone-tree.png)
 
 The Riftstone is a Windows desktop mod manager for **Dragon's Dogma 2**. Its library is one folder: the `mods` folder beside the installed `riftstone.exe`. Put a mod there (zip, 7z, rar or a plain folder, nested as deep as the modder packed it) and the stone reads all of it: option names, descriptions, the menu trail a variant hides behind, and every file path inside the archives.
 
@@ -17,7 +17,7 @@ The Riftstone is a Windows desktop mod manager for **Dragon's Dogma 2**. Its lib
 - Give it your personal Nexus key and it shows your account, tracks and endorses mods, and downloads files straight into the mods folder: a newer version from the update list, any file of a mod, or a mod you found by browsing Nexus from the stone. A premium account downloads in the stone. A free account presses Nexus's own Mod Manager Download button, which reaches the stone once you turn on its link handler. A download lands in the mods folder; installing it stays your choice.
 
 <p>
-  <img src="docs/images/riftstone-answers.png" width="49%" alt="The Riftstone answering “mantle”: fourteen variants of two capes, the word lit wherever it matched in a name or a menu trail, every card carrying its kind, its Nexus category and NOT INSTALLED.">
+  <img src="docs/images/riftstone-answers.png" width="49%" alt="The Riftstone answering “mantle”: fourteen variants of two capes, the word lit wherever it matched in a name or a menu trail, every card carrying its kind, its Nexus category and NOT INSTALLED. A × in the search well clears the query.">
   <img src="docs/images/riftstone-crossing.png" width="49%" alt="A creation crossing into your world: Sage's Mantle - Variation 1 turns INSTALLED in gold, THE CROSSING carves its three files IN YOUR WORLD, and a toast offers Undo.">
 </p>
 <p>
