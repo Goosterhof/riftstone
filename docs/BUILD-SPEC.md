@@ -2762,3 +2762,10 @@ against the code they had left, and fixed what those specs found.
   the same order for four shuffles of its input. At `7622333` it failed at case 249. With the
   new order it passes, with 952 families carrying a cycle. A mutant that ignores priority fails
   at case 45. The docblock's claim that Nexus never gives a cycle is gone; the rule handles one.
+  The Heretic's two, in `579eeab`: the option detail now owns its writes per option. An
+  install, uninstall or Undo in flight keeps that option's door busy when the player returns to
+  it, and refuses a second plan or confirmation until the write and its detail refresh finish;
+  success and failure both release it (WINDOW-CONTRACT § v0.5, answers in flight). At `7622333`
+  a revisited door was not busy, and one pending write drew three plans. `roundTwoRegressions.spec.ts`
+  now holds 12 cases, four of them red at `7622333`, and each of the viewer's two lines the
+  General named fails its own spec when mutated.

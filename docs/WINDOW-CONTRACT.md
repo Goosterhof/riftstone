@@ -883,5 +883,10 @@ the window's alone: they add no command, event or type, and the two library acti
   opened another option never draws on that one. A landing that finished elsewhere is still told
   in its toast, and the option shows its new state when it is opened again. When the player
   returns to the same option before its install or uninstall finishes, the finish refreshes that
-  option's current detail; it never brings the earlier plan or landing back. THE VERSIONS card
+  option's current detail; it never brings the earlier plan or landing back. While this pane's install or
+  uninstall (including Undo) is in flight for an option, returning to that option keeps its
+  `Install…` or `Uninstall…` door busy. Another plan or confirmation for that option cannot
+  start until the write and its detail refresh finish; success and failure both release it.
+  Other options remain browsable. This holds for the option detail's own writes; YOUR WORLD's
+  load-order list (`useInstalled`) returns its own way and is not part of it. THE VERSIONS card
   follows the same rule by its card number (§ Versions of one file).
