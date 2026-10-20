@@ -96,11 +96,14 @@ fn lifted(members: &[FamilyMember], set: &[usize]) -> BTreeMap<usize, Recency> {
 }
 
 /// One family's members, newest first. They are sorted by their lifted recency, then their own,
-/// then file name; a member a check named as newer has a lifted recency no lower than its namer's,
-/// so the two sit together, and the pass below puts the named one first where they tie: a member
-/// goes next only when no member still waiting was named newer than it. That is a pass and not a
-/// comparator, because the proof is a relation between two members and not a total order
-/// (`sort_by` must be given one). A cycle of proofs falls back to the sorted order.
+/// then file name. A member a check named as newer has a lifted recency no lower than its
+/// namer's, so it never sorts into a later group than its namer; within one group of equal lifted
+/// recency the pass puts the named one first: a member goes next only when no member of its group
+/// still waiting was named newer than it. That is a pass and not a comparator, because the proof
+/// is a relation between two members and not a total order (`sort_by` must be given one). It
+/// runs one group at a time, so a member outside a cycle of proofs never jumps ahead of the
+/// cycle while its members wait on each other: a cycle falls back to the sorted order inside its
+/// own group, the same however the members were given.
 fn newest_order(members: &[FamilyMember], mut set: Vec<usize>) -> Vec<usize> {
     let at = lifted(members, &set);
     set.sort_by(|&a, &b| {
@@ -110,13 +113,17 @@ fn newest_order(members: &[FamilyMember], mut set: Vec<usize>) -> Vec<usize> {
             .then_with(|| members[a].file_name.cmp(members[b].file_name))
     });
     let mut out = Vec::with_capacity(set.len());
-    while !set.is_empty() {
-        let ready = |&i: &usize| {
-            !set.iter()
-                .any(|&j| j != i && named_newer(&members[i], &members[j]))
-        };
-        let next = set.iter().position(ready).unwrap_or(0);
-        out.push(set.remove(next));
+    for group in set.chunk_by(|a, b| at[a] == at[b]) {
+        let mut waiting = group.to_vec();
+        while !waiting.is_empty() {
+            let ready = |&i: &usize| {
+                !waiting
+                    .iter()
+                    .any(|&j| j != i && named_newer(&members[i], &members[j]))
+            };
+            let next = waiting.iter().position(ready).unwrap_or(0);
+            out.push(waiting.remove(next));
+        }
     }
     out
 }
@@ -354,6 +361,76 @@ mod tests {
                 members: vec![3, 2, 1, 0]
             }]
         );
+    }
+
+    /// The family's file names, newest first, for members given in this order.
+    fn order_of(members: &[FamilyMember]) -> Vec<String> {
+        let families = families(members);
+        assert_eq!(families.len(), 1, "one family");
+        families[0]
+            .members
+            .iter()
+            .map(|&i| members[i].file_name.to_string())
+            .collect()
+    }
+
+    /// Every ordering of `members`, by Heap's algorithm.
+    fn permutations<'a>(members: &[FamilyMember<'a>]) -> Vec<Vec<FamilyMember<'a>>> {
+        fn heap<'a>(
+            k: usize,
+            items: &mut Vec<FamilyMember<'a>>,
+            out: &mut Vec<Vec<FamilyMember<'a>>>,
+        ) {
+            if k <= 1 {
+                out.push(items.clone());
+                return;
+            }
+            for i in 0..k {
+                heap(k - 1, items, out);
+                let j = if k % 2 == 0 { i } else { 0 };
+                items.swap(j, k - 1);
+            }
+        }
+        let mut out = Vec::new();
+        heap(members.len(), &mut members.to_vec(), &mut out);
+        out
+    }
+
+    #[test]
+    fn a_cycle_of_two_proofs_ends_and_leads_the_same_however_the_members_are_given() {
+        // Two checks at different times, after a re-upload in one group: each named the other
+        // newer. The lift ends (both rise to the newer recency, then nothing moves), and the
+        // tie falls to each one's own recency: the later upload leads.
+        let a = link(7140, Some(1), Some(9), Some(100));
+        let b = link(7140, Some(2), Some(9), Some(200));
+        let members = [
+            member("a.zip", Some(&a), Some(2)),
+            member("b.zip", Some(&b), Some(1)),
+        ];
+        for given in permutations(&members) {
+            assert_eq!(order_of(&given), ["b.zip", "a.zip"]);
+        }
+    }
+
+    #[test]
+    fn a_cycle_of_three_proofs_ends_and_leads_the_same_however_the_members_are_given() {
+        // A named B, B named C, C named A; one of them states no upload time, and an outsider
+        // sits below them by time. Every ordering of the input gives the same family order.
+        let a = link(7140, Some(1), Some(9), Some(100));
+        let b = link(7140, Some(2), Some(9), None);
+        let c = link(7140, Some(3), Some(9), Some(300));
+        let x = link(7140, Some(4), Some(9), Some(50));
+        let members = [
+            member("a.zip", Some(&a), Some(2)),
+            member("b.zip", Some(&b), Some(3)),
+            member("c.zip", Some(&c), Some(1)),
+            member("x.zip", Some(&x), None),
+        ];
+        let first = order_of(&members);
+        assert_eq!(first.last().map(String::as_str), Some("x.zip"), "{first:?}");
+        for given in permutations(&members) {
+            assert_eq!(order_of(&given), first);
+        }
     }
 
     #[test]
