@@ -20,7 +20,13 @@ function step(delta: number): void {
 }
 
 function onKey(event: KeyboardEvent): void {
-  if (event.key === "Escape" || event.key === " ") {
+  // This dialog owns the keyboard: room and install shortcuts must never
+  // act on the obscured app. Its only tab stop is the close button.
+  event.stopPropagation();
+  if (event.key === "Tab") {
+    event.preventDefault();
+    closer.value?.focus();
+  } else if (event.key === "Escape" || event.key === " ") {
     event.preventDefault();
     nav.closeLightbox();
   } else if (event.key === "ArrowRight") step(1);

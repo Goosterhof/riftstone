@@ -306,6 +306,21 @@ links back too: turn the switch on again after it (WINDOW-CONTRACT § v0.3 The o
    (`npm run dev`, invented names only), then each one looked at.
 5. The privacy sweep, last, on the commit that is pushed.
 
+## Local usability follow-up — 2026-10-20
+
+The Heretic's focused usability follow-up builds on `86cb5ab`; native installation and
+Windows acceptance remain pending. The room inscriptions retain their names with short descriptions;
+the populated library exposes Open mods folder and Scan; search has a clear button;
+active filters show their scope and have a reset that keeps the typed query. Empty state
+filters explain why nothing appears. Screenshot keyboard events stay inside the viewer.
+Option preview, detail and completion responses belong to the selection that requested
+them, so a delayed plan cannot land under a different option. The spine-side retryPutAway
+from the General's review remains unchanged.
+
+The exact rebased frontend passed 470 tests, typecheck, lint without warnings, formatting
+and production build. Browser mock inspection is separate from native Windows acceptance.
+The new regressions are `tests/selectionLifetime.spec.ts` and `tests/libraryUsability.spec.ts`.
+
 ## Known Limitations
 
 - Downloads in the stone need a premium account; a free account goes through the file's page and
@@ -393,6 +408,11 @@ links back too: turn the switch on again after it (WINDOW-CONTRACT § v0.3 The o
   there (the install still stands and says why). Nor is anything put away when the mods folder is
   a link to another drive: the older-versions folder sits beside the link, and a move across
   drives is refused rather than turned into a copy.
+- A collision rename during put-away or bring-back moves the package before its changed
+  identity is saved to `nexus.json`. If that save fails, the move still reports success;
+  after restart a joined folder can lose its version association. Its bytes remain present.
+  A disposable failure-injection probe reproduced this; durable relocation/recovery remains
+  open. No data-loss claim or native Windows reproduction is implied.
 - THE MUSTER tells characters apart by the Arisen's and the main pawn's names within one Steam
   account: the saves carry no playthrough id. Two playthroughs begun with the same two names read
   as one character, and the slot menu tells their saves apart by level and time.

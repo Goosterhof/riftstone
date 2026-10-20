@@ -48,33 +48,66 @@ const planning = ref(false);
 const crossingSeq = ref(0);
 /** v0.5: the landed install's family, file name → version, read before the scan moves one away. */
 const landedNames = ref<ReadonlyMap<string, string>>(new Map());
+/** A response belongs to the selection that asked, even if the player
+ *  leaves and comes back to the same option before it answers. */
+let selectionSeq = 0;
+let planningSeq = 0;
+let detailSeq = 0;
 
 const isInstalled = computed(() => Boolean(detail.value?.installed));
 
+function selectedOption(optionId: string, selection: number): boolean {
+  return selection === selectionSeq && selectedId.value === optionId;
+}
+
+function currentPlanRequest(request: number, selection: number): boolean {
+  return request === planningSeq && selection === selectionSeq;
+}
+
+function installCanStart(current: InstallPlanView | null): current is InstallPlanView {
+  return Boolean(current && !current.refused && current.optionId === selectedId.value && stage.value === "plan");
+}
+
+function uninstallCanStart(current: UninstallPlanView | null): current is UninstallPlanView {
+  return Boolean(current && !current.refused && current.optionId === selectedId.value && stage.value === "returnPlan");
+}
+
 async function loadDetail(optionId: string): Promise<void> {
+  const selection = selectionSeq;
+  const mine = ++detailSeq;
   try {
     const backend = await rift();
     const next = await backend.getOption(optionId);
-    if (selectedId.value === optionId) detail.value = next;
+    if (mine !== detailSeq || selection !== selectionSeq || selectedId.value !== optionId) return;
+    detail.value = next;
     detailFailure.value = null;
   } catch (raw) {
-    detailFailure.value = voice(asRiftFailure(raw), "package");
+    if (mine === detailSeq && selection === selectionSeq && selectedId.value === optionId)
+      detailFailure.value = voice(asRiftFailure(raw), "package");
   }
 }
 
 async function open(optionId: string): Promise<void> {
   if (selectedId.value !== optionId) {
+    selectionSeq += 1;
+    planningSeq += 1;
+    planning.value = false;
     selectedId.value = optionId;
     detail.value = null;
     stage.value = "detail";
     plan.value = null;
     returnPlan.value = null;
     failure.value = null;
+    detailFailure.value = null;
   }
   await loadDetail(optionId);
 }
 
 function close(): void {
+  selectionSeq += 1;
+  planningSeq += 1;
+  detailSeq += 1;
+  planning.value = false;
   selectedId.value = null;
   detail.value = null;
   stage.value = "detail";
@@ -99,16 +132,22 @@ function fail(raw: unknown, context: VoiceContext): void {
 
 async function beginInstall(optionId: string | null = selectedId.value): Promise<void> {
   if (!optionId) return;
-  if (optionId !== selectedId.value) await open(optionId);
+  const opening = optionId !== selectedId.value ? open(optionId) : null;
+  const selection = selectionSeq;
+  await opening;
+  if (!selectedOption(optionId, selection)) return;
+  const mine = ++planningSeq;
   planning.value = true;
   try {
     const backend = await rift();
-    plan.value = await backend.planInstall(optionId);
+    const next = await backend.planInstall(optionId);
+    if (!currentPlanRequest(mine, selection)) return;
+    plan.value = next;
     stage.value = "plan";
   } catch (raw) {
-    fail(raw, "install");
+    if (currentPlanRequest(mine, selection)) fail(raw, "install");
   } finally {
-    planning.value = false;
+    if (mine === planningSeq) planning.value = false;
   }
 }
 
@@ -119,10 +158,10 @@ function versionOfPackage(packageId: string | undefined): { pkgName: string; ver
   return { pkgName: pkg.package.displayName, version: versionName(pkg.family.version, pkg.package.fileName) };
 }
 
-function landedToast(result: InstallResultView, name: string, landedPlan: InstallPlanView): void {
+function landedToast(result: InstallResultView, name: string, landedPlan: InstallPlanView, packageId?: string): void {
   const { push } = useToasts();
   const replaced = landedPlan.replaces.at(0);
-  const mine = versionOfPackage(detail.value?.package.id);
+  const mine = versionOfPackage(packageId);
   if (replaced) {
     // R18.6, Bold Choice 18: a replace has no Undo; going back is installing the older version
     const old = versionName(replaced.version, replaced.name);
@@ -139,7 +178,9 @@ function landedToast(result: InstallResultView, name: string, landedPlan: Instal
 
 async function confirmInstall(): Promise<void> {
   const current = plan.value;
-  if (!current || current.refused) return;
+  if (!installCanStart(current)) return;
+  const selection = selectionSeq;
+  const packageId = detail.value?.package.id;
   stage.value = "crossing";
   landedNames.value = familyNames(useLibrary().packages.value, detail.value?.package.id ?? "");
   progress.value = {
@@ -152,31 +193,39 @@ async function confirmInstall(): Promise<void> {
   try {
     const backend = await rift();
     const result = await backend.install(current.optionId);
+    landedToast(result, current.name, current, packageId);
+    if (result.putAway.length) void useUndercroft().load();
+    if (selection !== selectionSeq) return;
     landed.value = result;
     stage.value = "landed";
     crossingSeq.value += 1;
-    landedToast(result, current.name, current);
-    if (result.putAway.length) void useUndercroft().load();
     await loadDetail(current.optionId);
   } catch (raw) {
-    fail(raw, "install");
+    if (selection === selectionSeq) fail(raw, "install");
+    else useToasts().push("ember", voice(asRiftFailure(raw), "install").voice);
   } finally {
-    progress.value = null;
+    if (selection === selectionSeq) progress.value = null;
   }
 }
 
 async function beginUninstall(optionId: string | null = selectedId.value): Promise<void> {
   if (!optionId) return;
-  if (optionId !== selectedId.value) await open(optionId);
+  const opening = optionId !== selectedId.value ? open(optionId) : null;
+  const selection = selectionSeq;
+  await opening;
+  if (!selectedOption(optionId, selection)) return;
+  const mine = ++planningSeq;
   planning.value = true;
   try {
     const backend = await rift();
-    returnPlan.value = await backend.planUninstall(optionId);
+    const next = await backend.planUninstall(optionId);
+    if (!currentPlanRequest(mine, selection)) return;
+    returnPlan.value = next;
     stage.value = "returnPlan";
   } catch (raw) {
-    fail(raw, "uninstall");
+    if (currentPlanRequest(mine, selection)) fail(raw, "uninstall");
   } finally {
-    planning.value = false;
+    if (mine === planningSeq) planning.value = false;
   }
 }
 
@@ -197,19 +246,22 @@ function returnedLine(plan: UninstallPlanView): string {
 
 async function confirmUninstall(): Promise<void> {
   const current = returnPlan.value;
-  if (!current || current.refused) return;
+  if (!uninstallCanStart(current)) return;
+  const selection = selectionSeq;
   stage.value = "returning";
   try {
     const backend = await rift();
     const result = await backend.uninstall(current.optionId);
-    returned.value = result;
-    stage.value = "returned";
     useToasts().push("rift", returnedLine(current), [
       { label: "Undo", run: () => quietInstall(current.optionId, current.name) },
     ]);
+    if (selection !== selectionSeq) return;
+    returned.value = result;
+    stage.value = "returned";
     await loadDetail(current.optionId);
   } catch (raw) {
-    fail(raw, "uninstall");
+    if (selection === selectionSeq) fail(raw, "uninstall");
+    else useToasts().push("ember", voice(asRiftFailure(raw), "uninstall").voice);
   }
 }
 
@@ -291,10 +343,13 @@ async function refresh(): Promise<void> {
 /** The game changed under an open plan (a recovery button fixed what it
  *  warned about): read the plan again, quietly, so no warning outlives its cause. */
 async function replan(optionId: string): Promise<void> {
+  const selection = selectionSeq;
+  const request = planningSeq;
   try {
     const backend = await rift();
     const next = await backend.planInstall(optionId);
-    if (stage.value === "plan" && selectedId.value === optionId) plan.value = next;
+    if (currentPlanRequest(request, selection) && stage.value === "plan" && selectedId.value === optionId)
+      plan.value = next;
   } catch {
     // The plan on screen stays; pressing Install re-checks at the spine anyway.
   }

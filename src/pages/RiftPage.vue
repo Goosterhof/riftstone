@@ -44,6 +44,25 @@ const lookbook = ref<InstanceType<typeof LookbookGrid> | null>(null);
 const worldFolded = ref(true);
 
 const query = computed(() => search.settledText.value.trim());
+const hasFilters = computed(
+  () => search.stateFacet.value !== "all" || search.includeMenuOnly.value || search.labelFiltered.value,
+);
+const filterReading = computed(() =>
+  [
+    {
+      all: "",
+      notInstalled: "Not installed",
+      installed: "Installed",
+      conflict: "Conflict",
+      update: "Update available",
+    }[search.stateFacet.value],
+    search.includeMenuOnly.value ? "Menu-only included" : "",
+    search.labelReading.value ?? "",
+  ]
+    .filter(Boolean)
+    .join(" · "),
+);
+const filtersHidAll = computed(() => hasFilters.value && search.loaded.value && !search.results.value.length);
 const library = computed(() => stone.overview.value?.library ?? null);
 /** The mods folder is not there (WINDOW-CONTRACT § Check ids `mods`), and
  *  why, while no scan is reading: the spine's check tells the two apart. */
@@ -245,10 +264,8 @@ defineExpose({ focusCard, focusTree });
               ><span class="rift__dim"> · {{ search.labelReading.value }}</span></template
             >
             <template v-else
-              ><b>Library</b
-              ><span v-if="library" class="rift__dim">
-                · {{ plural(library.packages, "package") }} · {{ plural(library.options, "option") }}</span
-              ></template
+              ><b>{{ plural(search.results.value.length, "option") }}</b
+              ><span class="rift__dim"> · filtered library</span></template
             >
           </p>
           <!-- an empty library has nothing to sort or group -->
@@ -295,6 +312,26 @@ defineExpose({ focusCard, focusTree });
         </template>
       </header>
 
+      <div
+        v-if="nav.riftMode.value === 'results' && !empty && !modsMissing"
+        class="rift__library-tools"
+        aria-label="Library actions"
+      >
+        <RiftButton size="sm" :busy="preflight.busy.value === 'mods'" @click="preflight.openModsFolder()"
+          >Open mods folder</RiftButton
+        >
+        <RiftButton size="sm" :busy="stone.scanning.value" @click="preflight.rescan()">Scan</RiftButton>
+      </div>
+      <div
+        v-if="nav.riftMode.value === 'results' && hasFilters"
+        class="rift__filters"
+        role="group"
+        aria-label="Active filters"
+      >
+        <p>{{ filterReading }}</p>
+        <RiftButton size="sm" @click="search.clearFilters()">Clear filters</RiftButton>
+      </div>
+
       <!-- the answers -->
       <div v-if="nav.riftMode.value === 'results'" class="rift__scroll">
         <RiftInscription
@@ -338,6 +375,19 @@ defineExpose({ focusCard, focusTree });
         <RiftInscription v-else-if="labelsHidAll" inscription="THE LABELS HIDE EVERY ANSWER" :body="labelsBody">
           <RiftButton variant="primary" @click="search.clearLabels()">Clear labels</RiftButton>
           <RiftButton v-if="query" @click="search.clearText()">Clear search</RiftButton>
+        </RiftInscription>
+
+        <RiftInscription
+          v-else-if="filtersHidAll"
+          inscription="NO MODS MATCH THESE FILTERS"
+          :body="
+            search.stateFacet.value === 'update'
+              ? 'Only mods with a newer file identified on Nexus appear here. Check Nexus for updates, or clear the filters to see your library.'
+              : 'No options match the current search and filters. Clear the filters to broaden your search.'
+          "
+        >
+          <RiftButton variant="primary" @click="search.clearFilters()">Clear filters</RiftButton>
+          <RiftButton v-if="search.stateFacet.value === 'update'" @click="nav.go('nexus')">Check on Nexus</RiftButton>
         </RiftInscription>
 
         <RiftInscription
@@ -486,6 +536,27 @@ defineExpose({ focusCard, focusTree });
   gap: var(--rs-space-3);
   color: var(--rs-faint);
   font: 12px var(--rs-font-mono);
+}
+.rift__library-tools,
+.rift__filters {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rs-space-2);
+  padding: var(--rs-space-2) var(--rs-space-6);
+  border-bottom: 1px solid var(--rs-edge);
+}
+.rift__filters {
+  justify-content: space-between;
+  background: var(--rs-riftdeep);
+  color: var(--rs-text);
+}
+.rift__filters p {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 .rift__sort select {
   height: 28px;
