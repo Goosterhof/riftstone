@@ -26,6 +26,20 @@ to) and names what the party carries from the game's own text, read from the pla
 `re_chunk_000.pak` at run time and never bundled. When the game saves, the page reads the slot
 again and marks what changed (THE RE-CARVING, #00015 R17.25).
 
+Since v0.5 the stone knows **versions of one file**. Two packages are one Nexus file's versions
+when Nexus proves it: the same mod and file group, or a check that named the other's file as
+newer; names and sizes never do. Where Nexus cannot prove it (an unpacked folder, a link by mod id
+alone), **the player's word** can: when their file names make it likely, the stone asks whether a
+package is a version of a pinned file of the same mod, and a yes joins it (ruling 10, #00015
+§18.18). The Rift and THE FAR WORLD show one entry per file, the newest
+leading with the older ones inside it. Installing a version replaces the other versions' install
+of the same option in one journaled step, and then the older versions left without an install move
+whole to `mods (older versions)` beside the mods folder (THE UNDERCROFT), from which they come
+back at a press. *Keep only the newest* cleans up versions installed one over another before
+v0.5. THE MUSTER opens **by character** (the Arisen with their main pawn, within one Steam
+account), remembers the one picked last, follows their newest save, and keeps their other saves in
+a slot menu (#00015 §18).
+
 The metaphor (design system #00015, *Rift-Lit Basalt*, ruled 2026-10-16, amended for v0.3 on
 2026-10-17): DD2's Riftstone is the monolith you touch to summon the pawns of other Arisen. Mods are
 creations from other worlds; the Rift holds them; installing pulls one through into your world.
@@ -33,14 +47,14 @@ Core nouns stay plain (mod, option, install, update, load order, play, download)
 meaning faster* — and the voice lives in the frame, the states and the two signature interactions.
 
 - **Experiment log:** `zmuuzn/documents/experiment-logs/00068-the-riftstone.md`
-- **Design system:** `zmuuzn/documents/design-systems/00015-system-riftstone.md` (A · The Monolith; §16 is v0.3, §17 the Muster); audition `docs/design/audition.html`; tokens `docs/design/tokens.uno.ts`
-- **Build spec (the contract every crate was built to):** `docs/BUILD-SPEC.md` (§ v0.3 for this version)
+- **Design system:** `zmuuzn/documents/design-systems/00015-system-riftstone.md` (A · The Monolith; §16 is v0.3, §17 the Muster, §18 v0.5); audition `docs/design/audition.html`; tokens `docs/design/tokens.uno.ts`
+- **Build spec (the contract every crate was built to):** `docs/BUILD-SPEC.md` (§ v0.5 for this version; § v0.3 for the one folder, § v0.4 for THE MUSTER)
 - **Window contract (every command, event, shape):** `docs/WINDOW-CONTRACT.md` + `src/types/rift.ts`
 
 ## The Architecture Contract (RS-1 … RS-7)
 
 - **RS-1 — Rust does everything.** Reading archives, classifying options, hashing, deploying, launching, Nexus traffic, downloads.
-- **RS-2 — The mods folder is the player's.** The stone never changes, renames or deletes a file in it. It adds exactly one kind of file: a download the player asked for, written under a hidden partial name (`.riftstone-<id>.part`, which the stone removes again when the download fails or is cancelled, and at the next launch) and renamed into place only when whole and checked, never over an existing file.
+- **RS-2 — The mods folder is the player's.** The stone never changes, renames or deletes a file in it. It adds exactly one kind of file: a download the player asked for, written under a hidden partial name (`.riftstone-<id>.part`, which the stone removes again when the download fails or is cancelled, and at the next launch) and renamed into place only when whole and checked, never over an existing file. **Amended in v0.5, one exception:** the stone moves an older version of a file, whole, to `<mods folder> (older versions)` beside the mods folder (THE UNDERCROFT), and back at the player's word. It moves one only after the install that superseded it committed, or at the player's own press. A move is never a copy, a delete or an edit, and never lands on an existing name (the download landing's rules, `src-tauri/src/landing.rs`).
 - **RS-3 — Vanilla is sacred.** `rift_core::dd2::NEVER_WRITE` (`DD2.exe`, `re_chunk_000.pak*`, `dlc/`, `_storage_/`, `steam_api64.dll` …) is refused outright; any other existing file is backed up before it is overwritten and restored on uninstall.
 - **RS-4 — Write-ahead journal.** Intent saved before the first byte moves, committed after the last; a crash mid-install is rolled back at the next launch. Schema 2 since v0.3; an older journal is lifted in memory and saved as schema 2 at the next change.
 - **RS-5 — One folder.** The `mods` folder beside `riftstone.exe` is the only library (a bench may point `RIFTSTONE_MODS_DIR` elsewhere). Every archive and folder directly inside it is one package; nothing else is scanned. Folder packages are known by their name, so moving the whole install keeps every link.
@@ -170,8 +184,13 @@ chain. A character's name counts even when it is a short word, which the library
 a short name matches in its own case only, because the same letters in another case are a code
 word far more often than anyone's name. A name the repo already held as a word before it read a
 save (`BEFORE_SAVES`, 830fdf0) is set aside and counted: a hit on it could not be told from the
-repo's own text. Two of the game's record types carry a `Name` that is the game's own id; their
-strings never count (2,767 of them on the bench's eight saves).
+repo's own text. The same holds for a Nexus id the public tree already carried where the sweep
+last passed clean (`SWEPT_CLEAN`, 5a01aa5, v0.4.1): it was the repo's own number before any link
+could have put it there, so a mod linked since that shares it is a collision, not a leak. It is
+set aside and counted; a Steam account's numbers never are. A hit on an untouched file, the day
+a new link joins the sources, is the shape of a collision: check `git diff` against the last
+clean commit before calling it a leak. Two of the game's record types carry a `Name` that is the
+game's own id; their strings never count (2,767 of them on the bench's eight saves).
 
 The sweep reads the live save folder, not a copy, on purpose. A copy goes stale the day a new
 pawn is hired, and a stale copy would pass a leak of exactly the newest names. The bench rule
@@ -225,9 +244,23 @@ its place.)*
 The Muster's mock scenes: `?mock=muster`, `musternosteam`, `musternosaves`, `musternames` (the
 names missing), `musterslow` (a read that takes 2 s) and `musterwriting` (a slot the game is writing
 once). In `npm run dev`, `window.riftMock.gameSaved()` saves Slot 9 a level later, for THE
-RE-CARVING. On the bench, `RIFTSTONE_SAVE_DIR` points the stone at one save folder (a COPY of
-one, never the real folder: a bench run must not race the game), with the account read from the
-folder three levels up, or from `RIFTSTONE_SAVE_ACCOUNT`.
+RE-CARVING. v0.5 adds the characters' scenes: `musterchars` (Odalric & Wren and Aldith & Corvin
+across five slots, two that won't open), `musterpinned`, `musterfollow`, and `mustergone` (a
+remembered character no slot carries). `window.riftMock.musterMock.saveSlot("data008Slot")` fires
+a newer save in any slot; `saveSlot(id, true)` makes it answer as being written once. On the
+bench, `RIFTSTONE_SAVE_DIR` points the stone at one save folder (a COPY of one, never the real
+folder: a bench run must not race the game), with the account read from the folder three levels
+up, or from `RIFTSTONE_SAVE_ACCOUNT`.
+
+The versions' scenes (v0.5, `src/services/mock/versions.ts`): `family` (Lantern Glow Recolor v1.3
+over v1.2, both installed, as v0.4 stacked them), `familyfresh` (v1.3 downloaded, v1.2 installed),
+`familythree` (and a v1.1 with nothing installed), `putaway` (installing v1.3 puts v1.2 away),
+`putawaytaken` (it lands as ` (2)`), `putawayfail` (the move fails after the install committed),
+`putawayhalf` (with v1.1 too, and Try again moves v1.2 while v1.1 still stays),
+`undercroft` (v1.2 already put away), `undercroftempty` and `undercroftnone` (the folder empty, or
+never made). The player's word (#00015 §18.18): `question` (the unpacked Lantern Glow Recolor folder,
+linked by mod id, beside the pinned v1.3, and the stone asks), `questioninstalled`, `questionjoined`,
+`questionmanual` (no question, two pinned files to pick from) and `questionrefused` (the join refused once).
 
 ```sh
 npm run dev            # the window in a browser on the mock backend (?mock=empty|emptymods|nofloor|gonemods|nogame|scanning|refoff|patched|offline|fresh|firstrun|key|premium|rejected|quotalow|running|nxmother|nocreations, comma-separated)
@@ -273,6 +306,21 @@ links back too: turn the switch on again after it (WINDOW-CONTRACT § v0.3 The o
    (`npm run dev`, invented names only), then each one looked at.
 5. The privacy sweep, last, on the commit that is pushed.
 
+## Local usability follow-up — 2026-10-20
+
+The Heretic's focused usability follow-up builds on `86cb5ab`; native installation and
+Windows acceptance remain pending. The room inscriptions retain their names with short descriptions;
+the populated library exposes Open mods folder and Scan; search has a clear button;
+active filters show their scope and have a reset that keeps the typed query. Empty state
+filters explain why nothing appears. Screenshot keyboard events stay inside the viewer.
+Option preview, detail and completion responses belong to the selection that requested
+them, so a delayed plan cannot land under a different option. The spine-side retryPutAway
+from the General's review remains unchanged.
+
+The exact rebased frontend passed 470 tests, typecheck, lint without warnings, formatting
+and production build. Browser mock inspection is separate from native Windows acceptance.
+The new regressions are `tests/selectionLifetime.spec.ts` and `tests/libraryUsability.spec.ts`.
+
 ## Known Limitations
 
 - Downloads in the stone need a premium account; a free account goes through the file's page and
@@ -315,7 +363,11 @@ links back too: turn the switch on again after it (WINDOW-CONTRACT § v0.3 The o
   they ran there at f653d8b (913 passed, 0 failed), the installer was built, and a probe of THE
   MUSTER on a copy of a real save folder named 80 of 80 equipped things (BUILD-SPEC § v0.4, As
   built). For 0.4.1, after the General's review round, they ran at e24a73a (920 passed, 0
-  failed), and the installer and the probe passed again.
+  failed), and the installer and the probe passed again. For 0.5.0 they ran first at c372344
+  (953 passed, 0 failed), where the probe found no family on the investor's library and led to
+  ruling 10, and again at 2f410ea with the player's word (959 passed, 0 failed); the installer
+  was built and the probe asked about exactly the package the investor reported, a folder whose
+  file names are all in the pinned download.
   `cargo clippy` is not installed on the Windows bench and has never run
   there. Still owed: `cargo clippy` natively, and every press on a Windows desktop: Play by each
   route; Open mods folder, also after deleting it while the stone runs; the nxm switch on and
@@ -339,3 +391,28 @@ links back too: turn the switch on again after it (WINDOW-CONTRACT § v0.3 The o
 - A slot whose signature disagrees is read once more after 500 ms. If it still disagrees and
   the file changed meanwhile, the window says the game is saving; if it did not change, the
   window says the slot is damaged.
+- **Versions (v0.5)** are known only when Nexus proves them: both packages linked to the same mod
+  and pinned to one file group (an update check or a download pins a link), or a check that named
+  the other's file as newer, or by the player's word (ruling 10). A package linked by name alone
+  joins a family only when the player says so; the stone asks only when one package's file names
+  are all among the other's and they share two or more (or each holds just the one same name),
+  so a version that renamed or dropped a file is never asked about
+  (the option detail's *This is a version of…* joins it all the same). An unlinked package joins
+  nothing: link it first. Without a join, its install stacks over another version's as in v0.4,
+  and both keep an entry. A modder who uploads a
+  new version as a new file in another group, never marked as the old one's update, gets two
+  entries too.
+- The older-versions folder sits outside every watcher: an archive moved into it by hand shows
+  at the window's next look (entering the Rift, opening THE UNDERCROFT, a put-away or a bring
+  back). A mods folder at the root of a drive has no folder beside it, so nothing is put away
+  there (the install still stands and says why). Nor is anything put away when the mods folder is
+  a link to another drive: the older-versions folder sits beside the link, and a move across
+  drives is refused rather than turned into a copy.
+- A collision rename during put-away or bring-back moves the package before its changed
+  identity is saved to `nexus.json`. If that save fails, the move still reports success;
+  after restart a joined folder can lose its version association. Its bytes remain present.
+  A disposable failure-injection probe reproduced this; durable relocation/recovery remains
+  open. No data-loss claim or native Windows reproduction is implied.
+- THE MUSTER tells characters apart by the Arisen's and the main pawn's names within one Steam
+  account: the saves carry no playthrough id. Two playthroughs begun with the same two names read
+  as one character, and the slot menu tells their saves apart by level and time.

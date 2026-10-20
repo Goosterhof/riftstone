@@ -28,6 +28,7 @@ pub mod nxm;
 pub mod overview;
 pub mod play;
 pub mod standings;
+pub mod versions;
 
 /// The managed state as the wrappers receive it.
 pub type Spine<'a> = tauri::State<'a, Arc<AppState>>;

@@ -11,10 +11,31 @@
 // verdict, the UPDATE chip, the hidden "conflict", a leaf's kinds and state
 // chip. Never aria-label, which would replace the state with the label, and
 // never a name from the content, which would pull in the nested group.
+//
+// v0.5 (#00015 R18.1–R18.3): a family's lead carries its version and the older
+// mark, its rail warn while an older version is still installed; each older
+// version is a menu-node row inside it (no ground, its file name beside the
+// label), and a lead leaf in your world only from an older version reads
+// `INSTALLED v1.2`. The words carry every state (WCAG 1.4.1).
+//
+// v0.5 (#00015 R18.18.1): a package the stone asks about carries
+// `a version of v1.3?` in the older mark's slot, cyan, and its entry opens on
+// one question row (a leaf, the menu-node look, no button: Enter opens the
+// question card in Your World). A joined version row says `· by your word`.
 import { useId } from "vue";
 import type { LibraryRow } from "@/composables/useLibrary";
 import { FORMAT_LABEL, kindsPresent, plural } from "@/services/format";
 import { troubleProblem } from "@/services/voice";
+import {
+  askMark,
+  chipVersion,
+  installedFromOlder,
+  olderMark,
+  versionLabel,
+  versionRowState,
+  type AskMark,
+  type OlderMark,
+} from "@/services/versions";
 import KindBadge from "./KindBadge.vue";
 import StateChip from "./StateChip.vue";
 
@@ -49,18 +70,51 @@ function indentOf(level: number): number {
   return px;
 }
 
-type Tone = "ember" | "world" | "rift" | null;
+type Tone = "ember" | "warn" | "world" | "rift" | null;
 
-/** The state rail's colour (§7.3): ember wins over gold, gold over cyan. */
+/** The lead's older mark (R18.1), or null for a package with no older version. */
+const markOf = (row: LibraryRow): OlderMark | null =>
+  row.kind === "package" ? olderMark(row.pkg.family?.older ?? []) : null;
+
+/** R18.3: the older version a lead leaf is in your world from, its own leaf not installed. */
+function fromOlder(row: LibraryRow): string | null {
+  const node = row.node;
+  if (!node || !row.optionId || node.kind === "bundle" || node.menuOnly) return null;
+  const older = installedFromOlder(row.pkg, row.optionId, node.installed);
+  // R18.18.7: a version Nexus never named reads `INSTALLED older`, never a file name in a chip
+  return older ? chipVersion(older.version) : null;
+}
+
+/** R18.18.1: the question's mark on the questioned package's own row (never on the other's). */
+const askOf = (row: LibraryRow): AskMark | null =>
+  row.kind === "package" && row.pkg.versionQuestion ? askMark(row.pkg.versionQuestion) : null;
+
+/** The state rail's colour (§7.3, R18.1): ember > warn (an older version still
+ *  installed) > gold > cyan. A version row's rail is gold when it has installs. */
+function packageRail(row: LibraryRow): Tone {
+  if (row.pkg.conflicted) return "ember";
+  if (markOf(row)?.warn) return "warn";
+  return row.pkg.installed > 0 ? "world" : "rift";
+}
+
 function railOf(row: LibraryRow): Tone {
-  if (row.kind === "package") {
-    if (row.pkg.conflicted) return "ember";
-    return row.pkg.installed > 0 ? "world" : "rift";
-  }
+  if (row.kind === "package") return packageRail(row);
+  if (row.kind === "version") return (row.version?.installed ?? 0) > 0 ? "world" : null;
+  return nodeRail(row);
+}
+
+function nodeRail(row: LibraryRow): Tone {
   const node = row.node;
   if (!node || node.kind === "bundle" || node.menuOnly || !row.optionId) return null;
   if (node.conflicted) return "ember";
-  return node.installed ? "world" : "rift";
+  return node.installed || fromOlder(row) ? "world" : "rift";
+}
+
+/** The lead's own version (R18.1): on a family's lead only. */
+function leadVersion(row: LibraryRow): string | null {
+  const family = row.pkg.family;
+  if (row.kind !== "package" || !family || family.lead !== row.pkg.package.id || !family.version) return null;
+  return versionLabel(family.version);
 }
 
 /** A row that installs something: a leaf option, never a menu or a bundle. */
@@ -72,7 +126,7 @@ function chipOf(row: LibraryRow): "menu" | "conflict" | "installed" | "notInstal
   if (!node || node.kind === "bundle") return null;
   if (node.menuOnly) return row.branch ? null : "menu";
   if (node.conflicted) return "conflict";
-  return node.installed ? "installed" : "notInstalled";
+  return node.installed || fromOlder(row) ? "installed" : "notInstalled";
 }
 
 /** The trouble fold's own verdict (R16.2): only for a trouble the fold lists
@@ -93,8 +147,12 @@ const idOf = (i: number, part: string): string => `${uid}-${i}-${part}`;
 
 /** What describes a row: the parts of its line that carry its state. */
 function stateIds(row: LibraryRow, i: number): string | undefined {
+  if (row.kind === "version") return `${idOf(i, "file")} ${idOf(i, "count")}`;
+  if (row.kind === "question") return undefined;
   if (row.kind !== "package") return row.node ? idOf(i, "meta") : undefined;
-  const parts = ["fmt", "count"];
+  const parts = leadVersion(row) ? ["ver", "fmt", "count"] : ["fmt", "count"];
+  if (markOf(row)) parts.push("older");
+  if (askOf(row)) parts.push("ask");
   if (row.pkg.update === "available") parts.push("update");
   if (row.pkg.conflicted) parts.push("conflict");
   return parts.map((part) => idOf(i, part)).join(" ");
@@ -125,7 +183,7 @@ function stateIds(row: LibraryRow, i: number): string | undefined {
         railOf(row) ? `rail--${railOf(row)}` : null,
         {
           'is-open': row.expanded,
-          'is-quiet': row.kind === 'bundle' || row.node?.menuOnly,
+          'is-quiet': row.kind === 'bundle' || row.kind === 'version' || row.kind === 'question' || row.node?.menuOnly,
           'is-sel': row.optionId !== null && row.optionId === selectedId,
           'is-drawn': row.parent !== null && drawn.has(row.packageId),
         },
@@ -136,8 +194,24 @@ function stateIds(row: LibraryRow, i: number): string | undefined {
       <span class="ltr__chev" aria-hidden="true" @click.stop="row.branch ? emit('chevron', row) : emit('press', row)">{{
         row.branch ? (row.expanded ? "▾" : "▸") : "·"
       }}</span>
-      <span :id="idOf(i, 'name')" class="ltr__label" :title="row.label">{{ row.label }}</span>
-      <template v-if="row.kind === 'package'">
+      <span
+        :id="idOf(i, 'name')"
+        class="ltr__label"
+        :class="{ 'is-version': row.kind === 'version', 'is-ask': row.kind === 'question' }"
+        :title="row.label"
+        >{{ row.label }}</span
+      >
+      <template v-if="row.kind === 'version'">
+        <!-- R18.2: the older package's own file, ellipsized from the left, whole in its title -->
+        <span :id="idOf(i, 'file')" class="ltr__file rs-tail" :title="row.pkg.package.fileName"
+          ><span class="rs-tail__text">{{ row.pkg.package.fileName }}</span></span
+        >
+        <span :id="idOf(i, 'count')" class="ltr__count" :class="{ 'is-world': (row.version?.installed ?? 0) > 0 }">{{
+          versionRowState(row.version?.installed ?? 0)
+        }}</span>
+      </template>
+      <template v-else-if="row.kind === 'package'">
+        <span v-if="leadVersion(row)" :id="idOf(i, 'ver')" class="ltr__ver">{{ leadVersion(row) }}</span>
         <span :id="idOf(i, 'fmt')" class="ltr__fmt">{{ FORMAT_LABEL[row.pkg.package.format] }}</span>
         <span
           v-if="problemOf(row)"
@@ -149,6 +223,22 @@ function stateIds(row: LibraryRow, i: number): string | undefined {
         <span v-else :id="idOf(i, 'count')" class="ltr__count"
           >{{ plural(row.pkg.installable, "option")
           }}<span v-if="row.pkg.installed > 0" class="is-world"> · {{ row.pkg.installed }} in your world</span></span
+        >
+        <span
+          v-if="markOf(row)"
+          :id="idOf(i, 'older')"
+          class="ltr__older"
+          :class="{ 'is-warn': markOf(row)?.warn }"
+          :title="markOf(row)?.hidden"
+          ><span class="ltr__older-full" aria-hidden="true">{{ markOf(row)?.text }}</span
+          ><span class="ltr__older-short" aria-hidden="true">{{ markOf(row)?.short }}</span
+          ><span class="rs-sr-only">{{ markOf(row)?.hidden }}</span></span
+        >
+        <!-- R18.18.1: the question, cyan (it is about the mods folder, not your game); no rail change -->
+        <span v-if="askOf(row)" :id="idOf(i, 'ask')" class="ltr__older ltr__ask" :title="askOf(row)?.hidden"
+          ><span class="ltr__older-full" aria-hidden="true">{{ askOf(row)?.text }}</span
+          ><span class="ltr__older-short" aria-hidden="true">{{ askOf(row)?.short }}</span
+          ><span class="rs-sr-only">{{ askOf(row)?.hidden }}</span></span
         >
         <StateChip v-if="row.pkg.update === 'available'" :id="idOf(i, 'update')" state="update" />
         <span v-if="row.pkg.conflicted" :id="idOf(i, 'conflict')" class="ltr__sword"
@@ -170,7 +260,9 @@ function stateIds(row: LibraryRow, i: number): string | undefined {
           :title="kindsPresent(row.node.kinds).join(', ')"
           >+{{ kindsPresent(row.node.kinds).length }} kinds</span
         >
-        <StateChip v-if="chipOf(row)" :state="chipOf(row) ?? 'menu'" />
+        <!-- R18.3: in your world, at the older version: the gold chip with the version appended -->
+        <span v-if="fromOlder(row)" class="ltr__chip-older">INSTALLED {{ fromOlder(row) }}</span>
+        <StateChip v-else-if="chipOf(row)" :state="chipOf(row) ?? 'menu'" />
       </span>
     </div>
     <ul
@@ -260,6 +352,14 @@ function stateIds(row: LibraryRow, i: number): string | undefined {
 .ltr__row.is-pkg.rail--ember::before {
   background: var(--rs-ember);
 }
+/* R18.1: an older version still installed under the lead; the rail's colour
+   takes --rs-dur-quick, the investor's moment when it goes out (§18.13) */
+.ltr__row.is-pkg.rail--warn::before {
+  background: var(--rs-warn);
+}
+.ltr__row.is-pkg::before {
+  transition: background-color var(--rs-dur-quick);
+}
 /* an option: on the void, 32 px, a 2 px rail half the package's */
 .ltr__row.is-node {
   height: 32px;
@@ -309,6 +409,11 @@ function stateIds(row: LibraryRow, i: number): string | undefined {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.ltr__ver {
+  flex: none;
+  color: var(--rs-muted);
+  font: 400 12px var(--rs-font-mono);
+}
 .ltr__fmt {
   flex: none;
   color: var(--rs-faint);
@@ -326,6 +431,50 @@ function stateIds(row: LibraryRow, i: number): string | undefined {
 }
 .ltr__count.is-muted {
   color: var(--rs-muted);
+}
+.ltr__older {
+  flex: none;
+  color: var(--rs-faint);
+}
+.ltr__older.is-warn {
+  color: var(--rs-warn);
+}
+.ltr__older-short {
+  display: none;
+}
+/* R18.18.1: the question, in the older mark's slot, cyan (rift on mist 12.27) */
+.ltr__older.ltr__ask {
+  color: var(--rs-rift);
+  font: 400 14px var(--rs-font-sans);
+}
+/* R18.18.1: the question row, the menu-node look in Alegreya 500 cyan */
+.ltr__label.is-ask {
+  flex: 0 1 auto;
+  color: var(--rs-rift);
+  font: 500 14px var(--rs-font-sans);
+}
+/* R18.2: the version row's label keeps the menu-node look */
+.ltr__label.is-version {
+  flex: 0 1 auto;
+}
+.ltr__file {
+  flex: 1 1 0;
+  min-width: 6ch;
+  color: var(--rs-faint);
+  font: 400 12px var(--rs-font-mono);
+}
+.ltr__count.is-world {
+  color: var(--rs-world);
+}
+.ltr__chip-older {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: var(--rs-radius-chip);
+  background: var(--rs-world);
+  color: var(--rs-ongold);
+  font: 600 var(--rs-text-xs) / 1.3 var(--rs-font-mono);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 .ltr__sword {
   flex: none;
@@ -347,6 +496,16 @@ function stateIds(row: LibraryRow, i: number): string | undefined {
   font: 400 12px var(--rs-font-mono);
 }
 /* R16.10: the label keeps its 12ch; the kind badges fold to one count first */
+/* R18.1 / Q18.1's fallback (not measured in a browser yet): below a 480 px row
+   the older mark folds to its count, its words in the hidden text and the title */
+@container ltr-row (max-width: 480px) {
+  .ltr__older-full {
+    display: none;
+  }
+  .ltr__older-short {
+    display: inline;
+  }
+}
 @container ltr-row (max-width: 420px) {
   .ltr__badges[data-kinds]:not([data-kinds="1"]) {
     display: none;

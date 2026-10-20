@@ -19,6 +19,7 @@ import { useSearch } from "@/composables/useSearch";
 import { useStone } from "@/composables/useStone";
 import { useWorld } from "@/composables/useWorld";
 import { useNavigation } from "@/composables/useNavigation";
+import { useVersions } from "@/composables/useVersions";
 import { troubleProblem } from "@/services/voice";
 import LibraryBranch from "./LibraryBranch.vue";
 
@@ -27,6 +28,7 @@ const search = useSearch();
 const stone = useStone();
 const world = useWorld();
 const nav = useNavigation();
+const versions = useVersions();
 
 const root = ref<HTMLElement | null>(null);
 const drawn = ref<ReadonlySet<string>>(new Set());
@@ -93,6 +95,17 @@ async function toTrouble(row: LibraryRow): Promise<void> {
 }
 
 function activate(row: LibraryRow): void {
+  // R18.18.1: the question row opens the question card in Your World (R18.4's door form)
+  if (row.kind === "question") {
+    versions.openQuestion(row.packageId);
+    return;
+  }
+  // R18.4: a version row opens THE VERSIONS card in Your World and expands, as a leaf with children does
+  if (row.kind === "version") {
+    versions.open(row.packageId);
+    setOpen(row, true);
+    return;
+  }
   if (row.optionId) {
     void world.open(row.optionId);
     setOpen(row, true);

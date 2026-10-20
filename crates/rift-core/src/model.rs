@@ -334,6 +334,9 @@ pub enum LinkSource {
     Manual,
     /// The stone downloaded this exact file from Nexus itself (v0.3).
     Download,
+    /// The player's word (v0.5, ruling 10): a version of the file another package in the mods
+    /// folder is pinned to. The mod and the file group come from that package's link.
+    Joined,
 }
 
 /// What links a package to a mod page on Nexus Mods.

@@ -149,6 +149,8 @@ pub struct StoredSettings {
     /// The game folder the player picked by hand (`set_game_root`), tried
     /// before Steam discovery on every launch.
     pub manual_game_root: Option<PathBuf>,
+    /// v0.5: THE MUSTER's chosen character (a hash of private names): never logged.
+    pub muster_character: Option<String>,
 }
 
 /// `settings.json` as any version wrote it.
@@ -167,6 +169,25 @@ struct SettingsFile {
     auto_check_updates: bool,
     #[serde(default)]
     manual_game_root: Option<PathBuf>,
+    /// v0.5. Anything but a character key reads as absent rather than failing the whole file.
+    #[serde(default, deserialize_with = "known_character")]
+    muster_character: Option<String>,
+}
+
+fn known_character<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(character_key(value.as_str()))
+}
+
+/// A Muster character key as `MusterSlot.character` spells it (16 lowercase hex digits);
+/// anything else is no choice at all.
+fn character_key(text: Option<&str>) -> Option<String> {
+    text.filter(|key| {
+        key.len() == 16 && key.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
+    .map(str::to_owned)
 }
 
 fn known_veil<'de, D: serde::Deserializer<'de>>(
@@ -186,6 +207,7 @@ impl From<SettingsFile> for StoredSettings {
             veil,
             auto_check_updates: file.auto_check_updates,
             manual_game_root: file.manual_game_root,
+            muster_character: file.muster_character,
         }
     }
 }
@@ -201,6 +223,7 @@ impl Default for StoredSettings {
             veil: window.veil,
             auto_check_updates: window.auto_check_updates,
             manual_game_root: None,
+            muster_character: None,
         }
     }
 }
@@ -211,12 +234,14 @@ impl StoredSettings {
         Settings {
             veil: self.veil,
             auto_check_updates: self.auto_check_updates,
+            muster_character: self.muster_character.clone(),
         }
     }
 
     pub fn apply(&mut self, window: Settings) {
         self.veil = window.veil;
         self.auto_check_updates = window.auto_check_updates;
+        self.muster_character = character_key(window.muster_character.as_deref());
     }
 }
 
@@ -624,18 +649,43 @@ mod tests {
         assert_eq!(settings, StoredSettings::default());
         assert!(settings.auto_check_updates, "auto-check defaults to on");
         assert_eq!(settings.veil, VeilMode::Off);
+        assert_eq!(settings.muster_character, None, "no character picked yet");
         let mut stored = StoredSettings::default();
         stored.apply(Settings {
             veil: VeilMode::Adult,
             auto_check_updates: false,
+            muster_character: Some("9f3c0a7e5b1d2c44".into()),
         });
         assert_eq!(
             stored.window(),
             Settings {
                 veil: VeilMode::Adult,
-                auto_check_updates: false
+                auto_check_updates: false,
+                muster_character: Some("9f3c0a7e5b1d2c44".into()),
             }
         );
+    }
+
+    #[test]
+    fn the_muster_character_is_kept_only_as_a_character_key() {
+        for (text, kept) in [
+            (serde_json::json!("9f3c0a7e5b1d2c44"), true),
+            (serde_json::json!("9F3C0A7E5B1D2C44"), false),
+            (serde_json::json!("9f3c0a7e"), false),
+            (serde_json::json!("Odalric and Bramble"), false),
+            (serde_json::json!(42), false),
+            (serde_json::Value::Null, false),
+        ] {
+            let read: StoredSettings =
+                serde_json::from_value(serde_json::json!({ "musterCharacter": text })).unwrap();
+            assert_eq!(read.muster_character.is_some(), kept, "{text}");
+        }
+        let mut stored = StoredSettings::default();
+        stored.apply(Settings {
+            muster_character: Some("../../settings".into()),
+            ..Settings::default()
+        });
+        assert_eq!(stored.muster_character, None);
     }
 
     #[test]
@@ -671,7 +721,15 @@ mod tests {
             .map(String::as_str)
             .collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["autoCheckUpdates", "manualGameRoot", "veil"]);
+        assert_eq!(
+            keys,
+            [
+                "autoCheckUpdates",
+                "manualGameRoot",
+                "musterCharacter",
+                "veil"
+            ]
+        );
 
         // A file with both keys was written by v0.2 and edited by hand (or by
         // v0.1 after v0.2): `veil` wins.

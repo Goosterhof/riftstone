@@ -10,13 +10,24 @@
 // library tree). `rows` is the tree flattened to what is visible now, in
 // order, with what a WAI-ARIA tree needs per row (level, set size, position,
 // parent): one tab stop, ↑ ↓ ← → Home End, built by the screen that draws it.
+//
+// v0.5 (#00015 R18.1–R18.2): the rows read the fold (services/versions.ts
+// foldFamilies): a family is one entry, its lead, and each older version is a
+// row inside it after the lead's own options, keyed by the older package's id,
+// its own option tree one level deeper.
 
 import { computed, ref } from "vue";
-import type { LibraryPackage, LibraryView, TreeNode } from "@/types/rift";
+import type { LibraryPackage, LibraryView, OlderVersionView, TreeNode } from "@/types/rift";
 import { asRiftFailure, rift } from "@/services/rift";
 import { voice, type Voiced } from "@/services/voice";
+import { askRowLabel, foldFamilies, versionRowLabel, type FamilyEntry } from "@/services/versions";
 
-export type LibraryRowKind = "package" | "option" | "bundle";
+/** v0.5: "version" is an older version of the file, inside its lead's entry;
+ *  "question" is the stone's question about the package (R18.18.1), its first child. */
+export type LibraryRowKind = "package" | "option" | "bundle" | "version" | "question";
+
+/** R18.18.1: the question row's key under its package (never an option's: those carry `#`). */
+export const questionKey = (packageId: string): string => `${packageId}?ask`;
 
 export interface LibraryRow {
   /** The expansion key: a package's id, an option's id, or a bundle's key (nodeKey). */
@@ -36,10 +47,13 @@ export interface LibraryRow {
   packageId: string;
   /** Set for an option row; null for a package or a bundle. Opaque: never parsed. */
   optionId: string | null;
-  /** The package row's own data, carried on every row of that package. */
+  /** The package row's own data, carried on every row of that package. A
+   *  version row and the rows under it carry the older package. */
   pkg: LibraryPackage;
-  /** null for a package row. */
+  /** null for a package row and a version row. */
   node: TreeNode | null;
+  /** v0.5: a version row's place in its lead's `family.older`; null otherwise. */
+  version: OlderVersionView | null;
 }
 
 const view = ref<LibraryView | null>(null);
@@ -104,21 +118,26 @@ function nodeRows(
       optionId: node.optionId,
       pkg: at.pkg,
       node,
+      version: null,
     });
     if (isOpen) out.push(...nodeRows(node.children, { pkg: at.pkg, parent: key, level: at.level + 1 }, open));
   }
   return out;
 }
 
-/** The tree as it is visible now: every package, and under each open one its
- *  open branches, in order. */
+/** The library folded into one entry per family (R18.1). */
+const entries = computed(() => foldFamilies(packages.value));
+
+/** The tree as it is visible now: every entry, and under each open one its
+ *  open branches, in order; a family's older versions after its lead's options. */
 const rows = computed<LibraryRow[]>(() => {
   const open = expanded.value;
-  const list = packages.value;
+  const list = entries.value;
   const out: LibraryRow[] = [];
-  for (const [i, pkg] of list.entries()) {
+  for (const [i, entry] of list.entries()) {
+    const pkg = entry.lead;
     const key = pkg.package.id;
-    const branch = pkg.tree.length > 0;
+    const branch = pkg.tree.length > 0 || entry.older.length > 0 || pkg.versionQuestion !== null;
     const isOpen = branch && open.has(key);
     out.push({
       key,
@@ -134,11 +153,75 @@ const rows = computed<LibraryRow[]>(() => {
       optionId: null,
       pkg,
       node: null,
+      version: null,
     });
-    if (isOpen) out.push(...nodeRows(pkg.tree, { pkg, parent: key, level: 2 }, open));
+    if (isOpen) out.push(...entryRows(entry, open));
   }
   return out;
 });
+
+/** R18.18.1: the stone's question, its package's first child: a leaf. */
+function questionRow(pkg: LibraryPackage, setSize: number): LibraryRow[] {
+  const asked = pkg.versionQuestion;
+  if (!asked) return [];
+  const key = pkg.package.id;
+  return [
+    {
+      key: questionKey(key),
+      kind: "question",
+      label: askRowLabel(asked),
+      level: 2,
+      setSize,
+      position: 1,
+      parent: key,
+      branch: false,
+      expanded: false,
+      packageId: key,
+      optionId: null,
+      pkg,
+      node: null,
+      version: null,
+    },
+  ];
+}
+
+/** An open entry's rows: the question first (R18.18.1), the lead's option
+ *  nodes, then its older versions as rows of their own (R18.2). */
+function entryRows({ lead: pkg, older }: FamilyEntry, open: ReadonlySet<string>): LibraryRow[] {
+  const key = pkg.package.id;
+  const ask = pkg.versionQuestion ? 1 : 0;
+  const setSize = ask + pkg.tree.length + older.length;
+  const own = nodeRows(pkg.tree, { pkg, parent: key, level: 2 }, open);
+  for (const row of own) {
+    if (row.parent !== key) continue;
+    row.setSize = setSize;
+    row.position += ask;
+  }
+  const out = [...questionRow(pkg, setSize), ...own];
+  for (const [j, { pkg: olderPkg, version }] of older.entries()) {
+    const vkey = olderPkg.package.id;
+    const vbranch = olderPkg.tree.length > 0;
+    const vopen = vbranch && open.has(vkey);
+    out.push({
+      key: vkey,
+      kind: "version",
+      label: versionRowLabel(version.version, olderPkg.package.nexus?.source === "joined"),
+      level: 2,
+      setSize,
+      position: ask + pkg.tree.length + j + 1,
+      parent: key,
+      branch: vbranch,
+      expanded: vopen,
+      packageId: vkey,
+      optionId: null,
+      pkg: olderPkg,
+      node: null,
+      version,
+    });
+    if (vopen) out.push(...nodeRows(olderPkg.tree, { pkg: olderPkg, parent: vkey, level: 3 }, open));
+  }
+  return out;
+}
 
 function setOpen(key: string, open: boolean): void {
   if (expanded.value.has(key) === open) return;
@@ -159,9 +242,13 @@ function pathTo(optionId: string): string[] | null {
     }
     return null;
   };
-  for (const pkg of packages.value) {
-    const found = walk(pkg.tree, pkg.package.id, [pkg.package.id]);
+  for (const { lead, older } of entries.value) {
+    const found = walk(lead.tree, lead.package.id, [lead.package.id]);
     if (found) return found;
+    for (const { pkg } of older) {
+      const deeper = walk(pkg.tree, pkg.package.id, [lead.package.id, pkg.package.id]);
+      if (deeper) return deeper;
+    }
   }
   return null;
 }
@@ -177,10 +264,15 @@ function branchKeys(): string[] {
       walk(node.children, key);
     }
   };
-  for (const pkg of packages.value) {
-    if (!pkg.tree.length) continue;
-    out.push(pkg.package.id);
-    walk(pkg.tree, pkg.package.id);
+  for (const { lead, older } of entries.value) {
+    if (!lead.tree.length && !older.length) continue;
+    out.push(lead.package.id);
+    walk(lead.tree, lead.package.id);
+    for (const { pkg } of older) {
+      if (!pkg.tree.length) continue;
+      out.push(pkg.package.id);
+      walk(pkg.tree, pkg.package.id);
+    }
   }
   return out;
 }
@@ -205,6 +297,7 @@ export function useLibrary() {
     failure,
     loading,
     packages,
+    entries,
     mods,
     empty,
     rows,

@@ -241,7 +241,7 @@ describe("the veil control on Preflight", () => {
     adult.checked = true;
     adult.dispatchEvent(new Event("change"));
     await until(() => useSettings().settings.value.veil === "adult", "the adult mode chosen");
-    expect(saved).toHaveBeenCalledWith({ veil: "adult", autoCheckUpdates: true });
+    expect(saved).toHaveBeenCalledWith({ veil: "adult", autoCheckUpdates: true, musterCharacter: null });
     expect(textOf(document.querySelector(".pre__val--veil") ?? document.body).trim()).toBe(
       "Blurs the screenshots of mods Nexus flags as adult, and of packages Nexus has not labelled yet, until you hover or focus their card. A veil protects, so the unknown stays veiled: link a package and check for updates, and its veil lifts once Nexus labels it without the adult flag. The lightbox always opens unveiled.",
     );

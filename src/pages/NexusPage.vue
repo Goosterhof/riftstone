@@ -15,7 +15,7 @@
 // check, so labels arrive at once. Nothing here moves the focus onto a button
 // that sends: a press the player did not make must never send a name.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import type { NexusCandidate, NexusFileView, UpdateRow } from "@/types/rift";
+import type { LibraryPackage, NexusCandidate, NexusFileView, UpdateRow } from "@/types/rift";
 import { HELD_WHILE_DOWNLOADING, landedPath, useDownloads } from "@/composables/useDownloads";
 import { useNexusAccount } from "@/composables/useNexusAccount";
 import { candidateLine, linkedNow, useFarWorld, type FindState } from "@/composables/useFarWorld";
@@ -24,6 +24,9 @@ import { usePreflight, NEXUS_KEY_URL } from "@/composables/usePreflight";
 import { keyStateOf, type NexusKeyState } from "@/services/pending";
 import type { RecoveryKind } from "@/services/voice";
 import { formatAgo, formatDate, plural } from "@/services/format";
+import { FAR_ASK_DOOR, farAskLine, farSubRow, linkSourceText, versionName, type FarSubRow } from "@/services/versions";
+import { nodeKey, useLibrary } from "@/composables/useLibrary";
+import { useVersions } from "@/composables/useVersions";
 import FailureNotice from "@/components/FailureNotice.vue";
 import HitText from "@/components/HitText.vue";
 import RiftButton from "@/components/RiftButton.vue";
@@ -214,6 +217,36 @@ async function pick(packageId: string, candidate: NexusCandidate): Promise<void>
 
 // --- v0.3 ----------------------------------------------------------------
 const dl = useDownloads();
+
+// --- v0.5 (#00015 R18.8): one row per family, the older versions on a line under it
+const library = useLibrary();
+const versions = useVersions();
+/** The older versions' installs, read from the library as the lead's are: an
+ *  install or an uninstall reads the library again (rift://game-changed), never
+ *  get_updates, so the row's own `older` would keep the counts of the last check. */
+function olderOf(row: UpdateRow, lead: LibraryPackage | undefined): UpdateRow["older"] {
+  const family = lead?.family;
+  return family && family.lead === row.packageId && family.older.length ? family.older : row.older;
+}
+function olderLine(row: UpdateRow): FarSubRow | null {
+  if (!row.older.length) return null;
+  const lead = library.packages.value.find((p) => p.package.id === row.packageId);
+  const leadName = versionName(lead?.family?.version ?? row.localVersion, lead?.package.fileName ?? row.packageName);
+  return farSubRow(olderOf(row, lead), leadName, (lead?.installed ?? 0) > 0);
+}
+function olderDoor(row: UpdateRow, line: FarSubRow): void {
+  if (line.door === "versions") {
+    void versions.showVersions(row.packageId);
+    return;
+  }
+  const first = library.packages.value.find((p) => p.package.id === row.packageId)?.tree[0];
+  void versions.showInRift(row.packageId, first ? nodeKey(first, row.packageId) : null);
+}
+/** R18.18.1: the stone's question under the questioned package's own row (no yes or no here). */
+function askLine(row: UpdateRow): string | null {
+  const q = library.packages.value.find((p) => p.package.id === row.packageId)?.versionQuestion;
+  return q ? farAskLine(q) : null;
+}
 const nexus = useNexusAccount();
 const scroller = ref<HTMLElement | null>(null);
 
@@ -545,7 +578,7 @@ onBeforeUnmount(() => {
                 <td>
                   <span class="far__name">{{ row.packageName }}</span>
                   <span class="far__dim rs-mono">
-                    mod {{ row.link?.modId }} · {{ row.link?.source === "md5" ? "by MD5" : row.link?.source }}</span
+                    mod {{ row.link?.modId }} · {{ row.link ? linkSourceText(row.link.source) : "" }}</span
                   >
                 </td>
                 <td class="rs-mono">{{ row.localVersion ? `v${row.localVersion}` : "—" }}</td>
@@ -600,6 +633,37 @@ onBeforeUnmount(() => {
                       @click="dl.showInFolder({ landedAs: landedFor(row)?.landedAs ?? null })"
                       >Show in folder</RiftButton
                     >
+                  </p>
+                </td>
+              </tr>
+              <tr
+                v-for="line in [olderLine(row)].filter((l): l is FarSubRow => l !== null)"
+                :key="`older-${row.packageId}`"
+                class="far__subrow"
+              >
+                <td colspan="5">
+                  <p class="far__older" :class="`is-${line.tone}`">
+                    <span class="far__older-glyph" aria-hidden="true">↳</span>
+                    <span>{{ line.text }}</span>
+                    <RiftButton
+                      size="sm"
+                      :variant="line.door === 'rift' ? 'primary' : 'secondary'"
+                      @click="olderDoor(row, line)"
+                      >{{ line.doorLabel }}</RiftButton
+                    >
+                  </p>
+                </td>
+              </tr>
+              <tr
+                v-for="line in [askLine(row)].filter((l): l is string => l !== null)"
+                :key="`ask-${row.packageId}`"
+                class="far__subrow"
+              >
+                <td colspan="5">
+                  <p class="far__older far__ask">
+                    <span class="far__older-glyph" aria-hidden="true">↳</span>
+                    <span>{{ line }}</span>
+                    <RiftButton size="sm" @click="versions.showQuestion(row.packageId)">{{ FAR_ASK_DOOR }}</RiftButton>
                   </p>
                 </td>
               </tr>
@@ -1016,8 +1080,35 @@ onBeforeUnmount(() => {
   margin: 0 0 var(--rs-space-2);
   color: var(--rs-text);
 }
-.far__linkedrow:has(+ .far__subrow) td {
+.far__linkedrow:has(+ .far__subrow) td,
+.far__subrow:has(+ .far__subrow) td {
   border-bottom: 0;
+}
+/* R18.18.1: the stone's question, Alegreya 14 muted (8.84 on void) */
+.far__older.far__ask {
+  color: var(--rs-muted);
+}
+/* R18.8: the older versions' line, the row's own (↳), never a column */
+.far__older {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rs-space-2) var(--rs-space-3);
+  margin: 0 0 var(--rs-space-2);
+  padding-left: var(--rs-space-4);
+  font-size: var(--rs-text-sm);
+}
+.far__older-glyph {
+  color: var(--rs-faint);
+}
+.far__older.is-warn {
+  color: var(--rs-warn);
+}
+.far__older.is-text {
+  color: var(--rs-text);
+}
+.far__older.is-faint {
+  color: var(--rs-faint);
 }
 
 /* --- v0.2 Find on Nexus: the far world answers under the row ------------- */

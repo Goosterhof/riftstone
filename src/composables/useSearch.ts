@@ -234,6 +234,16 @@ function refacet(apply: () => void): void {
   void run(false);
 }
 
+/** Return to every state and label without throwing away the player's words. */
+function clearFilters(): void {
+  refacet(() => {
+    stateFacet.value = "all";
+    includeMenuOnly.value = false;
+    categories.value = [];
+    tags.value = [];
+  });
+}
+
 /** v0.3: back to the idle Rift, the library tree: no words, and no facet
  *  narrowing (state All, menu-only off, no label chips), the answers read
  *  again. Resolves once the tree can show. For a door that must find one
@@ -279,6 +289,7 @@ export function useSearch() {
     setText,
     clearText,
     clearAll,
+    clearFilters,
     run,
     setStateFacet: (facet: StateFacet) => refacet(() => (stateFacet.value = facet)),
     setMenuOnly: (on: boolean) => refacet(() => (includeMenuOnly.value = on)),

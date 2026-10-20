@@ -2,7 +2,7 @@
 
 *Touch the stone and the Rift answers. Mods from other worlds wait inside; the stone shows you every one of them and pulls through the one you choose.*
 
-![The Riftstone at rest: the Rift opens on the tree of its mods folder, eleven packages with their formats and counts and the fold of three that won't answer above them, one collection open down to the variations of a cape, each marked with its kinds and whether it is in your world. Play waits on the stone.](docs/images/riftstone-tree.png)
+![The Riftstone at rest: the Rift opens on the tree of its mods folder, eleven packages with their formats and counts and the fold of three that won't answer above them, one collection open down to the variations of a cape, each marked with its kinds and whether it is in your world. Open mods folder and Scan sit above the tree, and each room in the pillar says what it holds. Play waits on the stone.](docs/images/riftstone-tree.png)
 
 The Riftstone is a Windows desktop mod manager for **Dragon's Dogma 2**. Its library is one folder: the `mods` folder beside the installed `riftstone.exe`. Put a mod there (zip, 7z, rar or a plain folder, nested as deep as the modder packed it) and the stone reads all of it: option names, descriptions, the menu trail a variant hides behind, and every file path inside the archives.
 
@@ -12,11 +12,12 @@ The Riftstone is a Windows desktop mod manager for **Dragon's Dogma 2**. Its lib
 - Press Play and the stone starts the game (through Steam when Steam found it), and knows when it is running.
 - It asks Nexus Mods whether a newer file of each download exists. The check is anonymous and needs no account. A 2026 download name carries the file's own id, so the stone checks that exact file.
 - Filter by what Nexus calls a mod. Each linked mod's category and tags come home with that same check. Press categories in the stone (any of them) or tags (all of them), and every chip tells you how many answers it gives. The screenshots of mods Nexus flags adult, and of anything it has not labelled yet, can stay blurred until you hover. A download Nexus cannot recognise by its bytes (an unpacked folder, a repack) can be found by name, and you pick the right mod from up to five.
-- Open THE MUSTER and the stone reads your party from your own save slots, the way a Riftstone in the game shows you a pawn: the Arisen, the main pawn and the hired pawns, each with level, vocation, the experience in every vocation, the stats their levels gave, everything they wear by slot, the augments and skills set for the vocation in use, a pawn's inclination and specialization, and your gold and Rift Crystals. The names come from your own game install, read where they live. Keep the stone open while you play and it notices when the game saves, then marks what changed.
+- Download an update and the stone knows it is the same mod's newer version, because Nexus says so (the same mod and file group), never because two names look alike. The Rift and the update list show the mod once, the newest version leading and the older ones inside it. Installing the newer version takes the older one's place in one step, keeping its place in the load order, and puts the older archive away in a folder beside your mods folder, `mods (older versions)`, from where one press brings it back. *Keep only the newest* cleans up versions installed one over another.
+- Open THE MUSTER and the stone reads your party from your own save slots, the way a Riftstone in the game shows you a pawn: the Arisen, the main pawn and the hired pawns, each with level, vocation, the experience in every vocation, the stats their levels gave, everything they wear by slot, the augments and skills set for the vocation in use, a pawn's inclination and specialization, and your gold and Rift Crystals. It opens on the character you picked last (your Arisen with their main pawn), at their newest save, and keeps their other saves in a menu. The names come from your own game install, read where they live. Keep the stone open while you play and it notices when the game saves, follows the character into the newer save, and marks what changed.
 - Give it your personal Nexus key and it shows your account, tracks and endorses mods, and downloads files straight into the mods folder: a newer version from the update list, any file of a mod, or a mod you found by browsing Nexus from the stone. A premium account downloads in the stone. A free account presses Nexus's own Mod Manager Download button, which reaches the stone once you turn on its link handler. A download lands in the mods folder; installing it stays your choice.
 
 <p>
-  <img src="docs/images/riftstone-answers.png" width="49%" alt="The Riftstone answering “mantle”: fourteen variants of two capes, the word lit wherever it matched in a name or a menu trail, every card carrying its kind, its Nexus category and NOT INSTALLED.">
+  <img src="docs/images/riftstone-answers.png" width="49%" alt="The Riftstone answering “mantle”: fourteen variants of two capes, the word lit wherever it matched in a name or a menu trail, every card carrying its kind, its Nexus category and NOT INSTALLED. A × in the search well clears the query.">
   <img src="docs/images/riftstone-crossing.png" width="49%" alt="A creation crossing into your world: Sage's Mantle - Variation 1 turns INSTALLED in gold, THE CROSSING carves its three files IN YOUR WORLD, and a toast offers Undo.">
 </p>
 <p>
@@ -25,7 +26,12 @@ The Riftstone is a Windows desktop mod manager for **Dragon's Dogma 2**. Its lib
 </p>
 
 <p>
-  <img src="docs/images/riftstone-muster.png" width="49%" alt="THE MUSTER on Slot 9: the slot list with a damaged slot and another account's save, the party's four tabs, and the Arisen Odalric's sheet: eight gear rows with an empty sub weapon, the gains from levels with the party's most marked, three vocations by experience, three augments and three skills.">
+  <img src="docs/images/riftstone-versions.png" width="49%" alt="One entry per file: Lantern Glow Recolor v1.3 on an amber rail, +2 older, 1 installed. Inside it, v1.2 open to its own two options and v1.1 with nothing installed. Beside it, VERSIONS OF THIS FILE lists all three, v1.2 installed under v1.3, with Put it away on v1.1 and Keep only the newest.">
+  <img src="docs/images/riftstone-put-away.png" width="49%" alt="The newer version installed in the older one's place: THE CROSSING carves IN YOUR WORLD, v1.2 is put away in mods (older versions) with Bring it back, the foot of the Rift carves 1 PUT AWAY, and a toast says Lantern Glow Recolor v1.3 is in your world, in v1.2's place.">
+</p>
+
+<p>
+  <img src="docs/images/riftstone-muster.png" width="49%" alt="THE MUSTER by character: Odalric and Wren, picked and followed on their newest save, Slot 9, with Aldith and Corvin below and two saves that won't open set apart. The head's slot button opens the character's other saves. The party's four tabs, and Odalric's sheet: eight gear rows with an empty sub weapon, the gains from levels with the party's most marked, three vocations by experience, three augments and three skills.">
   <img src="docs/images/riftstone-muster-hired.png" width="49%" alt="A hired pawn's sheet on THE MUSTER, cold where the party's own are warm: Bramble, a Sorcerer whose creator is a Lv 52 Warrior, with an inclination, no specialization, three empty gear slots and four augments.">
 </p>
 
@@ -33,7 +39,7 @@ The Riftstone is a Windows desktop mod manager for **Dragon's Dogma 2**. Its lib
 
 ## The promises
 
-- **The mods folder is yours.** The stone never changes, renames or deletes anything you put in it. The one thing it adds is a download you asked for. While it arrives it sits under a hidden partial name, which the stone removes if the download fails or you cancel it, and it takes its real name only once it is whole and checked, never over a file that is already there.
+- **The mods folder is yours.** The stone never changes, renames or deletes anything you put in it. The one thing it adds is a download you asked for. While it arrives it sits under a hidden partial name, which the stone removes if the download fails or you cancel it, and it takes its real name only once it is whole and checked, never over a file that is already there. The one thing it moves is an older version of a file whose newer version you installed: whole, into `mods (older versions)` beside your mods folder, only once that install is done (or when you press *Put it away*), and back again when you press *Bring it back*. Nothing is copied, deleted or written over on the way.
 - **Vanilla is sacred.** `DD2.exe`, the game's own `re_chunk_000.pak*`, `dlc/` and their kin are refused outright. Any other file a mod would overwrite is backed up first and put back on uninstall.
 - **A write-ahead journal.** Every install records what it means to do before the first byte moves. If one is cut short by a crash or a power cut, it is rolled back at the next launch.
 - **Nexus is optional.** Searching, installing, update checks, labels and browsing Nexus work without an account. Only the key's extras need one: your account, downloads, tracking and endorsing. A personal API key lives in Windows Credential Manager and never in a file; the stone never shows it, logs it or sends it anywhere but Nexus.

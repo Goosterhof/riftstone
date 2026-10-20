@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // The full-window screenshot. Opens unveiled (an explicit act, §8.6). In the
 // lookbook ←/→ step through every variant so two can be compared full size.
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useNavigation } from "@/composables/useNavigation";
 import { usePackage } from "@/composables/usePackage";
 import RiftThumb from "./RiftThumb.vue";
@@ -9,6 +9,7 @@ import RiftThumb from "./RiftThumb.vue";
 const nav = useNavigation();
 const pkg = usePackage();
 const closer = ref<HTMLButtonElement | null>(null);
+const viewer = ref<HTMLElement | null>(null);
 
 const ring = computed(() => (nav.riftMode.value === "lookbook" ? pkg.tiles.value.filter((t) => t.hasScreenshot) : []));
 const at = computed(() => ring.value.findIndex((t) => t.optionId === nav.lightbox.value?.optionId));
@@ -19,12 +20,34 @@ function step(delta: number): void {
   if (next) nav.openLightbox({ optionId: next.optionId, name: next.name });
 }
 
+function retainFocus(): void {
+  if (!viewer.value?.contains(document.activeElement)) closer.value?.focus();
+}
+
 function onKey(event: KeyboardEvent): void {
-  if (event.key === "Escape" || event.key === " ") {
+  if (!nav.lightbox.value) return;
+  // Own the event at the window, even if a non-focusable picture put focus
+  // on body. Lower panes and their capture listeners must not see this key.
+  event.stopImmediatePropagation();
+  retainFocus();
+  if (event.key === "Tab") {
+    event.preventDefault();
+    closer.value?.focus();
+  } else if (event.key === "Escape" || event.key === " ") {
     event.preventDefault();
     nav.closeLightbox();
-  } else if (event.key === "ArrowRight") step(1);
-  else if (event.key === "ArrowLeft") step(-1);
+  } else if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+    event.preventDefault();
+    step(event.key === "ArrowRight" ? 1 : -1);
+  }
+}
+
+onMounted(() => window.addEventListener("keydown", onKey, { capture: true }));
+onBeforeUnmount(() => window.removeEventListener("keydown", onKey, { capture: true }));
+
+function onClick(event: MouseEvent): void {
+  if (event.target === event.currentTarget) nav.closeLightbox();
+  else if (nav.lightbox.value) retainFocus();
 }
 
 /** Where the keyboard stood when the lightbox opened. */
@@ -59,12 +82,12 @@ watch(
 <template>
   <div
     v-if="nav.lightbox.value"
+    ref="viewer"
     class="lightbox"
     role="dialog"
     aria-modal="true"
     :aria-label="`Screenshot of ${nav.lightbox.value.name}`"
-    @keydown="onKey"
-    @click.self="nav.closeLightbox()"
+    @click="onClick"
   >
     <figure class="lightbox__fig">
       <RiftThumb

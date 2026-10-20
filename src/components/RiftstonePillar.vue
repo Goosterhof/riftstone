@@ -43,12 +43,12 @@ const STATES: { id: StateFacet; label: string }[] = [
   { id: "update", label: "Update" },
 ];
 
-const NAV: { id: Page; label: string; key: string }[] = [
-  { id: "rift", label: "THE RIFT", key: "1" },
-  { id: "world", label: "YOUR WORLD", key: "2" },
-  { id: "nexus", label: "NEXUS", key: "3" },
-  { id: "preflight", label: "PREFLIGHT", key: "4" },
-  { id: "muster", label: "THE MUSTER", key: "5" },
+const NAV: { id: Page; label: string; hint: string; key: string }[] = [
+  { id: "rift", label: "THE RIFT", hint: "Mod library", key: "1" },
+  { id: "world", label: "YOUR WORLD", hint: "Installed mods & load order", key: "2" },
+  { id: "nexus", label: "NEXUS", hint: "Browse, download & update", key: "3" },
+  { id: "preflight", label: "PREFLIGHT", hint: "Game checks & settings", key: "4" },
+  { id: "muster", label: "THE MUSTER", hint: "Characters & saves", key: "5" },
 ];
 
 const seamState = computed(() => (stone.scanning.value ? "scanning" : search.seam.value));
@@ -188,7 +188,10 @@ defineExpose({ focusSearch: () => well.value?.focus() });
         :aria-current="nav.page.value === n.id ? 'page' : undefined"
         @click="nav.go(n.id)"
       >
-        <span>{{ n.label }}</span>
+        <span class="navlink__words"
+          ><span>{{ n.label }}</span
+          ><span class="navlink__hint">{{ n.hint }}</span></span
+        >
         <span class="navlink__meta">
           <span v-if="navCount[n.id]" class="navlink__n" :class="{ 'is-update': n.id === 'nexus' }">{{
             navCount[n.id]
@@ -373,7 +376,7 @@ defineExpose({ focusSearch: () => well.value?.focus() });
   justify-content: space-between;
   align-items: center;
   width: 100%;
-  height: 38px;
+  min-height: 48px;
   padding: 0 2px 0 12px;
   border: 0;
   border-left: 3px solid transparent;
@@ -393,6 +396,16 @@ defineExpose({ focusSearch: () => well.value?.focus() });
 .navlink.is-on {
   color: var(--rs-text);
   border-left-color: var(--rs-rift);
+}
+.navlink__words {
+  min-width: 0;
+}
+.navlink__hint {
+  display: block;
+  margin-top: 2px;
+  color: var(--rs-muted);
+  font: 400 12px / 1.25 var(--rs-font-sans);
+  letter-spacing: 0;
 }
 .navlink__meta {
   display: flex;

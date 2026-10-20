@@ -69,6 +69,14 @@ already held as a word before it ever read a save (the tree at BEFORE_SAVES)
 is set aside and counted, because a hit on it could not be told from the
 repo's own text.
 
+A Nexus id the repo already carried where the sweep last passed clean
+(SWEPT_CLEAN, v0.4.1, and the history before it) was the repo's own number
+before any link could have put it there, so a mod linked since that shares it
+is a collision, not a leak. Its hits are set aside and counted, but only on
+lines the repo held then: the id stays in the search, so a new line that holds
+it (a fixture written since, a doc) still counts. A Steam account's numbers
+are never set aside.
+
 Pictures carry their words in pixels, and no text gate reads them: the sweep
 counts the pictures in the tree by folder, so whoever pushes looks at them.
 
@@ -138,6 +146,10 @@ STAND_IN_PACKAGE = re.compile(r"^[0-9a-f]{16}$")
 # The last commit before the stone read a save (v0.3.1 and its Sentinel, public main on
 # 2026-10-18): no word in its tree can have come from one.
 BEFORE_SAVES = "830fdf09237a0ab87ede3b19a1a5c145666fa714"
+# Public main where the sweep last passed clean with every source it had (v0.4.1, merged
+# 2026-10-18): a number its tree carried was the repo's own before any link could have put
+# it there, and a mod linked since may share it (v0.5's tip sweep met one).
+SWEPT_CLEAN = "5a01aa50fc17d190f50f7991f4ca3f60de65f66b"
 # Folders every Windows or Steam install has, and the mods folder's own name: a
 # chain made only of these is nobody's layout (a default Steam library is no secret).
 STOCK_FOLDERS = {
@@ -157,6 +169,8 @@ class Identifiers:
         self.places: dict[tuple[str, ...], str] = {}
         # words matched in their own case only: a save's short names
         self.exact: set[str] = set()
+        # an id pattern → the lines the clean repo held it on (set_aside_ids)
+        self.held: dict[str, frozenset[str]] = {}
         self.allow = {a.lower() for a in allow}
 
     def word(self, text: str, kind: str, *, short_counts: bool = False) -> None:
@@ -335,6 +349,27 @@ class Identifiers:
             del self.words[word]
         return len(gone)
 
+    def set_aside_ids(self, known: Iterable[str]) -> int:
+        """Note every Nexus id that one of these texts (the repo where the sweep last passed
+        clean, and its history) already holds as a number: the repo's own number, which a mod
+        linked since happens to share. The id stays in the search; only its hits on the lines
+        those texts held are set aside (`Held`), so a line written since still counts. A Steam
+        account's numbers are never set aside. Returns how many ids collide."""
+        lines = {line.strip() for text in known for line in EMBEDDED_DATA.sub(r"\1", text).splitlines()}
+        for digits, kind in self.ids.items():
+            if kind.startswith("Steam"):
+                continue
+            pattern = self.number_pattern(digits)
+            held = frozenset(line for line in lines if pattern.search(line))
+            if held:
+                self.held[pattern.pattern] = held
+        return len(self.held)
+
+    @staticmethod
+    def number_pattern(digits: str) -> re.Pattern[str]:
+        # Whole numbers only: an id is not a hit inside a longer number or a version.
+        return re.compile(rf"(?<![\d.]){digits}(?![\d.])")
+
     def word_pattern(self, word: str) -> re.Pattern[str]:
         # Whole words only: a name is not a hit inside a longer word.
         body = rf"(?<![A-Za-z0-9]){re.escape(word)}(?![A-Za-z0-9])"
@@ -342,7 +377,7 @@ class Identifiers:
 
     def patterns(self) -> list[tuple[re.Pattern[str], str]]:
         words = [(self.word_pattern(word), kind) for word, kind in self.words.items()]
-        numbers = [(re.compile(rf"(?<![\d.]){digits}(?![\d.])"), kind) for digits, kind in self.ids.items()]
+        numbers = [(self.number_pattern(digits), kind) for digits, kind in self.ids.items()]
         return words + numbers + [(chain_pattern(chain), kind) for chain, kind in self.places.items()]
 
 
@@ -614,9 +649,39 @@ def commit_messages() -> list[tuple[str, str]]:
     return messages
 
 
+def clean_texts(commit: str) -> list[str]:
+    """Every file version and commit message reachable from `commit`: the repo's own text up to
+    where the sweep last passed clean."""
+    paths: dict[str, str] = {}
+    for line in git("rev-list", "--objects", commit).decode(errors="replace").splitlines():
+        sha, _, path = line.partition(" ")
+        if path and sha not in paths:
+            paths[sha] = path
+    kinds = git("cat-file", "--batch-check=%(objectname) %(objecttype)", stdin="\n".join(paths).encode()) if paths else b""
+    blobs = [sha for sha, kind in (row.split() for row in kinds.decode().splitlines()) if kind == "blob" and swept(Path(paths[sha]))]
+    messages = git("log", "--format=%B", commit).decode(errors="replace")
+    return [*read_blobs(blobs), messages]
+
+
 def first_commit_with(blob: str) -> str:
     shas = git("log", "--all", "--format=%h", f"--find-object={blob}").decode().split()
     return shas[-1] if shas else blob[:9]
+
+
+class Held:
+    """The hits set aside: an id's on a line the repo held where the sweep last passed clean,
+    compared by the line's text with its indent stripped. Counted, never printed."""
+
+    def __init__(self, lines: dict[str, frozenset[str]]):
+        self.lines = lines
+        self.excused = 0
+
+    def excuses(self, pattern: re.Pattern[str], line: str) -> bool:
+        held = self.lines.get(pattern.pattern)
+        if held is None or line.strip() not in held:
+            return False
+        self.excused += 1
+        return True
 
 
 # A data: URI's base64 payload: what an embedded font or picture spells is chance.
@@ -624,7 +689,7 @@ EMBEDDED_DATA = re.compile(r"(data:[\w.+-]+/[\w.+-]+(?:;[\w.+-]+=[\w.+-]+)*;base
 
 
 def hits_in(
-    text: str, patterns: list[tuple[re.Pattern[str], str]], anything: re.Pattern[str]
+    text: str, patterns: list[tuple[re.Pattern[str], str]], anything: re.Pattern[str], held: Held | None = None
 ) -> Iterator[tuple[int, str]]:
     # the payload goes, its line stays: line numbers keep their meaning
     text = EMBEDDED_DATA.sub(r"\1", text)
@@ -633,7 +698,7 @@ def hits_in(
     for number, line in enumerate(text.splitlines(), 1):
         if anything.search(line):
             for pattern, kind in patterns:
-                if pattern.search(line):
+                if pattern.search(line) and not (held and held.excuses(pattern, line)):
                     yield number, kind
 
 
@@ -683,6 +748,24 @@ def self_test() -> int:
         "what follows a payload on its line still counts",
         list(hits_in(font + " mod 2207", found.patterns(), any_of(found.patterns()))) == [(1, "Nexus mod id")],
     )
+
+    # ids the public tree already carried where the sweep last passed clean (v0.5)
+    shared = Identifiers(set())
+    for digits, kind in (("2207", "Nexus mod id"), ("2391", "Nexus file id"), ("4242001", "Steam account id")):
+        shared.number(digits, kind)
+    check("a number inside a longer one sets nothing aside", shared.set_aside_ids(["group 22070, v2.2391\n"]) == 0)
+    check("an embedded payload sets no id aside", shared.set_aside_ids(["src:url(data:font/woff2;base64,AA2207/x=)"]) == 0)
+    check("a Steam account's number is never set aside", shared.set_aside_ids(["userdata/4242001\n"]) == 0)
+    check("an id the clean tree carried collides, and stays in the search",
+          shared.set_aside_ids(["let mod = 2207;\n"]) == 1 and {"2207", "2391", "4242001"} <= set(shared.ids))
+    held = Held(shared.held)
+    ids = shared.patterns()
+    check("a hit on a line the clean tree held is set aside and counted",
+          not list(hits_in("    let mod = 2207;\n", ids, any_of(ids), held)) and held.excused == 1)
+    check("a new line holding the same id still counts (General, PR #2)",
+          list(hits_in("const fixture = { modId: 2207 };\n", ids, any_of(ids), held)) == [(1, "Nexus mod id")])
+    check("an id that collides nowhere is never excused",
+          list(hits_in("let mod = 2391;\n", ids, any_of(ids), held)) == [(1, "Nexus file id")])
 
     # the tip: a retired word committed at HEAD but edited away on disk still counts
     retired = forbidden_patterns(["Quillborne", "qbm"])
@@ -838,6 +921,15 @@ def main() -> int:
                 f"privacy sweep: {aside} save name(s) were already words of this repo at {BEFORE_SAVES[:7]}, before it read a save; "
                 "a hit on one could not be told from the repo's own text, so they are set aside"
             )
+    collide = 0
+    if found.ids:
+        try:
+            clean = clean_texts(SWEPT_CLEAN)
+        except (OSError, subprocess.CalledProcessError):
+            clean = []
+            print(f"privacy sweep: the repo where the sweep last passed clean ({SWEPT_CLEAN[:7]}) could not be read, so no id was set aside")
+        collide = found.set_aside_ids(clean)
+    held = Held(found.held)
     patterns = found.patterns()
     anything = any_of(patterns)
     retired = forbidden_patterns(args.forbid)
@@ -854,7 +946,7 @@ def main() -> int:
         except OSError:
             continue
         tree[relative.as_posix()] = text
-        for number, kind in [*hits_in(text, patterns, anything), *hits_in(text, retired, any_retired)]:
+        for number, kind in [*hits_in(text, patterns, anything, held), *hits_in(text, retired, any_retired)]:
             hits += 1
             print(f"{relative}:{number}: holds a {kind}")
 
@@ -869,11 +961,11 @@ def main() -> int:
         tip, tip_versions, tip_message = "", [], ""
         print("privacy sweep: the tip could not be read, so the retired words were checked in the working tree only")
     for blob, path, text in versions:
-        for number, kind in hits_in(text, patterns, anything):
+        for number, kind in hits_in(text, patterns, anything, held):
             hits += 1
             print(f"history {first_commit_with(blob)} {path}:{number}: holds a {kind}")
     for sha, body in messages:
-        for number, kind in hits_in(body, patterns, anything):
+        for number, kind in hits_in(body, patterns, anything, held):
             hits += 1
             print(f"message {sha}:{number}: holds a {kind}")
     for path, number, kind in tip_hits(tip_versions, tree, retired):
@@ -883,6 +975,11 @@ def main() -> int:
         hits += 1
         print(f"tip message {tip}:{number}: holds a {kind}")
 
+    if collide:
+        print(
+            f"privacy sweep: {collide} Nexus id(s) were already numbers of this repo at or before {SWEPT_CLEAN[:7]}, where the sweep "
+            f"last passed clean; {held.excused} hit(s) on lines the repo held then are set aside, and a line written since still counts"
+        )
     if pictures := picture_count(path.relative_to(REPO) for path in files):
         print(f"privacy sweep: {pictures}: look at every one that shows the window before a push")
     where = f"in the working tree and at the tip {tip}" if tip else "in the working tree only"

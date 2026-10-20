@@ -99,8 +99,10 @@ export interface ModOption {
   trail: string[];
 }
 
-/** v0.3: "download" — the stone fetched this exact file from Nexus itself. */
-export type LinkSource = "filename" | "homepage" | "md5" | "manual" | "download";
+/** v0.3: "download" — the stone fetched this exact file from Nexus itself. v0.5: "joined" — the
+ *  player's word that the package is a version of a file another package in the mods folder is
+ *  pinned to (WINDOW-CONTRACT § v0.5, The player's word). */
+export type LinkSource = "filename" | "homepage" | "md5" | "manual" | "download" | "joined";
 
 export interface NexusLink {
   modId: number;
@@ -518,6 +520,9 @@ export interface UpdateRow {
   state: UpdateStateView;
   pageUrl: string | null;
   checkedMs: number | null;
+  /** v0.5: on a family's lead, the older versions of its file still in the mods folder, newest
+   *  first; empty otherwise. An older version has no row of its own. */
+  older: OlderVersionView[];
 }
 
 export interface OptionDetail {
@@ -578,6 +583,13 @@ export interface LibraryPackage {
   adult: boolean;
   /** At least one option of it takes part in a conflict. */
   conflicted: boolean;
+  /** v0.5: its place among the versions of one Nexus file in the mods folder; null when no other
+   *  version of the same file is there (WINDOW-CONTRACT § v0.5, Versions of one file). */
+  family: FamilyView | null;
+  /** v0.5 (ruling 10): the stone asks whether this package is an older version of another
+   *  package's file; null when there is nothing to ask (WINDOW-CONTRACT § v0.5, The player's
+   *  word). */
+  versionQuestion: VersionQuestion | null;
   /** Empty for a package that yielded no options (its `problems` say why). */
   tree: TreeNode[];
 }
@@ -623,6 +635,9 @@ export interface InstallPlanView {
   writes: PlannedWrite[];
   totalBytes: number;
   warnings: PlanWarning[];
+  /** v0.5: the installs of other versions of the same file whose place this install takes, in
+   *  the same journaled step (their removals run first, and a failure rolls both back). */
+  replaces: ReplacesView[];
   /** A full sentence when the install cannot run. */
   refused: string | null;
 }
@@ -635,6 +650,10 @@ export interface InstallResultView {
   durationMs: number;
   /** The game is running: paks and new loose files load at the next launch. */
   restartNeeded: boolean;
+  /** v0.5: older versions moved to the older-versions folder after the install committed. */
+  putAway: PutAwayView[];
+  /** v0.5: a sentence when an older version could not be moved; the install stands. */
+  putAwayFailed: string | null;
 }
 
 export type RemovalAction =
@@ -1003,6 +1022,9 @@ export interface Settings {
   veil: VeilMode;
   /** Check Nexus on launch when the last check is older than 12 hours. Default true. */
   autoCheckUpdates: boolean;
+  /** v0.5: THE MUSTER's chosen character (`MusterSlot.character`), or null for the character of
+   *  the newest save. Private like the names it is made from: never logged. Default null. */
+  musterCharacter: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1129,6 +1151,12 @@ export interface MusterSlot {
   /** The Arisen's summary, null when the slot would not open (then `problem` says why). */
   arisen: MusterSlotArisen | null;
   problem: SaveReason | null;
+  /** v0.5: the character the slot belongs to, 16 hex digits: the Arisen with their main pawn,
+   *  within one Steam account (WINDOW-CONTRACT § v0.5, THE MUSTER by character). Made from
+   *  private names, so it is private too: never logged. Null when the slot would not open. */
+  character: string | null;
+  /** v0.5: the main pawn's name, the player's own: shown, never logged. */
+  mainPawnName: string | null;
 }
 
 export interface MusterSlotArisen {
@@ -1211,4 +1239,134 @@ export interface MusterPawnTraits {
 export interface MusterCreator {
   level: number;
   vocation: Named;
+}
+
+// ---------------------------------------------------------------------------
+// v0.5 — versions of one file (WINDOW-CONTRACT § v0.5): one entry per Nexus
+// file, an install that replaces the other version's, and the older-versions
+// folder beside the mods folder. THE MUSTER by character is in the v0.4 types
+// above (MusterSlot.character, MusterSlot.mainPawnName, Settings.musterCharacter).
+// ---------------------------------------------------------------------------
+
+/** v0.5: a package's place among the versions of one Nexus file in the mods folder. */
+export interface FamilyView {
+  /** The newest version's package id; this package's own id when it leads. */
+  lead: string;
+  /** This package's Nexus file version, when Nexus named one. */
+  version: string | null;
+  /** On the lead only: the older versions still in the mods folder, newest first. Empty on
+   *  an older version. */
+  older: OlderVersionView[];
+}
+
+/** v0.5 (ruling 10): is this package a version of another package's file? The file names say
+ *  it is likely; only the player's answer joins them. */
+export interface VersionQuestion {
+  /** The newest package of that file in the mods folder (its family's lead when it has one). */
+  ofPackageId: string;
+  ofFileName: string;
+  /** That package's Nexus file version, when Nexus named one. */
+  ofVersion: string | null;
+  /** File names both hold, folders and case ignored, modinfo.ini and screenshots left out. */
+  sharedFiles: number;
+  /** How many file names this package holds, counted the same way. */
+  files: number;
+}
+
+/** v0.5: an older version of a file, still in the mods folder. */
+export interface OlderVersionView {
+  packageId: string;
+  fileName: string;
+  version: string | null;
+  /** Options of it in your world now (journal installs). */
+  installed: number;
+  /** Its options that are the same option as one of the lead's: an install of the lead's
+   *  takes its place (WINDOW-CONTRACT § v0.5, Install replaces). An option of it that is not
+   *  listed here is one only this version holds. The window reads the pairing from here and
+   *  never works it out itself. */
+  matches: OlderOptionMatch[];
+}
+
+/** v0.5: an option of an older version and the lead's option that is the same option. */
+export interface OlderOptionMatch {
+  /** The older version's option. */
+  optionId: string;
+  /** The lead's option an install of which takes its place. */
+  leadOptionId: string;
+  /** The older version's option is in your world now. */
+  installed: boolean;
+}
+
+/** v0.5: an install of another version of the same file that an install plan replaces. */
+export interface ReplacesView {
+  /** The installed option the plan uninstalls first. */
+  optionId: string;
+  name: string;
+  /** The version it belongs to, when Nexus named one. */
+  version: string | null;
+  /** How many of its files the replace removes or hands back. */
+  removals: number;
+}
+
+/** v0.5: an older version moved out of the mods folder. */
+export interface PutAwayView {
+  /** Its name in the mods folder. */
+  fileName: string;
+  /** Its name in the older-versions folder: the same name, or ` (2)` … when that one was taken. */
+  landedAs: string;
+}
+
+/** v0.5: what "keep only the newest" would do to one file's versions. */
+export interface KeepNewestPlanView {
+  /** The family's lead. */
+  packageId: string;
+  /** The file name of the version kept: the newest one with an install, else the lead. Null
+   *  only when the package is in no family. */
+  keeps: string | null;
+  /** The installs of older versions it uninstalls. */
+  uninstalls: ReplacesView[];
+  /** The older versions' file names it then moves to the older-versions folder. */
+  putsAway: string[];
+  /** A full sentence when it cannot run: the package is the only version of its file, no
+   *  version is older than the one kept, the game folder or its journal cannot be read, or an
+   *  uninstall it needs is refused (the game holds a pak open). */
+  refused: string | null;
+}
+
+/** v0.5: the put-away an install makes, made again (`retry_put_away`). */
+export interface PutAwayResultView {
+  /** What moved, in the install's order. */
+  putAway: PutAwayView[];
+  /** A sentence naming what would not move, and why; null when everything moved. */
+  putAwayFailed: string | null;
+}
+
+export interface KeepNewestResultView {
+  uninstalled: number;
+  putAway: PutAwayView[];
+  /** A sentence when an older version could not be moved; the uninstalls stand. */
+  putAwayFailed: string | null;
+}
+
+/** v0.5: the older-versions folder beside the mods folder. */
+export interface OlderShelfView {
+  /** The folder exists (it is made at the first put-away). */
+  exists: boolean;
+  /** Archives and folders in it, by name. */
+  items: OlderShelfItem[];
+}
+
+export interface OlderShelfItem {
+  fileName: string;
+  size: number;
+  /** The Nexus mod it is linked to, from nexus.json, when it was linked before it was put away. */
+  modName: string | null;
+  version: string | null;
+  /** A newer version of the same file is in the mods folder now. */
+  newerInMods: boolean;
+}
+
+export interface BringBackResult {
+  /** Its name in the mods folder again: the same name, or ` (2)` … when that one was taken. */
+  landedAs: string;
 }

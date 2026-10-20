@@ -6,6 +6,9 @@
 // v0.2: the NEXUS line — the mod's category and tags as the pillar's quiet
 // chips (pressing one toggles that facet), "Nexus #id" as the door to the
 // mod's page, and an honest line when the stone has no labels for it.
+// v0.5 (#00015 R18.4): an option of a family says, under its kinds, how it
+// stands against the file's other versions, and carries the door that needs:
+// `Install v1.3…` (THE CROSSING carries the replace) or `Keep only the newest…`.
 import { computed } from "vue";
 import type { OptionDetail } from "@/types/rift";
 import { useWorld } from "@/composables/useWorld";
@@ -15,6 +18,22 @@ import { usePreflight } from "@/composables/usePreflight";
 import { useSettings } from "@/composables/useSettings";
 import { useDownloads } from "@/composables/useDownloads";
 import { useNexusAccount } from "@/composables/useNexusAccount";
+import { useLibrary } from "@/composables/useLibrary";
+import { useVersions } from "@/composables/useVersions";
+import {
+  installedFromOlder,
+  ASK_DETAIL_DOOR,
+  MANUAL_DOOR,
+  MANUAL_LINE,
+  askDetailLine,
+  joinCandidates,
+  leadOptionLine,
+  olderOptionLine,
+  olderPlace,
+  stackedUnder,
+  versionName,
+  type DetailLine,
+} from "@/services/versions";
 import { kindsPresent, formatDate, plural } from "@/services/format";
 import { adultnessOf, veils } from "@/services/ledger";
 import ConflictMap from "./ConflictMap.vue";
@@ -56,6 +75,46 @@ const unlabeledLine = computed(() =>
     : "No Nexus labels yet: the stone learns them at the next update check.",
 );
 const veiled = computed(() => veils(settings.value.veil, adultnessOf(detail.labels)));
+
+// --- v0.5: the option among the versions of its file ---------------------
+const library = useLibrary();
+const versions = useVersions();
+const familyLine = computed<{ text: string; door: DetailLine | null } | null>(() => {
+  const packages = library.packages.value;
+  const pkg = packages.find((p) => p.package.id === detail.package.id);
+  if (!pkg?.family) return null;
+  const lead = versionName(pkg.family.version, pkg.package.fileName);
+  const place = olderPlace(packages, pkg.package.id);
+  if (place) {
+    const leadName = versionName(place.lead.family?.version ?? null, place.lead.package.fileName);
+    return { text: olderOptionLine(lead, leadName), door: null };
+  }
+  const installed = installedHere.value;
+  const older = installedFromOlder(pkg, option.value.id, installed) ?? stackedUnder(pkg, option.value.id, installed);
+  if (!older) return null;
+  const line = leadOptionLine(versionName(older.version, older.fileName), lead, installed);
+  return { text: line.text, door: line };
+});
+/** R18.18.1 / R18.18.6: the player's word in the family slot. A question shows
+ *  its line and `Show both versions…` (no yes or no here: you answer where the
+ *  two are drawn); a package the stone does not ask about, linked to its mod and
+ *  to no file while a file of that mod is pinned, gets the one manual door. */
+const wordLine = computed<{ text: string; door: string } | null>(() => {
+  if (familyLine.value) return null;
+  const packages = library.packages.value;
+  const pkg = packages.find((p) => p.package.id === detail.package.id);
+  if (!pkg) return null;
+  if (pkg.versionQuestion) return { text: askDetailLine(pkg.versionQuestion), door: ASK_DETAIL_DOOR };
+  return joinCandidates(pkg, packages).length ? { text: MANUAL_LINE, door: MANUAL_DOOR } : null;
+});
+const installLabel = computed(() =>
+  familyLine.value?.door?.door === "install" ? familyLine.value.door.doorLabel : "Install…",
+);
+
+async function keepOnlyTheNewest(): Promise<void> {
+  versions.open(detail.package.id);
+  await versions.beginKeepNewest(detail.package.id);
+}
 
 const update = computed(() => (detail.update?.state.kind === "updateAvailable" ? detail.update.state.newer : null));
 
@@ -191,19 +250,32 @@ function crumb(name: string): void {
       <KindBadge v-for="k in kindsPresent(option.kinds)" :key="k" :kind="k" :count="option.kinds[k]" />
     </div>
 
+    <p v-if="familyLine && !planning" class="odetail__family">{{ familyLine.text }}</p>
+    <div v-if="wordLine && !planning" class="odetail__word">
+      <p class="odetail__family">{{ wordLine.text }}</p>
+      <RiftButton @click="versions.openQuestion(detail.package.id)">{{ wordLine.door }}</RiftButton>
+    </div>
+
     <div v-if="!planning" class="odetail__doors">
       <RiftButton
         v-if="!installedHere"
         variant="primary"
-        :busy="world.planning.value"
+        :busy="world.planning.value || world.writing.value"
         :disabled="option.menuOnly"
         reason="A menu entry installs nothing. Pick one of its variants."
         @click="world.beginInstall()"
-        >Install…</RiftButton
+        >{{ installLabel }}</RiftButton
       >
-      <RiftButton v-else variant="danger" :busy="world.planning.value" @click="world.beginUninstall()"
+      <RiftButton
+        v-else
+        variant="danger"
+        :busy="world.planning.value || world.writing.value"
+        @click="world.beginUninstall()"
         >Uninstall…</RiftButton
       >
+      <RiftButton v-if="familyLine?.door?.door === 'keepNewest'" variant="primary" @click="keepOnlyTheNewest()">{{
+        familyLine.door.doorLabel
+      }}</RiftButton>
       <RiftButton @click="nav.openPackage(detail.package.id, option.name)">Open in package</RiftButton>
       <RiftButton @click="preflight.reveal(detail.package.path)">Show in archive</RiftButton>
     </div>
@@ -357,6 +429,23 @@ function crumb(name: string): void {
   display: flex;
   gap: 6px;
   margin-top: var(--rs-space-3);
+}
+/* v0.5 (R18.4): the option among its file's versions, under the kinds */
+.odetail__family {
+  margin: var(--rs-space-3) 0 0;
+  color: var(--rs-text);
+  font-size: var(--rs-text-sm);
+  line-height: 1.45;
+}
+/* R18.18.1 / R18.18.6: the player's word, one line and one Secondary door */
+.odetail__word {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--rs-space-2) var(--rs-space-3);
+}
+.odetail__word .odetail__family {
+  flex: 1 1 24ch;
 }
 .odetail__doors {
   display: flex;

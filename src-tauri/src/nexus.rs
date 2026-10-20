@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use rift_catalog::PackageLabels;
-use rift_core::{NexusLink, Package, PackageId};
+use rift_core::{LinkSource, NexusLink, Package, PackageId};
 use rift_nexus::{ModFilesReport, NexusError, NexusMod, V1Quota};
 
 use crate::dto::{self, NexusQuota, UpdateBadge, UpdateRow, UpdateStateView};
@@ -118,6 +118,13 @@ pub struct LinkRecord {
     pub state_mod_id: Option<u64>,
     #[serde(default)]
     pub checked_ms: Option<u64>,
+    /// v0.5 (ruling 10): the link the package had before the player joined it to another
+    /// package's file, `None` for the catalog's guess. Read only while the link is `joined`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub joined_over: Option<NexusLink>,
+    /// v0.5 (ruling 10): the file groups the player said this package is not a version of.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declined_groups: Vec<u64>,
 }
 
 impl NexusStore {
@@ -142,10 +149,47 @@ impl NexusStore {
     }
 
     /// The last verdict for this package's current link, if it still applies.
-    fn verdict(&self, package: &Package, link: &NexusLink) -> Option<&LinkRecord> {
+    fn verdict(&self, id: &PackageId, link: &NexusLink) -> Option<&LinkRecord> {
         self.packages
-            .get(&package.id.0)
+            .get(&id.0)
             .filter(|record| record.state.is_some() && record.state_mod_id == Some(link.mod_id))
+    }
+
+    /// A check that named this package's exact file as another package's newer one, while this
+    /// package has no verdict of its own (v0.5: a version just downloaded, whose older version's
+    /// check led to it). Any record `nexus.json` keeps counts, an older version put away in the
+    /// older-versions folder too; the latest such check wins.
+    fn vouched(&self, package: &Package, link: &NexusLink) -> Option<&LinkRecord> {
+        let file_id = link.file_id?;
+        self.packages
+            .iter()
+            .filter(|(id, _)| **id != package.id.0)
+            .map(|(_, record)| record)
+            .filter(|record| record.state_mod_id == Some(link.mod_id))
+            .filter(|record| match record.state.as_ref() {
+                Some(UpdateStateView::UpdateAvailable { newer }) => newer.file_id == file_id,
+                Some(UpdateStateView::LocalArchived { newer: Some(newer) }) => {
+                    newer.file_id == file_id
+                }
+                _ => false,
+            })
+            .max_by_key(|record| record.checked_ms)
+    }
+
+    /// The link `nexus.json` keeps for a package id, whether or not the package is on the shelf
+    /// (v0.5: a version in the older-versions folder keeps its record there); `None` when the
+    /// record holds none or the player unlinked it.
+    pub fn record_link(&self, id: &PackageId) -> Option<NexusLink> {
+        self.packages
+            .get(&id.0)
+            .filter(|record| !record.unlinked)
+            .and_then(|record| record.link.clone())
+    }
+
+    /// The mod's name on Nexus as the package's last check heard it, while that check still
+    /// applies to its link.
+    pub fn mod_name(&self, id: &PackageId, link: &NexusLink) -> Option<String> {
+        self.verdict(id, link)?.mod_name.clone()
     }
 
     /// A pasted link (or a fresh MD5 match) replaces whatever was there.
@@ -167,6 +211,58 @@ impl NexusStore {
         record.unlinked = false;
     }
 
+    /// v0.5 (ruling 10): the player's word that `package`, whose link is `link`, is a version of
+    /// the file `group_id` names. The link keeps its mod, file id, version and upload time and
+    /// takes the group, `source: Joined`; the link the record held before stays beside it for
+    /// [`NexusStore::part`].
+    pub fn join(&mut self, package: &Package, link: NexusLink, group_id: u64) {
+        let before = self.record_link(&package.id);
+        self.set_link(
+            package,
+            NexusLink {
+                group_id: Some(group_id),
+                source: LinkSource::Joined,
+                ..link
+            },
+        );
+        if let Some(record) = self.packages.get_mut(&package.id.0) {
+            record.joined_over = before;
+        }
+    }
+
+    /// v0.5 (ruling 10): takes a `joined` link back to the one the package had before, and
+    /// remembers the group as a no. False when the link is not `joined`.
+    pub fn part(&mut self, package: &Package) -> bool {
+        let Some(record) = self.packages.get_mut(&package.id.0) else {
+            return false;
+        };
+        let Some(link) = record.link.take_if(|l| l.source == LinkSource::Joined) else {
+            return false;
+        };
+        record.link = record.joined_over.take();
+        if let Some(group_id) = link.group_id {
+            if !record.declined_groups.contains(&group_id) {
+                record.declined_groups.push(group_id);
+            }
+        }
+        true
+    }
+
+    /// v0.5 (ruling 10): the player's no, `package` is not a version of `group_id`'s file.
+    pub fn decline(&mut self, package_id: &PackageId, group_id: u64) {
+        let record = self.packages.entry(package_id.0.clone()).or_default();
+        if !record.declined_groups.contains(&group_id) {
+            record.declined_groups.push(group_id);
+        }
+    }
+
+    /// v0.5 (ruling 10): the file groups the player said this package is not a version of.
+    pub fn declined(&self, id: &PackageId) -> &[u64] {
+        self.packages
+            .get(&id.0)
+            .map_or(&[], |record| record.declined_groups.as_slice())
+    }
+
     /// The player removed the link.
     pub fn unlink(&mut self, package: &Package) {
         self.packages.insert(
@@ -181,11 +277,19 @@ impl NexusStore {
     /// One package's row on the Nexus page.
     pub fn row(&self, package: &Package) -> UpdateRow {
         let link = self.link_for(package);
-        let verdict = link.as_ref().and_then(|l| self.verdict(package, l));
-        let state = match (&link, verdict) {
-            (None, _) => UpdateStateView::Unlinked,
-            (Some(_), Some(record)) => record.state.clone().unwrap_or(UpdateStateView::NotChecked),
-            (Some(_), None) => UpdateStateView::NotChecked,
+        let own = link.as_ref().and_then(|l| self.verdict(&package.id, l));
+        let vouched = match (&link, own) {
+            (Some(l), None) => self.vouched(package, l),
+            _ => None,
+        };
+        let verdict = own.or(vouched);
+        let state = match (&link, own, vouched) {
+            (None, _, _) => UpdateStateView::Unlinked,
+            (Some(_), Some(record), _) => {
+                record.state.clone().unwrap_or(UpdateStateView::NotChecked)
+            }
+            (Some(_), None, Some(_)) => UpdateStateView::Current,
+            (Some(_), None, None) => UpdateStateView::NotChecked,
         };
         let local_version = link
             .as_ref()
@@ -201,19 +305,35 @@ impl NexusStore {
             state,
             page_url: link.as_ref().map(|l| rift_nexus::mod_page_url(l.mod_id)),
             checked_ms: verdict.and_then(|r| r.checked_ms),
+            older: Vec::new(),
+        }
+    }
+
+    /// The file the package's last check named as newer than its own, while that check still
+    /// applies to its link (v0.5: one of the family rule's two ties).
+    pub fn newer_file_id(&self, id: &PackageId, link: &NexusLink) -> Option<u64> {
+        match self.verdict(id, link)?.state.as_ref()? {
+            UpdateStateView::UpdateAvailable { newer } => Some(newer.file_id),
+            UpdateStateView::LocalArchived { newer: Some(newer) } => Some(newer.file_id),
+            _ => None,
         }
     }
 
     /// The badge on a search card: `None` when the package is not linked.
     pub fn badge(&self, package: &Package) -> Option<UpdateBadge> {
         let link = self.link_for(package)?;
-        Some(
-            match self.verdict(package, &link).and_then(|r| r.state.as_ref()) {
-                Some(UpdateStateView::UpdateAvailable { .. }) => UpdateBadge::Available,
-                Some(UpdateStateView::Current) => UpdateBadge::Current,
-                _ => UpdateBadge::Unknown,
-            },
-        )
+        let Some(verdict) = self.verdict(&package.id, &link) else {
+            return Some(if self.vouched(package, &link).is_some() {
+                UpdateBadge::Current
+            } else {
+                UpdateBadge::Unknown
+            });
+        };
+        Some(match verdict.state.as_ref() {
+            Some(UpdateStateView::UpdateAvailable { .. }) => UpdateBadge::Available,
+            Some(UpdateStateView::Current) => UpdateBadge::Current,
+            _ => UpdateBadge::Unknown,
+        })
     }
 
     /// Record one package's check: the pinned link (when the check pinned
@@ -371,7 +491,16 @@ pub fn judge(
             },
         };
     };
-    let pinned = rift_nexus::pin_link(link, files);
+    // A joined link keeps the group the player's word gave it (ruling 10): a pin copies the
+    // listed file's group, which v1's file list leaves out, and the join would dissolve under
+    // a source that still reads `joined`. Only `Take it back` parts it.
+    let pinned = rift_nexus::pin_link(link, files).map(|pin| match link.source {
+        LinkSource::Joined => NexusLink {
+            group_id: link.group_id,
+            ..pin
+        },
+        _ => pin,
+    });
     let effective = pinned.as_ref().unwrap_or(link);
     let state = rift_nexus::update_state(effective, mod_info, files);
     CheckOutcome {
@@ -561,6 +690,58 @@ mod tests {
             "the pin is remembered"
         );
         assert_eq!(store.badge(&pkg), Some(UpdateBadge::Available));
+    }
+
+    #[test]
+    fn a_check_keeps_the_group_a_joined_link_took_by_the_players_word() {
+        // A pasted file URL, joined to group 31: its file is listed with no group, as v1 lists.
+        let joined = NexusLink {
+            mod_id: 2207,
+            file_id: Some(2391),
+            group_id: Some(31),
+            sqid: None,
+            version: None,
+            uploaded_ms: None,
+            source: LinkSource::Joined,
+        };
+        let mut listed = file(
+            2391,
+            "Rk4vLmN2Q",
+            "8",
+            1_791_987_780_000,
+            FileCategory::Main,
+        );
+        listed.group_id = None;
+        let report = ModFilesReport {
+            files: BTreeMap::from([(2207, vec![listed])]),
+            refused: BTreeMap::new(),
+        };
+        let outcome = judge(&joined, &published(), &report);
+        let pinned = outcome
+            .pinned
+            .clone()
+            .expect("the check pins the listed file");
+        assert_eq!(pinned.group_id, Some(31), "the join stands");
+        assert_eq!(pinned.source, LinkSource::Joined);
+        assert_eq!(
+            pinned.uploaded_ms,
+            Some(1_791_987_780_000),
+            "the pin still adds"
+        );
+
+        let mut store = NexusStore::new();
+        let pkg = package(None);
+        store.set_link(&pkg, joined);
+        store.record_check(&pkg, outcome, 42);
+        assert_eq!(store.link_for(&pkg).and_then(|l| l.group_id), Some(31));
+
+        // any other link takes the listed file's group, as before
+        let manual = NexusLink {
+            source: LinkSource::Manual,
+            ..pinned
+        };
+        let outcome = judge(&manual, &published(), &report);
+        assert_eq!(outcome.pinned.and_then(|l| l.group_id), None);
     }
 
     #[test]

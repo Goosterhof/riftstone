@@ -18,10 +18,10 @@
 //! so the window's refetch of `get_labels` and its searches see the new labels.
 //! A find changes neither: it only asks.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use rift_core::{LinkSource, NexusLink, Package, PackageFormat, PackageId, RiftError};
+use rift_core::{LinkSource, NexusLink, OptionId, Package, PackageFormat, PackageId, RiftError};
 use rift_nexus::{ModFilesReport, NexusMod};
 
 use crate::account;
@@ -31,27 +31,45 @@ use crate::dto::{
     NexusSummary, UpdateRow, UpdateStateView, UpdatesPhase, UpdatesProgressEvent, UpdatesView,
 };
 use crate::events;
+use crate::family::Families;
 use crate::library::Shelf;
 use crate::nexus::{auto_check_due, judge, nexus_error, quota_view, NexusStore};
 use crate::persist;
 use crate::state::{lock, read, write, AppState};
 
-/// One row per package that has options or a link.
-fn rows(store: &NexusStore, shelf: &Shelf) -> Vec<UpdateRow> {
+/// One row per package that has options or a link; v0.5: one per family, the lead's, carrying
+/// its older versions (an older version has no row of its own).
+fn rows(store: &NexusStore, shelf: &Shelf, installs: &HashSet<OptionId>) -> Vec<UpdateRow> {
+    let families = Families::of_shelf(shelf, store);
+    let installed = |id: &OptionId| installs.contains(id);
     shelf
         .packages()
         .iter()
         .filter(|p| !p.options.is_empty() || store.link_for(p).is_some())
-        .map(|p| store.row(p))
+        .filter(|p| !families.is_older(&p.id))
+        .map(|p| {
+            let mut row = store.row(p);
+            if let Some(members) = families.family(&p.id) {
+                row.older = families.older_versions(shelf, &members[1..], &installed);
+            }
+            row
+        })
         .collect()
+}
+
+/// The options in the game now, for the rows' install counts.
+fn installed_options(state: &AppState) -> HashSet<OptionId> {
+    state.journal_installs().into_keys().collect()
 }
 
 /// The Nexus side of the overview, with the stored key's standing and (once
 /// validated) its account ([`crate::account`]).
 pub fn summary(state: &AppState, shelf: &Shelf) -> NexusSummary {
+    // The journal is read before the store is locked: one lock order everywhere.
+    let installs = installed_options(state);
     let (last_check_ms, rows) = {
         let store = lock(&state.nexus);
-        (store.last_check_ms, rows(&store, shelf))
+        (store.last_check_ms, rows(&store, shelf, &installs))
     };
     let has_api_key = state.has_api_key.load(Ordering::SeqCst);
     let (key, account) = if has_api_key {
@@ -81,10 +99,11 @@ pub fn summary(state: &AppState, shelf: &Shelf) -> NexusSummary {
 
 pub fn get_updates_impl(state: &AppState) -> UpdatesView {
     let shelf = state.shelf();
+    let installs = installed_options(state);
     let store = lock(&state.nexus);
     UpdatesView {
         last_check_ms: store.last_check_ms,
-        rows: rows(&store, &shelf),
+        rows: rows(&store, &shelf, &installs),
     }
 }
 

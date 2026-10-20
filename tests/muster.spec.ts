@@ -39,8 +39,23 @@ function tab(place: string): HTMLElement {
   return el;
 }
 
+/** v0.5: a character's row in the Characters listbox, found by the invented names it shows. */
+function characterRow(name: string): HTMLElement {
+  const rows = [...document.querySelectorAll<HTMLElement>('[aria-label="Characters"] [role="option"]')];
+  const row = rows.find((r) => textOf(r).includes(name));
+  if (!row) throw new Error(`No character row for ${name}`);
+  return row;
+}
+
+/** A slot apart by its row, a character's slot through the head's slot menu (#00015 R18.20). */
 async function pickSlot(slotId: string, what: string): Promise<void> {
-  slotRow(slotId).click();
+  const apart = document.querySelector<HTMLElement>(`[role="option"][data-slot="${slotId}"]`);
+  if (apart) apart.click();
+  else {
+    document.querySelector<HTMLElement>('[role="combobox"]')?.click();
+    await until(() => !!document.getElementById(`muster-slotopt-${slotId}`), `the menu entry for ${slotId}`);
+    document.getElementById(`muster-slotopt-${slotId}`)?.click();
+  }
   await until(() => text().includes(what), what);
 }
 
@@ -52,12 +67,12 @@ function gearRow(slot: string): string {
 }
 
 describe("THE MUSTER — the fifth room", () => {
-  it("should open on 5 from any room, marked as the current page, the focus on the picked slot", async () => {
+  it("should open on 5 from any room, marked as the current page, the focus on the shown character", async () => {
     await openMuster();
     const entry = [...document.querySelectorAll(".navlink")].find((b) => textOf(b).includes("THE MUSTER"));
     expect(entry?.getAttribute("aria-current")).toBe("page");
     expect(textAt(".muster__title")).toBe("THE MUSTER");
-    await until(() => document.activeElement === slotRow("data009Slot"), "the focus on Slot 9");
+    await until(() => document.activeElement === characterRow("Odalric"), "the focus on Odalric");
   });
 
   it("should stay live while no world answers, and 1 should return to NO WORLD ANSWERS (R17.2)", async () => {
@@ -93,7 +108,7 @@ describe("THE MUSTER — every state of R17.22", () => {
 
   it("should show THIS SAVE WON'T OPEN on a damaged slot, its rail ember, the slot list still there", async () => {
     await openMuster();
-    expect(textOf(slotRow("data003Slot"))).toContain("won't open");
+    expect(textOf(slotRow("data003Slot").closest('[role="group"]') ?? document.body)).toContain("won't open");
     await pickSlot("data003Slot", "THIS SAVE WON'T OPEN");
     expect(text()).toContain("The stone couldn't read data003Slot: the file is damaged inside.");
     expect(text()).toContain("The stone only reads saves, so it is exactly as it was.");
@@ -112,7 +127,7 @@ describe("THE MUSTER — every state of R17.22", () => {
     await until(() => folder.mock.calls.length === 1, "the folder opened");
     expect(folder.mock.calls[0]).toStrictEqual(["data001Slot"]);
     button("Pick another slot").click();
-    await until(() => document.activeElement === slotRow("data009Slot"), "the newest slot that opens");
+    await until(() => document.activeElement === characterRow("Odalric"), "the newest character");
   });
 
   it("should show THE GAME IS SAVING once, then the party when the save settles", async () => {
@@ -282,21 +297,29 @@ describe("THE MUSTER — the tab line (R17.8)", () => {
 });
 
 describe("THE MUSTER — the keyboard (R17.27)", () => {
-  it("should move through the slots without reading, and read on Enter or Space", async () => {
+  it("should move through the characters and the slots apart without reading, and read on Enter or Space", async () => {
     await openMuster();
-    await until(() => document.activeElement === slotRow("data009Slot"), "the focus on Slot 9");
+    await until(() => document.activeElement === characterRow("Odalric"), "the focus on Odalric");
     const read = vi.spyOn(spine(), "getMuster");
-    for (let i = 0; i < 3; i += 1) press("ArrowDown");
+    press("ArrowDown");
+    expect(document.activeElement).toBe(slotRow("data003Slot"));
+    press("ArrowDown");
     await flushPromises();
     expect(document.activeElement).toBe(slotRow("data001Slot"));
     expect(read).not.toHaveBeenCalled();
     press("Home");
-    expect(document.activeElement).toBe(slotRow("data009Slot"));
+    expect(document.activeElement).toBe(slotRow("data003Slot"));
+    press("ArrowUp");
+    expect(document.activeElement).toBe(characterRow("Odalric"));
+    // R18.18: the character already shown, on its newest save, reads nothing
+    press("Enter");
+    await flushPromises();
+    expect(read).not.toHaveBeenCalled();
     press("ArrowDown");
     press("Enter");
     await until(() => read.mock.calls.length === 1, "one read");
-    expect(read.mock.calls[0]).toStrictEqual(["data008Slot"]);
-    await until(() => slotRow("data008Slot").getAttribute("aria-selected") === "true", "Slot 8 picked");
+    expect(read.mock.calls[0]).toStrictEqual(["data003Slot"]);
+    await until(() => slotRow("data003Slot").getAttribute("aria-selected") === "true", "Slot 3 picked");
     press("End");
     press(" ");
     await until(() => read.mock.calls.length === 2, "a second read");
@@ -305,7 +328,7 @@ describe("THE MUSTER — the keyboard (R17.27)", () => {
 
   it("should reach Sable's gear by →, End and ↓, and step members with [ and ]", async () => {
     await openMuster();
-    await until(() => document.activeElement === slotRow("data009Slot"), "the focus on Slot 9");
+    await until(() => document.activeElement === characterRow("Odalric"), "the focus on Odalric");
     press("ArrowRight");
     await until(() => document.activeElement === tab("arisen"), "the Arisen's tab");
     press("ArrowRight");
@@ -416,7 +439,10 @@ describe("THE MUSTER — THE RE-CARVING (R17.25)", () => {
       return read(slotId);
     });
     backend.gameSaved();
-    await until(() => text().includes("THE GAME IS SAVING"), "the refused re-read");
+    // v0.5, Bold Choice 22: following, a save still being written holds the sheet
+    await until(() => text().includes("the game is saving in Slot 9"), "the refused re-read");
+    expect(text()).not.toContain("THE GAME IS SAVING");
+    expect(document.querySelector('[role="tablist"]')).not.toBeNull();
     backend.gameSaved();
     await until(() => text().includes("CHANGED"), "the carved count");
     expect(textAt(".muster__changed")).toBe("5 CHANGED");

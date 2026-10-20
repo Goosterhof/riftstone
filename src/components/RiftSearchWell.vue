@@ -26,8 +26,8 @@ defineExpose({ focus: () => input.value?.focus(), el: input });
 </script>
 
 <template>
-  <label class="rs-well">
-    <span class="rs-sr-only">Search</span>
+  <div class="rs-well">
+    <label for="rift-search" class="rs-sr-only">Search</label>
     <svg class="rs-well__glyph" viewBox="0 0 16 16" aria-hidden="true">
       <circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6" />
       <path d="M10 10l4 4" stroke="currentColor" stroke-width="1.6" />
@@ -46,8 +46,20 @@ defineExpose({ focus: () => input.value?.focus(), el: input });
       @keydown.down.prevent="emit('descend')"
       @keydown.enter.prevent="emit('submit')"
     />
-    <kbd class="rs-well__key" title="Press / or Ctrl+K to search">/</kbd>
-  </label>
+    <button
+      v-if="modelValue"
+      type="button"
+      class="rs-well__clear"
+      aria-label="Clear search"
+      @click="
+        emit('clear');
+        input?.focus();
+      "
+    >
+      ×
+    </button>
+    <kbd v-else class="rs-well__key" title="Press / or Ctrl+K to search">/</kbd>
+  </div>
 </template>
 
 <style scoped>
@@ -103,5 +115,18 @@ defineExpose({ focus: () => input.value?.focus(), el: input });
   border-radius: var(--rs-radius-chip);
   color: var(--rs-muted);
   font: 600 var(--rs-text-xs) var(--rs-font-mono);
+}
+.rs-well__clear {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: none;
+  color: var(--rs-text);
+  font: 400 22px / 1 var(--rs-font-sans);
+  cursor: pointer;
+}
+.rs-well__clear:hover {
+  background: var(--rs-misthi);
 }
 </style>

@@ -15,6 +15,7 @@ use crate::dto::{
     LibraryPackage, LibraryView, ModsFolderView, OptionDetail, OptionRef, PackageDetail,
     PackageSummary, PayloadKinds, SearchQuery, SearchResult, ThumbnailSize, TreeNode, TreeNodeKind,
 };
+use crate::family::{self, Families};
 use crate::nexus::NexusStore;
 use crate::state::{lock, AppState};
 use crate::thumbs;
@@ -36,9 +37,23 @@ pub fn search_impl(state: &AppState, query: &SearchQuery) -> Vec<SearchResult> {
     let hits = shelf.search(&query.into(), &is_installed);
     let store = lock(&state.nexus);
     let mut badges: HashMap<&PackageId, Option<dto::UpdateBadge>> = HashMap::new();
+    // v0.5: an older version's answer goes when the lead's same option answers this search too
+    // (WINDOW-CONTRACT § v0.5, One entry); one only the older version answers stays.
+    let families = Families::of_shelf(&shelf, &store);
+    let answered: HashSet<&OptionId> = hits.iter().map(|hit| &hit.option_id).collect();
     hits.iter()
         .filter_map(|hit| {
             let (package, option) = shelf.option(&hit.option_id)?;
+            let lead = families
+                .lead(&package.id)
+                .filter(|lead| **lead != package.id)
+                .and_then(|lead| shelf.package(lead));
+            if lead
+                .and_then(|lead| family::lead_match(option, package, lead))
+                .is_some_and(|same| answered.contains(&same.id))
+            {
+                return None;
+            }
             let update = *badges
                 .entry(&package.id)
                 .or_insert_with(|| store.badge(package));
@@ -340,6 +355,8 @@ pub fn get_library_impl(state: &AppState) -> LibraryView {
     let installs = state.journal_installs();
     let is_installed = |id: &OptionId| installs.contains_key(id);
     let store = lock(&state.nexus);
+    let families = Families::of_shelf(&shelf, &store);
+    let mut questions = family::version_questions(&shelf, &store, &families);
     let mut packages: Vec<LibraryPackage> = shelf
         .packages()
         .iter()
@@ -360,6 +377,8 @@ pub fn get_library_impl(state: &AppState) -> LibraryView {
                     .options
                     .iter()
                     .any(|o| snapshot.conflicted.contains(&o.id.0)),
+                family: families.view(&shelf, &package.id, &is_installed),
+                version_question: questions.remove(&package.id),
                 tree: package_tree(package, &is_installed, &snapshot.conflicted),
             }
         })

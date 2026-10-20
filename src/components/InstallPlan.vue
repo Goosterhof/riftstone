@@ -4,6 +4,11 @@
 // its one-click recovery; only a hard refusal disables Install. Mirrors as
 // THE RETURN for uninstall. The plan shows the user's own data — the spine's
 // writes and removals — never a guess.
+// v0.5 (#00015 R18.5, R18.9): an install that takes another version's place
+// shows TAKES THE PLACE OF between the warnings and the rows, muted, never
+// ember; once landed, each older version put away is told here, once, with
+// `Bring it back`. The plan never names which versions will go: the landed
+// state does, from `putAway`.
 import { computed } from "vue";
 import type { PlanWarning, PlannedRemoval, PlannedWrite } from "@/types/rift";
 import { useWorld } from "@/composables/useWorld";
@@ -11,9 +16,25 @@ import { usePreflight, REFRAMEWORK_URL } from "@/composables/usePreflight";
 import { useNavigation } from "@/composables/useNavigation";
 import { useSearch } from "@/composables/useSearch";
 import { useToasts } from "@/composables/useToasts";
+import { useLibrary } from "@/composables/useLibrary";
+import { useVersions } from "@/composables/useVersions";
 import { formatBytes, plural } from "@/services/format";
 import { skippedRows } from "@/services/payloadTree";
 import { removalWords, returnedSummary, returnHeading } from "@/services/ledger";
+import {
+  PUT_AWAY_SENTENCE,
+  REPLACES_HEAD,
+  backLine,
+  crossingFamily,
+  familyMembers,
+  putAwayFailedTail,
+  putAwayLine,
+  removalsText,
+  rollbackLine,
+  stepSentence,
+  versionLabel,
+  versionName,
+} from "@/services/versions";
 import type { RecoveryKind } from "@/services/voice";
 import FailureNotice from "./FailureNotice.vue";
 import RiftButton from "./RiftButton.vue";
@@ -21,6 +42,8 @@ import RiftButton from "./RiftButton.vue";
 const world = useWorld();
 const preflight = usePreflight();
 const nav = useNavigation();
+const library = useLibrary();
+const versions = useVersions();
 
 interface Line {
   glyph: string;
@@ -150,6 +173,33 @@ const progressLine = computed(() => {
   return `Placing ${p.filesDone} of ${p.filesTotal} files…`;
 });
 
+// --- v0.5: the replace block and the put-away lines -----------------------
+const replaces = computed(() => (returning.value ? [] : (world.plan.value?.replaces ?? [])));
+const planPackageId = computed(() => world.detail.value?.package.id ?? "");
+const familyAt = computed(() => crossingFamily(library.packages.value, planPackageId.value, replaces.value));
+/** The version the plan installs, as the copy names it. */
+const newName = computed(() => {
+  const pkg = library.packages.value.find((p) => p.package.id === planPackageId.value);
+  return versionName(pkg?.family?.version ?? null, pkg?.package.fileName ?? world.plan.value?.name ?? "");
+});
+const putAwayRows = computed(() =>
+  (world.landed.value?.putAway ?? []).map((view) => ({
+    view,
+    name: world.landedNames.value.get(view.fileName) ?? view.fileName,
+  })),
+);
+/** The older versions a failed put-away left in the mods folder, named together. */
+const stayingNames = computed(() => {
+  const place = familyMembers(library.packages.value, planPackageId.value);
+  const left = (place?.members ?? []).slice((place?.index ?? 0) + 1).filter((m) => m.installed === 0);
+  const names = left.map((m) => versionName(m.family?.version ?? null, m.package.fileName));
+  return names.length ? names.join(" and ") : "the older version";
+});
+const lineFailure = (landedAs: string) => {
+  const state = versions.lineState(landedAs);
+  return typeof state === "object" ? state : null;
+};
+
 async function recover(kind: RecoveryKind): Promise<void> {
   if (kind === "retry") await world.retry();
   else if (kind === "copyDetails") await copyDetails();
@@ -214,6 +264,27 @@ async function copyDetails(): Promise<void> {
       >
     </div>
 
+    <!-- R18.9: the replace, between the warnings and the files; muted, never ember -->
+    <section
+      v-if="replaces.length && (world.stage.value === 'plan' || world.stage.value === 'crossing')"
+      class="plan__replaces"
+      :aria-label="REPLACES_HEAD"
+    >
+      <h4 class="plan__subhead rs-inscription">{{ REPLACES_HEAD }}</h4>
+      <ul class="plan__replace-rows">
+        <li v-for="r in replaces" :key="r.optionId" class="plan__replace">
+          <span class="plan__replace-glyph" aria-hidden="true">↺</span>
+          <span class="plan__replace-name">{{ r.name }}</span>
+          <span v-if="r.version" class="plan__replace-ver">{{ versionLabel(r.version) }}</span>
+          <span class="plan__replace-count">{{ removalsText(r.removals) }}</span>
+        </li>
+      </ul>
+      <p v-if="familyAt.rollbackFrom" class="plan__step is-text">{{ rollbackLine(familyAt.rollbackFrom) }}</p>
+      <p class="plan__step">{{ stepSentence(replaces, newName) }}</p>
+      <!-- §18.17: whenever a member is older than the package installed, a rollback's too -->
+      <p v-if="familyAt.olderRemain" class="plan__step is-faint">{{ PUT_AWAY_SENTENCE }}</p>
+    </section>
+
     <p v-if="world.stage.value === 'crossing'" class="plan__note" aria-live="polite">{{ progressLine }}</p>
     <p v-else-if="world.stage.value === 'returning'" class="plan__note" aria-live="polite">
       Removing {{ plural(fileCount, "file") }}…
@@ -224,6 +295,32 @@ async function copyDetails(): Promise<void> {
       <span class="plan__carved rs-inscription">IN YOUR WORLD</span>
       <RiftButton size="sm" @click="nav.go('world')">Show in load order</RiftButton>
     </div>
+    <!-- R18.5: each older version put away, told once, here and never in the toast -->
+    <template v-if="world.stage.value === 'landed' && world.landed.value">
+      <div v-for="row in putAwayRows" :key="row.view.landedAs" class="plan__away">
+        <p class="plan__away-line">
+          <template v-if="versions.lineState(row.view.landedAs) === 'back'">{{ backLine(row.name) }}</template>
+          <template v-else
+            ><span aria-hidden="true">↧ </span
+            >{{ putAwayLine(row.name, row.view.fileName, row.view.landedAs) }}</template
+          >
+        </p>
+        <RiftButton
+          v-if="versions.lineState(row.view.landedAs) !== 'back'"
+          size="sm"
+          :busy="versions.lineState(row.view.landedAs) === 'busy'"
+          @click="versions.bringBackLine(row.view)"
+          >Bring it back</RiftButton
+        >
+        <p v-if="lineFailure(row.view.landedAs)" class="plan__away-fail" role="alert">
+          {{ lineFailure(row.view.landedAs)?.voiced.voice }} {{ lineFailure(row.view.landedAs)?.voiced.empathy }}
+        </p>
+      </div>
+      <div v-if="world.landed.value.putAwayFailed" class="plan__warn plan__away-warn">
+        <span>{{ world.landed.value.putAwayFailed }} {{ putAwayFailedTail(stayingNames, "install") }}</span>
+        <RiftButton size="sm" :busy="world.retryingPutAway.value" @click="world.retryPutAway()">Try again</RiftButton>
+      </div>
+    </template>
     <div v-else-if="world.stage.value === 'returned'" class="plan__returned" role="status">
       <span class="plan__carved rs-inscription">RETURNED TO THE RIFT</span>
       <p v-if="world.returned.value" class="plan__note">{{ returnedSummary(world.returned.value) }}</p>
@@ -286,6 +383,87 @@ async function copyDetails(): Promise<void> {
 }
 .plan__warn.is-info {
   border-left-color: var(--rs-edgehi);
+}
+/* R18.9: TAKES THE PLACE OF — a §7.8 section head, then plan-like rows */
+.plan__replaces {
+  margin: 0 0 var(--rs-space-3);
+}
+.plan__subhead {
+  margin: 0 0 var(--rs-space-2);
+  font-size: 14px;
+  color: var(--rs-muted);
+  letter-spacing: 0.1em;
+}
+.plan__replace-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.plan__replace {
+  display: flex;
+  align-items: baseline;
+  gap: var(--rs-space-2);
+  margin-bottom: 2px;
+  padding: 6px var(--rs-space-2);
+  background: var(--rs-hearthhi);
+}
+.plan__replace-glyph {
+  flex: none;
+  width: 12px;
+  color: var(--rs-muted);
+  font: 400 var(--rs-text-xs) var(--rs-font-mono);
+}
+.plan__replace-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--rs-text);
+  font: 500 var(--rs-text-sm) var(--rs-font-sans);
+}
+.plan__replace-ver {
+  flex: none;
+  color: var(--rs-muted);
+  font: 400 12px var(--rs-font-mono);
+}
+.plan__replace-count {
+  flex: none;
+  margin-left: auto;
+  color: var(--rs-faint);
+  font: 400 12px var(--rs-font-mono);
+}
+.plan__step {
+  margin: var(--rs-space-2) 0 0;
+  color: var(--rs-muted);
+  font-size: var(--rs-text-sm);
+  line-height: 1.4;
+}
+.plan__step.is-text {
+  color: var(--rs-text);
+}
+.plan__step.is-faint {
+  color: var(--rs-faint);
+}
+/* R18.5: the put-away line under IN YOUR WORLD */
+.plan__away {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--rs-space-2) var(--rs-space-3);
+  margin-bottom: var(--rs-space-2);
+}
+.plan__away-line {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  color: var(--rs-muted);
+  font-size: var(--rs-text-sm);
+  line-height: 1.4;
+}
+.plan__away-fail {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--rs-ember);
+  font-size: var(--rs-text-sm);
 }
 .plan__note {
   margin: 0 0 var(--rs-space-2);

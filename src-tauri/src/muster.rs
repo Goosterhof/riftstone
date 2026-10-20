@@ -445,6 +445,32 @@ fn slot_id(file: &SlotFile, account: Option<u32>) -> String {
     }
 }
 
+/// The character a slot belongs to (v0.5): FNV-1a 64 over the folder's account and the
+/// Arisen's and the main pawn's names, as 16 hex digits. The save holds no playthrough id
+/// (WINDOW-CONTRACT § v0.5), so the names tell characters apart. Made from private names, it is
+/// private too: never logged.
+fn character_of(account: u32, muster: &Muster) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for b in bytes {
+            hash ^= u64::from(*b);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    let name = |member: Option<&rift_muster::Member>| {
+        member
+            .and_then(|m| m.name.as_ref())
+            .map(|n| n.expose().to_owned())
+            .unwrap_or_default()
+    };
+    feed(&account.to_le_bytes());
+    feed(&[0]);
+    feed(name(muster.arisen.as_ref()).as_bytes());
+    feed(&[0]);
+    feed(name(muster.main_pawn.as_ref()).as_bytes());
+    format!("{hash:016x}")
+}
+
 /// `get_muster_slots`: every slot that holds a party (or a problem), newest first.
 pub fn slots_view(state: &AppState) -> MusterSlotsView {
     let (folders, steam, listed) = list(state);
@@ -455,9 +481,9 @@ pub fn slots_view(state: &AppState) -> MusterSlotsView {
     for l in &listed {
         let (time, read) = read_cached(state, &l.path, folders[l.folder].account_id, &accounts);
         let account = numbers.get(&l.folder).copied();
-        let (arisen, problem, slot) = match &read {
+        let (arisen, problem, slot, character, main_pawn_name) = match &read {
             SlotRead::NotASlot => continue,
-            SlotRead::Problem(reason) => (None, Some(*reason), l.file.slot),
+            SlotRead::Problem(reason) => (None, Some(*reason), l.file.slot, None, None),
             SlotRead::Party(m) => (
                 m.arisen.as_ref().map(|a| MusterSlotArisen {
                     name: a.name.as_ref().map(|n| n.expose().to_string()),
@@ -469,6 +495,11 @@ pub fn slots_view(state: &AppState) -> MusterSlotsView {
                 }),
                 None,
                 m.slot,
+                Some(character_of(folders[l.folder].account_id, m)),
+                m.main_pawn
+                    .as_ref()
+                    .and_then(|p| p.name.as_ref())
+                    .map(|n| n.expose().to_string()),
             ),
         };
         slots.push((
@@ -480,6 +511,8 @@ pub fn slots_view(state: &AppState) -> MusterSlotsView {
                 account,
                 arisen,
                 problem,
+                character,
+                main_pawn_name,
             },
         ));
     }

@@ -2426,3 +2426,359 @@ The mock gets `?mock=muster…` scenes with an invented party.
 | main session | `crates/rift-save`, `crates/rift-muster`, `crates/rift-pak` (game, msg), `src-tauri/**`, `src/types/rift.ts` and `src/services/rift.ts` (the contract), `scripts/` (the sweep's `--saves`), the docs |
 | the Artisan | #00015 §17 (the Muster's design), in the lab repo |
 | the Illusionist | `src/**` beyond the contract files, `tests/**`, the mock's Muster scenes |
+
+## § v0.5 — versions of one file, and THE MUSTER by character (investor ask, 2026-10-18)
+
+The ask, in the investor's words, after running 0.4.1: *"i downloaded an update from one of the
+packages and that got installed, now it show as 2 entries in the library and in nexus. can we do
+something about that? And the muster works! But can we do the muster based on character instead of
+save slot? and that when you select a character that's the one that will show up, and then a select
+menu somewhere for when you want to switch saveslot?"* Asked how, they ruled: **put the old version
+away** (installing the newer version replaces the older install in one step, and the older archive
+moves to an older-versions folder beside the mods folder, from which it can come back), and
+**remember the character** (THE MUSTER opens on the character picked last, at their newest save,
+and follows them when the game saves).
+
+The wire is WINDOW-CONTRACT § v0.5, the design #00015 §18.
+
+### The ground truth (measured 2026-10-18)
+
+- **Each version of a file is its own package.** `PackageId::for_archive` hashes the file name and
+  size, so a new version is a new package. A 2026 Nexus name parses to the same display name for
+  every version. v0.3's contract left the old archive where it was ("removing it is the player's
+  act in Explorer").
+- **Today an install of the newer version stacks over the older.** The older install stays
+  underneath (its bytes in `backups/<seq>/`, owner the newer install), and any of its files the
+  newer version lacks stay in the game. That is the investor's state now.
+- **The group id is there when it matters.** An update check stores the pinned link
+  (`record_check`), file and group id included, and a download's link carries the group from the
+  start. A package that showed "update available" was pinned.
+- **The saves hold no playthrough id.**
+  - In all five readable slots of the investor's saves, the Arisen's and the main pawn's record
+    ids (`UniqueIDContext`) were the same, across two characters.
+  - The Arisen's name grouped the slots into two characters, two slots and three, and the levels
+    agreed: close within each character, far apart between them. The main pawn's name agreed within
+    each group and differed between them.
+  - Of the 1,549 leaves of the Arisen's record and the slot's detail, the 29 that agreed within each
+    character and differed between them were all progress (`JobContext`, `HumanStatusContext`);
+    none was an id.
+  - The measurement printed slot numbers, levels and booleans only, from a copy of the folder
+    deleted after it. This record keeps neither: the investor's game is the investor's.
+
+### Rulings taken for the build (main session, 2026-10-18)
+
+1. **RS-2, amended.** The stone still never changes, renames or deletes a file in the mods
+   folder, with one exception. It may move an older version of a file, whole, to
+   `<mods folder> (older versions)` beside it, and move it back at the player's word. The move
+   happens only after the install that superseded it committed, or at the player's own press.
+   It is never a delete or an edit, and it never lands on an existing file.
+2. **A family is proven by Nexus, never guessed.** The same mod and the same file group, or a
+   check that named the other's exact file as newer. Names and sizes never make a family.
+   *Amended by ruling 10:* the player's word is proof too; names may make a question, never a
+   family.
+3. **One entry per file.** The window folds; the spine keeps listing every package, with
+   `family` on each.
+4. **Installing a version replaces the other versions' installs of the same option** in one
+   journaled step. The same option is the same option root, else the same name, else the one
+   installable option each version has (WINDOW-CONTRACT § v0.5, The same option), so a version
+   whose top folder carries its number still replaces its older self. Rolling back to an older
+   version is the same replace; only versions older than the installed one are ever put away.
+5. **The put-away follows the commit.** If a move fails, the install still stands and the window
+   says so.
+6. **Keep only the newest** cleans up a family whose older versions are still installed, the
+   investor's own state included.
+7. **A character is the Arisen with their main pawn, by name, within one account.** The key is
+   private like the names.
+8. **The chosen character is remembered in `settings.json`.** v0.4 kept the pick for the session
+   only; the investor's "that's the one that will show up" overrides that.
+9. **Version 0.5.0.**
+10. **The player's word (investor, 2026-10-19).** The native probe of 0.5.0 on the investor's own
+    library found 0 families. The older version of the very file that started v0.5 is an
+    unpacked folder linked by mod id through Find: no MD5 can pin a folder, and a mod-id link
+    names no file group, so ruling 2 could never tie it to the pinned download beside it. Asked,
+    the investor ruled that the player's word pins it. A package whose link names a mod and no
+    file group may be joined to a file group another package of the same mod is pinned to
+    (`source: "joined"`), and the family rule takes it from there unchanged. The stone asks only
+    when the file names say it is likely, and never joins on its own. A no is remembered per file
+    group, and a join can be taken back (WINDOW-CONTRACT § v0.5, The player's word).
+
+### § rift-nexus (grows: families)
+
+`family.rs`, pure: `families(members: &[FamilyMember]) -> Vec<Family>`.
+- A member is a package id with its effective link (`link_for`) and its last check's newer file id.
+- A family is the connected set under the two ties of ruling 2, ordered newest first: every
+  proof kept (a named member before its namer, a circle of proofs condensed into one block),
+  and among the blocks no proof holds back, the highest priority first (the newest recency among
+  a member and every member whose proofs reach it), then own recency, then file name (the
+  General's review, rounds 1–3, below). `tests/family_order.rs` holds it to that over 30,000
+  invented families. A set of one is no family.
+- Tested on invented links, including the transitive tie and a mixed pinned and unpinned pair
+  that must not fold.
+
+### § rift-deploy (grows: replace)
+
+`plan_install_replacing` and `install_replacing(ctx, journal, package, option, replacing, source,
+progress)`: the reinstall branch of `install` generalised from "the same option" to "these other
+options"; `plan_install` and `install` call them with none.
+- Each replaced install's removal steps (`prepare_uninstall` → `removal_steps`) go into the one
+  intent before the placements, bottom layer first (by journal position), each planned against
+  the journal the removals before it leave. Each replaced install moves through its own
+  temporaries (`{seq}-{n}`), so a path two stacked versions held moves twice without a clash.
+- A failure rolls everything back (`fail_and_roll_back`, which already handles a path touched
+  twice).
+- The new install takes the first replaced install's pak number and its place in the pak load
+  order. The plan reads a path whose top layer is a replaced install as `reinstall`.
+- A replaced install with paks is refused while the game runs, as its own uninstall would be.
+- Tested against the stack rules (`tests/replace_rules.rs`, 7 tests):
+  - a replaced lower layer hands its backups to the layer above;
+  - a replaced top layer restores;
+  - a failure and a crash mid-step roll both back;
+  - two stacked versions replaced at once, bottom first and top first.
+
+### § src-tauri (the spine)
+
+- **Folding the views** (`family.rs`): `get_library`, `get_updates` and `search` compute families
+  from the shelf and `nexus.json` on every call. The DTOs gain `family`, `older` and each older
+  version's `matches` (`lead_match`: the lead's option whose install would take its place).
+  `search` drops an older version's answer when the lead's same option answers too.
+- **A download a check led to:** `NexusStore::row` and `badge` read a package with no verdict of
+  its own as `current` when any record in `nexus.json` (an older version put away included) last
+  named its exact file as newer (`vouched`), so the newer version stays current after the put-away
+  instead of falling back to *not checked*.
+- **Conflicts:** the snapshot drops a conflict whose layers are all versions of one file (the
+  investor's stacked state is an older version installed, not a conflict). It reads the families,
+  so it takes the Nexus store's lock: nothing asks for a snapshot while holding it. `relabel`
+  invalidates the snapshot, so a link or a check that ties a family reads conflicts afresh.
+- **The replace:** `plan_install` and `install` find the replaced installs by the same option
+  (`family::replaced`, `matching_option`) among the family. After the commit, the put-away runs
+  under the deploy lock, before the scan the install requests.
+- **The move:** the downloads' never-overwrite helpers (`occupant`, `rename_new`, `move_new`,
+  `copy_new`) move to a shared `landing` module, used by both downloads and the older-versions
+  folder, with `move_aside` (the next free ` (n)` name, compared case-blind). A folder package
+  moves as a whole folder: a rename, never a copy. The pool of open archives is closed first.
+  When a move takes another name, the version's `nexus.json` record follows it (`move_records`).
+- **New commands** (`commands/versions.rs`): `plan_keep_newest`, `keep_newest`, `put_away`,
+  `get_older_versions`, `bring_back` and `open_older_versions_folder` (#00015 Q18.6).
+- **The Muster:** `slots_view` fills `character` and `mainPawnName`, and `Settings` gains
+  `musterCharacter`, kept only as a 16-hex character key (`persist::character_key`).
+- **Tests:** a spine test per ruling, on invented packages and invented links, and none on the
+  investor's library (`tests/spine_versions.rs`, 11 tests; `spine_muster.rs`'s character test;
+  `spine_ipc.rs`'s versions commands).
+
+### § The window (the Illusionist, after the Artisan's §18 in #00015)
+
+- **The Rift's tree and THE FAR WORLD** fold each family into one entry. THE CROSSING shows what
+  the install replaces. The put-away is told once, with `Bring it back`.
+- **The older-versions shelf** gets a door: where it lives is §18's call.
+- **THE MUSTER** lists characters, keeps a slot menu, and follows or pins.
+- **The mock** gains a family scene (two versions of one file, the older one installed) and a
+  two-character save folder.
+
+### Ownership in the build (v0.5)
+
+| Builder | Owns |
+|---|---|
+| main session | `crates/**`, `src-tauri/**`, `src/types/rift.ts` and `src/services/rift.ts` (the contract), the docs |
+| the Artisan | #00015 §18 (versions in the Rift and THE FAR WORLD, the older-versions shelf, THE MUSTER by character), in the lab repo |
+| the Illusionist | `src/**` beyond the contract files, `tests/**`, the mock's v0.5 scenes |
+
+The window was built by two Illusionists side by side, each on files the other never touched. To
+make that hold, the mock's Muster backend moved whole into `src/services/mock/muster.ts`
+(`createMusterMock`) before either started. A machine restart killed both mid-build and wiped
+their reports; the working tree survived. A third Illusionist wrote the versions side's specs
+against the code they had left, and fixed what those specs found.
+
+### As built (2026-10-18)
+
+- **rift-nexus** (`family.rs`, 5 tests): the family rule as ruling 2 states it, a union-find
+  within each mod, newest first by upload time, file id, then file name.
+- **rift-deploy** (`install_replacing`, `tests/replace_rules.rs`, 7 tests; 178 in the crate): the
+  replaced installs' removals go first in the one intent, bottom layer first, each through its
+  own temporaries (`{seq}-{n}`). The new install takes the first replaced install's pak number. A
+  top-first order, which the first draft used, put `glow 1.0` back instead of the game's own file
+  on the stacked case; the test that caught it stays.
+- **The spine** (`spine_versions.rs` 12 tests, the character test in `spine_muster.rs`, the
+  versions commands through `spine_ipc.rs`, the shape tests in `dto.rs`). The put-away runs inside
+  the install's own deploy closure, after the engine committed, so it holds the deploy lock as the
+  ruling asks; the scan follows by `request_scan`. Three things the window's design asked of the
+  contract came in here: `OlderVersionView.matches` (the same option, worked out once), the
+  conflicts among one family's versions dropped from the snapshot (Q18.3), and
+  `open_older_versions_folder` (Q18.6). Two came from reading the result: an io detail for these
+  moves carries the OS's words only, since the window names the file itself, and `vouched` keeps a
+  download current after the version whose check led to it is put away.
+- **The window** (#00015 §18 as merged with §18.17): 53 new specs over four files for the
+  versions (`versions.spec.ts` 21, `versionsCrossing.spec.ts` 13, `undercroft.spec.ts` 13,
+  `versionsFar.spec.ts` 6), and `musterCharacters.spec.ts` (24, the spacing test among them) beside
+  the grown `muster.spec.ts`. The versions specs found three gaps: Esc from the tree left THE VERSIONS
+  card open, a rollback hid the put-away sentence §18.17 keeps, and the far world's line went stale
+  after an uninstall, because it read `get_updates` instead of the library. A render pass found
+  three more that no spec could see: Vue condenses a leading blank, and a blank between tags that
+  holds a newline, so `Lv 41Warrior` and `data009Slot· following` read joined, and a flex row drops
+  a leading space, so the slot button read `Slot 9· today`. Each is fixed, and a spec now pins the
+  words.
+- **The widths** (§18.14, measured headless on the mock, 1320 × 860 and 1024 × 680):
+  - Q18.1: the lead row is 544 px at 1320, as predicted, and its label keeps 195 px against 88
+    for 12ch, so the older mark never folds there. At 1024 it is 728 and 379.
+  - Q18.2: THE VERSIONS card is 391 px wide (392 predicted), and all three version lines hold on
+    one line.
+  - Q18.8: the slot menu's bottom is at 209 px, inside the 680 px window.
+  - Q18.9: the head's line 2 stays one 28 px line at 1024 in the longest state, followed into
+    another slot.
+  - Q18.10: neither character row's names clip.
+- **The README's frames**: all seven older frames were shot again. They dated from v0.3 and showed
+  four rooms, not five, a staleness v0.4's review missed. Two new frames show the family entry with
+  THE VERSIONS card and the put-away landing. Each one was looked at before the push.
+- **Gates** (Linux bench, `feat/v0.5`): cargo fmt clean, clippy with warnings denied clean, 967
+  tests passed, 0 failed, 11 env-gated benches ignored; npm typecheck 0, lint 0, 433/433 tests in
+  39 files, format:check clean, build clean. The privacy sweep, with the real library, journal,
+  `nexus.json` and save folder as sources, read 0 hits over 332 files, 772 file versions in the
+  history and 51 commit messages.
+- **The sweep at the tip** (2026-10-19): with the four commits pushed, the sweep's sources had
+  grown by one Nexus id, a mod the investor linked after v0.4.1. Its number was already the
+  repo's own, in files v0.5 never touched and in history public since v0.3: 11 hits, none from
+  v0.5. A collision, not a leak, and not a fixture that could be renumbered. Ruled by the
+  investor: the sweep sets aside, and counts, every Nexus id the public tree carried at
+  `SWEPT_CLEAN` (5a01aa5, v0.4.1, where it last passed clean), as it sets aside the save names
+  `BEFORE_SAVES` held; a Steam account's numbers never are. Four self-test checks pin the rule,
+  each seen to fail against its mutant. The rerun read 0 hits, 1 id set aside.
+- **The player's word** (ruling 10, 2026-10-19). The spine (`9efd0e3`): `LinkSource::Joined`; a
+  `nexus.json` record keeps the link it had before a join (`joinedOver`) and the groups the player
+  declined (`declinedGroups`), both skipped when empty; `LibraryPackage.versionQuestion`; the
+  three commands. `spine_word.rs` (5 tests) rebuilds the investor's shape with invented names, and
+  five mutants (a no ignored, a take-back losing the old link, a pinned package asked, the mod
+  check dropped, `modinfo.ini` counted) each turn a test red. The window (#00015 §18.18, Bold
+  Choice 23): the tree's mark and question row, THE VERSIONS card's question form, `by your word`
+  and *Take it back*, the option detail's line and the one manual door, THE FAR WORLD's sub-row,
+  `INSTALLED older`, and YOUR WORLD reloaded on `rift://updates-changed`. `playersWord.spec.ts`
+  (19), five mock scenes (`question`, `questioninstalled`, `questionjoined`, `questionmanual`,
+  `questionrefused`). A headless render pass at 1320 and 1024 looked at the question, the yes, the
+  manual pick and THE FAR WORLD row: 0 page errors. Gates: Rust 973 passed, 0 failed, 11 ignored;
+  window 452/452 in 40 files; typecheck, lint, format and build clean.
+- **The native Windows runs** (MSVC, Rust 1.98.0, `RUSTFLAGS=-D warnings`, `-j 4`). At c372344,
+  after `cargo clean -p riftstone` cleared the stale artifacts behind the first attempt's E0460:
+  953 passed, 0 failed, 11 ignored, and `npm run tauri build` built the 0.5.0 installer
+  (6.15 MiB). Its read-only probe, on copies of the app data and the save folder over the real
+  mods folder, read THE MUSTER by character with 0 page errors and wrote nothing, but found **no
+  family**: the investor's older version was a folder linked by mod id (ruling 10). At 2f410ea,
+  with the player's word: 959 passed, 0 failed, 11 ignored; the installer again (6.18 MiB); and
+  the probe asked about exactly one package, that folder, with all of its file names in the
+  pinned download of its own mod, again with 0 page errors, nothing written and the mods folder's
+  entries unchanged. The probe never answers a question: the yes is the investor's.
+- **Left for the native run:** the Windows-only code v0.5 adds (`landing::move_new`'s
+  `MoveFileExW`, moved from `downloads.rs` unchanged) compiles nowhere but Windows, and THE
+  UNDERCROFT's move has never crossed NTFS. Still open from §18.14: Q18.11 (whether a slot reads as
+  being written mid-save) needs the game itself.
+- **The General's review of PR #2** (2026-10-20, at `3df7eb4`): five issues and six nits. Each
+  issue now has a spec that fails at `3df7eb4` and passes with its fix, each seen failing.
+  - **Install… and Uninstall… stood side by side.** `Keep only the newest…` sat between the
+    Install `v-if` and the Uninstall `v-else`, so the `v-else` paired with it. The door now
+    follows the pair, as R18.4 has it (an extra door, never Uninstall's place). The specs now
+    read the doors in order.
+  - **A named-newer pair lost to the upload times.** A link pasted as a file URL has a file id and
+    no upload time, so the older version led its family. `rift-nexus::family` now orders by that
+    proof first: a member goes next only when no member still waiting was named newer than it.
+    It is a pass over the recency order and not a comparator, because `sort_by` must be given a
+    total order and the proof is a relation between two members.
+  - **A late answer drew on whatever card was open.** A keep-newest plan or result, a yes's
+    landing and a no's close all landed on the card open when the answer came, not the card that
+    asked. `useVersions` now numbers each card the pane shows, and every press that awaits the
+    spine takes that number first. A late answer for a card the player left draws nothing there.
+    A finished keep-newest still says so in a toast, and a failed one in ember.
+  - **Try again lost a move that worked.** The window put the older versions away one by one, and
+    a failure on the second dropped the first from the landing. A new spine command,
+    `retry_put_away(packageId)`, makes the install's own put-away again, under one turn, and
+    answers `{ putAway, putAwayFailed }` as the install does. The window no longer works out the
+    set. The mock's `putawayhalf` scene moves v1.2 on the retry while v1.1 still stays.
+  - Nits: the older mark counts the installed ones (`+2 older, 1 installed`; the README frame was
+    shot again and looked at). The privacy sweep keeps a colliding id in the search and sets aside
+    only its hits on lines the repo held at or before `SWEPT_CLEAN`, so a new fixture still
+    counts. `put_away` reads the family under the turn. A check keeps a joined link's group
+    (v1 lists files with none). The version question needs two shared names, or one name that
+    both packages hold alone: measured read-only on the investor's library, the folder ruling 10
+    was built for shares 5 of 5 and still asks. THE MUSTER follows the slot that following
+    opens, not the newest slot by time, so picking it while the newest is written stays following.
+  - New: 4 Rust tests (2 rift-nexus, 1 spine store, 1 spine_versions, and 2 extended), 8 window
+    specs, 3 sweep self-test checks. Gates on the Linux bench: cargo fmt clean, clippy with
+    warnings denied clean, 977 passed, 0 failed, 11 ignored; npm typecheck 0, lint 0 warnings,
+    460/460 in 40 files, format:check clean, build clean.
+- **The General's second round on PR #2** (2026-10-20, at `43652f1`): 10 of round 1's 11
+  threads resolved, and the specs for issues 1, 3 and 4 went red when their fixes were reverted.
+  Three issues and one nit were left; two issues are on the Heretic's `43652f1` (the
+  `useWorld` landing that returns before its detail reloads, and the lightbox's keys once focus
+  leaves it) and are the Heretic's, fixed in `75ebf56`: a return to the same option before its
+  write finishes now refreshes that option's detail without reviving the earlier plan, and the
+  viewer takes its keys whatever holds the focus, a click on the picture keeping it inside.
+  Four new checks in `roundTwoRegressions.spec.ts` failed at `43652f1`; a fifth, Esc with THE
+  VERSIONS card under the viewer, was already right and stays as a control. Mine:
+  - **Round 1's family order was half fixed.** With X (uploaded 50), A (uploaded 100, which named
+    B newer) and B (no upload time), recency gave A, X, B; A waited on B, so X went first and
+    the oldest led. The order now lifts a named member's recency to its namer's, up a chain of
+    proofs, before it sorts, so the pair sits together and the pass only settles ties. The
+    General's case and a three-step chain each failed at `43652f1`. Asked about cycles (two
+    checks at different times can name each other newer), two- and three-member cycles were
+    specced over every ordering of the input. The lift ends: it runs at most once per member and
+    only raises a member to a recency some member already has. The three-member cycle caught a
+    flaw in the pass: with every cycle member waiting on another, an older outsider went first.
+    The pass now runs one group of equal lifted recency at a time, so a cycle falls back to its
+    sorted order inside its own group, the same however the members are given.
+  - **Nit: the lone shared name still asked for two packages that each hold only the same
+    `config.json`.** The lone-name clause now counts only a name that is no settings or text
+    file, so a one-pak or one-script mod's other version still asks. Its assertion failed
+    against the old clause. The spine, the mock and WINDOW-CONTRACT each name the list, and
+    `settingsExtensions.spec.ts` reads all three and fails when they differ (seen failing on a
+    spine list missing one extension).
+- **The Heretic's usability pass** (`43652f1`, 2026-10-20, from its whole-app Assay at the lab
+  root, `documents/assessments/2026-10-20-riftstone.md`). The investor ruled it stays on v0.5
+  rather than splitting off. Window only: no command, event or type, and the library actions call
+  `open_mods_folder` and `rescan`. Each room in the pillar carries a plain line under its name.
+  The search well gains `Clear search`, and the Rift's answers gain `Open mods folder` and `Scan`,
+  a line reading the active filters with `Clear filters` (the query kept), and `NO MODS MATCH
+  THESE FILTERS` in place of an empty list. The screenshot viewer keeps the keyboard, and an
+  option's detail, plan and landing draw only on the selection that asked
+  (WINDOW-CONTRACT § v0.5, The Rift's library tools). Specs: `selectionLifetime.spec.ts` and
+  `libraryUsability.spec.ts`. The Assay's finding RS-A2 stays open in Known Limitations: a
+  collision rename moves the package before `nexus.json` saves its new id, so a failed save
+  loses a joined folder's family after a restart.
+- **The README frames, round 2** (2026-10-20): all nine shot again from the mock at 1320 × 860
+  on the combined head (`c69dba5` with the docs), 0 page errors each, and each looked at. Every
+  frame shows the pillar's new room lines; the Rift's frames show `Open mods folder` and `Scan`,
+  and the two search frames the `×` in the well. One thing the frames show that no spec states:
+  at 860 px the pillar's taller rooms push the Nexus tags below the fold of the filter column, so
+  only the categories show without a scroll.
+- **The General's third round on PR #2** (2026-10-20, at `7622333`): one issue and two nits.
+  The issue (the Uninstall… door live while an answer is in flight) and one nit (two lines of
+  the viewer no spec held) are the Heretic's. Mine was the family order's third defect in three
+  rounds: A named D newer while B and D named each other, so every member of that group waited,
+  and A went out first. The reviewer's property run (30,000 random families) found 0 violations
+  without a cycle and 480 with one, all this shape. On the General's advice the pass gave way
+  to a procedure with no special cases: the proofs' closure, its circles condensed into blocks,
+  and a topological order taking the ready block with the highest priority. A named member's
+  priority is never below its namer's, so the order is sorted by priority as well as keeping
+  every proof. The hand-picked cases were not enough three times, so `tests/family_order.rs`
+  now gates the rule: 30,000 families of two to five versions, drawn from a fixed seed, with
+  random upload times and file ids, chains, cycles and proofs naming files outside the family.
+  An oracle works out the proofs by search, and each family must keep every member once, keep
+  every proof that no proof leads back from, never let priority rise down the order, and give
+  the same order for four shuffles of its input. At `7622333` it failed at case 249. With the
+  new order it passes, with 952 families carrying a cycle. A mutant that ignores priority fails
+  at case 45. The docblock's claim that Nexus never gives a cycle is gone; the rule handles one.
+  The Heretic's two, in `579eeab`: the option detail now owns its writes per option. An
+  install, uninstall or Undo in flight keeps that option's door busy when the player returns to
+  it, and refuses a second plan or confirmation until the write and its detail refresh finish;
+  success and failure both release it (WINDOW-CONTRACT § v0.5, answers in flight). At `7622333`
+  a revisited door was not busy, and one pending write drew three plans. `roundTwoRegressions.spec.ts`
+  now holds 12 cases, four of them red at `7622333`, and each of the viewer's two lines the
+  General named fails its own spec when mutated.
+- **The General's fourth round on PR #2** (2026-10-20, at `0f9226e`): approved, with three nits,
+  fixed before the merge at the investor's word. The family procedure held, and every docblock
+  and contract sentence was true of the code; 5 of the reviewers' 8 mutants failed the property
+  gate and 3 failed unit tests only. Those three (a block ordered oldest first, the name
+  tie-break reversed, the name alone as tie-break) passed the four properties, so the gate gains
+  three: each cycle sits together, a cycle's members go by rank (own recency, then file name),
+  and between two blocks of one priority a higher-ranked block comes later only when it had to
+  wait on a member outside it not yet placed. The draw now repeats a file id now and then and
+  adds a package of another mod in a quarter of the families, which must stay out of the family.
+  Each of the three mutants now fails the gate (cases 20, 2 and 7). The window contract no longer
+  says THE VERSIONS card keeps the busy-door rule: it guards its landings by card number, and its
+  own writes rely on the spine's deploy lock, under which keep-newest works out its set again.
+  The Heretic's nit, the in-flight check no spec held, is the Heretic's own commit.
