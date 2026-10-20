@@ -66,6 +66,13 @@ const wordFailure = ref<{ voiced: Voiced; details: string; act: WordAct; package
 const joinedLine = ref<string | null>(null);
 /** The one watch waiting for the library's next answer (a join or a take-back landing). */
 let landing: (() => void) | null = null;
+/** Each card the pane shows gets its own number. Every press that awaits the
+ *  spine takes the number first, and an answer that lands after it moved belongs
+ *  to a card the player has left: it never draws on the card open now (General,
+ *  PR #2). Closing counts, so a card closed and opened again is a new card. */
+let shownCard = 0;
+const takeCard = (): number => shownCard;
+const stillShown = (card: number): boolean => card === shownCard;
 
 function stopLanding(): void {
   landing?.();
@@ -81,6 +88,7 @@ const entry = computed<FamilyEntry | null>(
 function open(packageId: string): void {
   const packages = useLibrary().packages.value;
   const place = olderPlace(packages, packageId);
+  shownCard += 1;
   leadId.value = place ? place.lead.package.id : packageId;
   stage.value = "card";
   keepPlan.value = null;
@@ -90,6 +98,7 @@ function open(packageId: string): void {
 }
 
 function close(): void {
+  shownCard += 1;
   leadId.value = null;
   stage.value = "card";
   keepPlan.value = null;
@@ -196,16 +205,21 @@ async function join(): Promise<void> {
   if (!a || !ofId || !pkg || word.value !== "idle") return;
   const packageId = a.packageId;
   const of = ofNameNow();
+  const card = takeCard();
   word.value = "joining";
   wordFailure.value = null;
   try {
     const backend = await rift();
     await backend.joinVersions(packageId, ofId);
   } catch (raw) {
+    if (!stillShown(card)) return;
     word.value = "idle";
     wordFailed(raw, "join", packageId, { of, what: askedKind(pkg), file: pkg.package.fileName });
     return;
   }
+  // closed, or another card opened, while the yes was in flight: the join stands,
+  // and the Rift draws it at the library's next answer, but no card reopens for it
+  if (!stillShown(card)) return;
   whenLibrary(
     () => {
       const now = libraryPackage(packageId);
@@ -233,18 +247,22 @@ async function decline(): Promise<void> {
   const ofId = ofIdNow();
   const pkg = askedPackage.value;
   if (!a || a.manual || !ofId || !pkg || word.value !== "idle") return;
+  const card = takeCard();
+  const of = ofNameNow();
+  const kind = askedKind(pkg);
   word.value = "declining";
   wordFailure.value = null;
   try {
     const backend = await rift();
     await backend.declineVersionQuestion(a.packageId, ofId);
   } catch (raw) {
+    if (!stillShown(card)) return;
     word.value = "idle";
-    wordFailed(raw, "decline", a.packageId, { of: ofNameNow(), what: askedKind(pkg), file: pkg.package.fileName });
+    wordFailed(raw, "decline", a.packageId, { of, what: kind, file: pkg.package.fileName });
     return;
   }
-  const kind = askedKind(pkg);
-  close();
+  // the no is remembered either way; only the card that asked closes
+  if (stillShown(card)) close();
   useToasts().push("rift", keptApartToast(kind));
 }
 
@@ -254,6 +272,7 @@ async function takeBack(packageId: string): Promise<void> {
   const pkg = libraryPackage(packageId);
   if (pkg?.package.nexus?.source !== "joined" || parting.value) return;
   const fileName = pkg.package.fileName;
+  const card = takeCard();
   parting.value = packageId;
   wordFailure.value = null;
   joinedLine.value = null;
@@ -261,12 +280,13 @@ async function takeBack(packageId: string): Promise<void> {
     const backend = await rift();
     await backend.partVersions(packageId);
   } catch (raw) {
-    wordFailed(raw, "part", packageId, { file: fileName });
+    if (stillShown(card)) wordFailed(raw, "part", packageId, { file: fileName });
     return;
   } finally {
     parting.value = null;
   }
   useToasts().push("rift", partedToast(fileName));
+  if (!stillShown(card)) return;
   whenLibrary(
     () => libraryPackage(packageId)?.package.nexus?.source !== "joined",
     () => {
@@ -314,11 +334,16 @@ function nameOfFile(fileName: string): string {
 
 async function beginKeepNewest(packageId: string | null = leadId.value): Promise<void> {
   if (!packageId) return;
+  const card = takeCard();
   try {
     const backend = await rift();
-    keepPlan.value = await backend.planKeepNewest(packageId);
+    const plan = await backend.planKeepNewest(packageId);
+    // a plan only reads: one for a card the player left is dropped, nothing moved
+    if (!stillShown(card)) return;
+    keepPlan.value = plan;
     stage.value = "keepPlan";
   } catch (raw) {
+    if (!stillShown(card)) return;
     const f = asRiftFailure(raw);
     failure.value = { voiced: voice(f, "uninstall"), details: failureDetails(f, "uninstall") };
     stage.value = "failed";
@@ -331,18 +356,28 @@ async function confirmKeepNewest(): Promise<void> {
   const keeps = plan.keeps ? nameOfFile(plan.keeps) : "the newest version";
   const name = familyName();
   keptNames.value = familyNames(useLibrary().packages.value, plan.packageId);
+  const card = takeCard();
   stage.value = "keeping";
   try {
     const backend = await rift();
     const result = await backend.keepNewest(plan.packageId);
-    kept.value = result;
-    stage.value = "kept";
+    // the toast tells it wherever the player is now; the landing draws only on its own card
     useToasts().push("world", keptToast(keeps, name));
     void useUndercroft().load();
+    if (!stillShown(card)) return;
+    kept.value = result;
+    stage.value = "kept";
   } catch (raw) {
     const f = asRiftFailure(raw);
-    failure.value = { voiced: voice(f, "uninstall"), details: failureDetails(f, "uninstall") };
-    stage.value = "failed";
+    const voiced = voice(f, "uninstall");
+    const details = failureDetails(f, "uninstall");
+    if (stillShown(card)) {
+      failure.value = { voiced, details };
+      stage.value = "failed";
+      return;
+    }
+    // the card is gone: the failure is still told, never dropped
+    useToasts().push("ember", voicedLine(voiced), [{ label: "Copy details", run: () => copy(details) }]);
   }
 }
 

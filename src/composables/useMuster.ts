@@ -411,7 +411,9 @@ async function pickSlot(slotId: string): Promise<void> {
   const who = shownCharacter.value;
   if (!who) return;
   newerIds.value = new Set();
-  if (who.slots.at(0)?.slotId === slotId) {
+  // the slot following opens, never merely the newest: while the newest is being
+  // written, picking the slot followed stays following (General, PR #2)
+  if (openTarget(who)?.slotId === slotId) {
     mode.value = "following";
     pinBaseline = null;
   } else {
@@ -495,7 +497,7 @@ async function changedWhilePinned(who: MusterCharacter, open: string): Promise<v
   const since = (s: MusterSlot): boolean => baseline.get(s.slotId) !== s.savedAt;
   const own = who.slots.find((s) => s.slotId === open);
   if (own?.problem === null && since(own)) {
-    if (who.slots.at(0)?.slotId === open) {
+    if (openTarget(who)?.slotId === open) {
       mode.value = "following";
       clearPin();
     } else baseline.set(open, own.savedAt);

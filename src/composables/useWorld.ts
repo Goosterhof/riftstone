@@ -13,14 +13,13 @@ import type {
   InstallProgressEvent,
   InstallResultView,
   OptionDetail,
-  PutAwayView,
   UninstallPlanView,
   UninstallResultView,
 } from "@/types/rift";
 import { asRiftFailure, rift, type RiftFailure } from "@/services/rift";
 import { failureDetails, pick, voice, type VoiceContext, type Voiced } from "@/services/voice";
 import { plural } from "@/services/format";
-import { familyNames, foldFamilies, replacedRollback, replacedToast, versionName } from "@/services/versions";
+import { familyNames, replacedRollback, replacedToast, versionName } from "@/services/versions";
 import { useLibrary } from "./useLibrary";
 import { useNavigation } from "./useNavigation";
 import { useToasts } from "./useToasts";
@@ -244,35 +243,27 @@ async function quietInstall(optionId: string, name: string): Promise<void> {
   }
 }
 
-/** R18.5's `Try again` on a failed put-away: every older member of the
- *  installed package's family left without installs, moved one by one. */
+/** R18.5's `Try again` on a failed put-away: the spine makes the install's
+ *  put-away again (WINDOW-CONTRACT `retry_put_away`). It works out what goes,
+ *  moves what it can and names what would not move, so a move that worked is
+ *  never lost to a later one that failed (General, PR #2). */
 const retryingPutAway = ref(false);
 async function retryPutAway(): Promise<void> {
   const result = landed.value;
   const packageId = detail.value?.package.id;
   if (!result || !packageId || retryingPutAway.value) return;
   retryingPutAway.value = true;
-  let moving: string | null = null;
   try {
-    await useLibrary().load();
-    const entry = foldFamilies(useLibrary().packages.value).find(
-      (e) => e.lead.package.id === packageId || e.older.some((o) => o.pkg.package.id === packageId),
-    );
-    const members = entry ? [entry.lead, ...entry.older.map((o) => o.pkg)] : [];
-    const after = members.slice(members.findIndex((m) => m.package.id === packageId) + 1);
     const backend = await rift();
-    const moved: PutAwayView[] = [];
-    for (const m of after.filter((x) => x.installed === 0)) {
-      moving = m.package.fileName;
-      moved.push(await backend.putAway(m.package.id));
-    }
-    landed.value = { ...result, putAway: [...result.putAway, ...moved], putAwayFailed: null };
-    if (moved.length) void useUndercroft().load();
+    const again = await backend.retryPutAway(packageId);
+    if (again.putAway.length) void useUndercroft().load();
+    // the landing the press came from, still on screen: a later one keeps its own lines
+    if (landed.value !== result) return;
+    landed.value = { ...result, putAway: [...result.putAway, ...again.putAway], putAwayFailed: again.putAwayFailed };
   } catch (raw) {
+    if (landed.value !== result) return;
     const f = asRiftFailure(raw);
-    // the voice names the file the move was about, by its own name (§18.11)
-    const detail = moving ? { ...f.detail, act: "putAway", file: moving } : { ...f.detail, act: "putAway" };
-    const voiced = voice({ kind: f.kind, detail }, "olderVersions");
+    const voiced = voice({ kind: f.kind, detail: { ...f.detail, act: "putAway" } }, "olderVersions");
     landed.value = { ...result, putAwayFailed: voiced.voice };
   } finally {
     retryingPutAway.value = false;

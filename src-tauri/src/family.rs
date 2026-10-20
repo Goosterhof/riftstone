@@ -274,10 +274,14 @@ fn compared_names(entries: &[ArchiveEntry]) -> BTreeSet<String> {
 }
 
 /// The question a package's file names make likely against another's: how many names they
-/// share, when they share one and one's names are all among the other's.
+/// share, when one's names are all among the other's and they share at least two, or both hold
+/// just the one same name (a one-file mod's other version). A single shared name beside others
+/// is too thin: an optional file of the same mod holding only a `config.json` its main file
+/// holds too is no version of it (General, PR #2).
 fn likely_shared(own: &BTreeSet<String>, theirs: &BTreeSet<String>) -> Option<usize> {
     let shared = own.intersection(theirs).count();
-    (shared > 0 && (own.is_subset(theirs) || theirs.is_subset(own))).then_some(shared)
+    let enough = shared >= 2 || (shared == 1 && own.len() == 1 && theirs.len() == 1);
+    (enough && (own.is_subset(theirs) || theirs.is_subset(own))).then_some(shared)
 }
 
 /// Every package the stone asks about (ruling 10, WINDOW-CONTRACT § v0.5, The player's word): a
@@ -409,6 +413,19 @@ mod tests {
             likely_shared(&compared_names(&entries(&["modinfo.ini"])), &zip),
             None,
             "a package of nothing but modinfo.ini is asked about nothing"
+        );
+        let optional = compared_names(&entries(&["reframework/data/lantern_glow.json"]));
+        assert_eq!(
+            likely_shared(&optional, &zip),
+            None,
+            "one shared name beside the other's others is an optional file, not a version"
+        );
+        let pak = compared_names(&entries(&["pak_mods/lantern_glow.pak"]));
+        let pak_again = compared_names(&entries(&["Lantern Glow 1.1/pak_mods/Lantern_Glow.pak"]));
+        assert_eq!(
+            likely_shared(&pak, &pak_again),
+            Some(1),
+            "a one-file mod's other version still asks"
         );
     }
 

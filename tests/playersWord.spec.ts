@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useLibrary, questionKey } from "@/composables/useLibrary";
 import { useNavigation } from "@/composables/useNavigation";
 import { useToasts } from "@/composables/useToasts";
+import { useVersions } from "@/composables/useVersions";
 import { RiftFailure } from "@/services/rift";
 import { voice } from "@/services/voice";
 import { CANDLES_FILE, FOLDER_NAME, familyFileName } from "@/services/mock/versions";
@@ -460,5 +461,85 @@ describe("The window works nothing out (Pattern 013, R18.30)", () => {
       const code = s.replace(/<!--[\s\S]*?-->|\/\/.*$|\/\*[\s\S]*?\*\//gm, "");
       for (const sentence of sentences) expect(code, `${f} composes "${sentence}"`).not.toContain(sentence);
     }
+  });
+});
+
+const unset = (): void => undefined;
+
+/** A spine call held at the gate until the spec lets it answer. */
+function held(): { gate: Promise<void>; open: () => void } {
+  let open = unset;
+  const gate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { gate, open };
+}
+
+describe("The player's word, a card the player left (General, PR #2)", () => {
+  it("should not reopen the card a yes came from when the player closed it while joining", async () => {
+    await wakeAsked("question");
+    const id = folder().package.id;
+    await openQuestionCard();
+    const join = spine().joinVersions.bind(spine());
+    const hold = held();
+    vi.spyOn(spine(), "joinVersions").mockImplementationOnce(async (packageId, ofId) => {
+      await hold.gate;
+      return join(packageId, ofId);
+    });
+    const focusedBefore = useLibrary().focusedKey.value;
+    button("Yes, join them").click();
+    await until(() => useVersions().word.value === "joining", "the yes in flight");
+    useVersions().close();
+    hold.open();
+    // the join stands: the library draws it at its next answer, and no card reopens for it
+    await until(() => pkgBy(FOLDER_NAME).package.nexus?.source === "joined", "the join in the library");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(folder().package.id).toBe(id);
+    expect(card()).toBeNull();
+    expect(useVersions().leadId.value).toBeNull();
+    expect(useLibrary().focusedKey.value).toBe(focusedBefore);
+  });
+
+  it("should keep the card the player opened since when a yes lands", async () => {
+    await wakeAsked("question");
+    await openQuestionCard();
+    const join = spine().joinVersions.bind(spine());
+    const hold = held();
+    vi.spyOn(spine(), "joinVersions").mockImplementationOnce(async (packageId, ofId) => {
+      await hold.gate;
+      return join(packageId, ofId);
+    });
+    button("Yes, join them").click();
+    await until(() => useVersions().word.value === "joining", "the yes in flight");
+    const asked = [folder().package.id, lead().package.id];
+    const other = must(
+      useLibrary().packages.value.find((p) => !asked.includes(p.package.id)),
+      "another package",
+    ).package.id;
+    useVersions().open(other);
+    hold.open();
+    await until(() => folder().package.nexus?.source === "joined", "the join in the library");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(useVersions().leadId.value).toBe(other);
+    expect(useVersions().joinedLine.value).toBeNull();
+  });
+
+  it("should close only the card that asked when a no lands after another opened", async () => {
+    await wakeAsked("question");
+    await openQuestionCard();
+    const decline = spine().declineVersionQuestion.bind(spine());
+    const hold = held();
+    vi.spyOn(spine(), "declineVersionQuestion").mockImplementationOnce(async (packageId, ofId) => {
+      await hold.gate;
+      return decline(packageId, ofId);
+    });
+    button("No, keep them apart").click();
+    await until(() => useVersions().word.value === "declining", "the no in flight");
+    const leadId = lead().package.id;
+    useVersions().open(leadId);
+    hold.open();
+    await until(() => toastLines().includes(keptApartToast("folder")), "the no told");
+    expect(useVersions().leadId.value).toBe(leadId);
+    expect(card()).not.toBeNull();
   });
 });

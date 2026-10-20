@@ -199,12 +199,33 @@ describe("THE CROSSING, landed (R18.5, R18.6)", () => {
     // the install stands; the entry keeps showing the older version
     expect(member("1.3").installed).toBe(1);
     expect(member("1.3").family?.older).toHaveLength(1);
-    const putAway = vi.spyOn(spine(), "putAway");
+    // Try again asks the spine to make the install's put-away again; the window works out no set
+    const retry = vi.spyOn(spine(), "retryPutAway");
+    const one = vi.spyOn(spine(), "putAway");
     again.click();
     await until(() => awayLines().length === 1, "the put-away line after Try again");
-    expect(putAway).toHaveBeenCalledWith(member("1.3").family?.older[0]?.packageId ?? putAway.mock.calls[0]?.[0]);
+    expect(retry).toHaveBeenCalledExactlyOnceWith(member("1.3").package.id);
+    expect(one).not.toHaveBeenCalled();
     expect(document.querySelector(".plan__away-warn")).toBeNull();
     expect(awayLines()[0]).toBe("↧ v1.2 is put away in mods (older versions), beside your mods folder.");
+  });
+
+  it("should keep a move that worked when Try again moves v1.2 and v1.1 still stays (General, PR #2)", async () => {
+    await wakeFamily("putawayhalf");
+    await install(optionOf(member("1.3"), MAIN_NAME));
+    await until(() => document.querySelector(".plan__away-warn") !== null, "the warn line");
+    const shelf = vi.spyOn(spine(), "getOlderVersions");
+    button("Try again").click();
+    await until(() => awayLines().length === 1, "v1.2's put-away line");
+    expect(awayLines()[0]).toBe("↧ v1.2 is put away in mods (older versions), beside your mods folder.");
+    expect(hasButton("Bring it back")).toBe(true);
+    // what would not move is still said, beside the move that worked
+    const warn = must(document.querySelector<HTMLElement>(".plan__away-warn span"), "the warn sentence");
+    expect(textOf(warn).replace(/\s+/g, " ")).toContain(
+      `The stone couldn't move ${familyFileName("1.1")} to mods (older versions): access is denied.`,
+    );
+    // THE UNDERCROFT reads the folder again for the move that worked
+    await until(() => shelf.mock.calls.length > 0, "the undercroft's read");
   });
 
   it("should keep §9's toast and its Undo for an install that replaced nothing", async () => {
@@ -347,5 +368,90 @@ describe("THE RETURN — OLDER VERSIONS (R18.10)", () => {
       () => textOf(card()?.querySelector(".vc__title") ?? document.body).trim() === "VERSIONS OF THIS FILE",
       "back to the card",
     );
+  });
+});
+
+const unset = (): void => undefined;
+
+/** A spine call held at the gate until the spec lets it answer. */
+function held(): { gate: Promise<void>; open: () => void } {
+  let open = unset;
+  const gate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { gate, open };
+}
+
+/** Any package in no family: the card the player opens next. */
+const stranger = (): LibraryPackage =>
+  must(
+    useLibrary().packages.value.find((p) => !p.family),
+    "a package in no family",
+  );
+
+describe("THE RETURN — OLDER VERSIONS, a card the player left (General, PR #2)", () => {
+  it("should drop a keep-newest plan that lands after its card closed and another opened", async () => {
+    await wakeFamily("family");
+    const versions = useVersions();
+    const plan = spine().planKeepNewest.bind(spine());
+    const hold = held();
+    vi.spyOn(spine(), "planKeepNewest").mockImplementationOnce(async (id) => {
+      await hold.gate;
+      return plan(id);
+    });
+    versions.open(member("1.3").package.id);
+    const pressed = versions.beginKeepNewest();
+    versions.close();
+    const other = stranger().package.id;
+    versions.open(other);
+    hold.open();
+    await pressed;
+    expect(versions.leadId.value).toBe(other);
+    expect(versions.stage.value).toBe("card");
+    expect(versions.keepPlan.value).toBeNull();
+  });
+
+  it("should tell a keep-newest that lands after its card closed in a toast, and draw nothing on the card open now", async () => {
+    await wakeFamily("family");
+    const versions = useVersions();
+    versions.open(member("1.3").package.id);
+    await versions.beginKeepNewest();
+    expect(versions.stage.value).toBe("keepPlan");
+    const keep = spine().keepNewest.bind(spine());
+    const hold = held();
+    vi.spyOn(spine(), "keepNewest").mockImplementationOnce(async (id) => {
+      await hold.gate;
+      return keep(id);
+    });
+    const confirmed = versions.confirmKeepNewest();
+    expect(versions.stage.value).toBe("keeping");
+    versions.close();
+    const other = stranger().package.id;
+    versions.open(other);
+    hold.open();
+    await confirmed;
+    expect(versions.leadId.value).toBe(other);
+    expect(versions.stage.value).toBe("card");
+    expect(versions.kept.value).toBeNull();
+    expect(toastLines().some((t) => t.includes(FAMILY_NAME))).toBe(true);
+  });
+
+  it("should tell a keep-newest that fails after its card closed in ember, never on the card open now", async () => {
+    await wakeFamily("family");
+    const versions = useVersions();
+    versions.open(member("1.3").package.id);
+    await versions.beginKeepNewest();
+    const hold = held();
+    vi.spyOn(spine(), "keepNewest").mockImplementationOnce(async () => {
+      await hold.gate;
+      throw new Error("Access is denied.");
+    });
+    const confirmed = versions.confirmKeepNewest();
+    versions.close();
+    hold.open();
+    await confirmed;
+    expect(versions.stage.value).toBe("card");
+    expect(versions.failure.value).toBeNull();
+    expect(useToasts().toasts.value.some((t) => t.tone === "ember")).toBe(true);
   });
 });

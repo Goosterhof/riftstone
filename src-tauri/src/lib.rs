@@ -221,6 +221,7 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         commands::versions::plan_keep_newest,
         commands::versions::keep_newest,
         commands::versions::put_away,
+        commands::versions::retry_put_away,
         commands::versions::get_older_versions,
         commands::versions::bring_back,
         commands::versions::open_older_versions_folder,

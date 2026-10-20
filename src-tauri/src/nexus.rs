@@ -491,7 +491,16 @@ pub fn judge(
             },
         };
     };
-    let pinned = rift_nexus::pin_link(link, files);
+    // A joined link keeps the group the player's word gave it (ruling 10): a pin copies the
+    // listed file's group, which v1's file list leaves out, and the join would dissolve under
+    // a source that still reads `joined`. Only `Take it back` parts it.
+    let pinned = rift_nexus::pin_link(link, files).map(|pin| match link.source {
+        LinkSource::Joined => NexusLink {
+            group_id: link.group_id,
+            ..pin
+        },
+        _ => pin,
+    });
     let effective = pinned.as_ref().unwrap_or(link);
     let state = rift_nexus::update_state(effective, mod_info, files);
     CheckOutcome {
@@ -681,6 +690,58 @@ mod tests {
             "the pin is remembered"
         );
         assert_eq!(store.badge(&pkg), Some(UpdateBadge::Available));
+    }
+
+    #[test]
+    fn a_check_keeps_the_group_a_joined_link_took_by_the_players_word() {
+        // A pasted file URL, joined to group 31: its file is listed with no group, as v1 lists.
+        let joined = NexusLink {
+            mod_id: 2207,
+            file_id: Some(2391),
+            group_id: Some(31),
+            sqid: None,
+            version: None,
+            uploaded_ms: None,
+            source: LinkSource::Joined,
+        };
+        let mut listed = file(
+            2391,
+            "Rk4vLmN2Q",
+            "8",
+            1_791_987_780_000,
+            FileCategory::Main,
+        );
+        listed.group_id = None;
+        let report = ModFilesReport {
+            files: BTreeMap::from([(2207, vec![listed])]),
+            refused: BTreeMap::new(),
+        };
+        let outcome = judge(&joined, &published(), &report);
+        let pinned = outcome
+            .pinned
+            .clone()
+            .expect("the check pins the listed file");
+        assert_eq!(pinned.group_id, Some(31), "the join stands");
+        assert_eq!(pinned.source, LinkSource::Joined);
+        assert_eq!(
+            pinned.uploaded_ms,
+            Some(1_791_987_780_000),
+            "the pin still adds"
+        );
+
+        let mut store = NexusStore::new();
+        let pkg = package(None);
+        store.set_link(&pkg, joined);
+        store.record_check(&pkg, outcome, 42);
+        assert_eq!(store.link_for(&pkg).and_then(|l| l.group_id), Some(31));
+
+        // any other link takes the listed file's group, as before
+        let manual = NexusLink {
+            source: LinkSource::Manual,
+            ..pinned
+        };
+        let outcome = judge(&manual, &published(), &report);
+        assert_eq!(outcome.pinned.and_then(|l| l.group_id), None);
     }
 
     #[test]

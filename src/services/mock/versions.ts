@@ -12,6 +12,7 @@
 //   putaway      familyfresh; installing v1.3's option puts v1.2 away
 //   putawaytaken putaway, with a v1.2 already in the folder: it lands as ` (2)`
 //   putawayfail  putaway, whose move fails after the install committed
+//   putawayhalf  putawayfail with v1.1 too; Try again moves v1.2, and v1.1 still stays
 //   undercroft   v1.3 alone in the mods folder, v1.2 in mods (older versions)
 //   undercroftempty / undercroftnone   the folder empty / never made
 //
@@ -250,7 +251,9 @@ export function questionOf(
     const names = fileNamesOf(other);
     const shared = [...mine].filter((n) => names.has(n)).length;
     const contained = shared === mine.size || shared === names.size;
-    if (shared < 1 || !contained) continue;
+    // two names in common, or the one name each holds (the spine's `likely_shared`)
+    const enough = shared >= 2 || (shared === 1 && mine.size === 1 && names.size === 1);
+    if (!enough || !contained) continue;
     const lead = leadOf(other);
     const newer = (lead.summary.nexus?.uploadedMs ?? 0) > (best?.of.summary.nexus?.uploadedMs ?? 0);
     if (!best || shared > best.shared || (shared === best.shared && newer)) best = { of: lead, shared };
@@ -265,7 +268,7 @@ export function questionOf(
   };
 }
 
-const FAMILY_SCENES = ["family", "familyfresh", "familythree", "putaway", "putawaytaken", "putawayfail"];
+const FAMILY_SCENES = ["family", "familyfresh", "familythree", "putaway", "putawaytaken", "putawayfail", "putawayhalf"];
 const SHELF_SCENES = ["undercroft", "undercroftempty", "undercroftnone"];
 
 /** The scene asks for the family, or for the folder beside the mods folder. */
@@ -284,8 +287,10 @@ export interface VersionScene {
   /** Option ids already installed (the journal's), oldest first. */
   installed: string[];
   shelf: { exists: boolean; items: ShelfEntry[] };
-  /** The put-away after an install fails once (putawayfail). */
+  /** The put-away after an install fails once (putawayfail, putawayhalf). */
   putAwayFails: boolean;
+  /** The put-away after that moves the first older version and fails the rest, once (putawayhalf). */
+  putAwayHalf: boolean;
 }
 
 const mainOf = (pkg: MockPackage): string => pkg.options.find((o) => o.root === MAIN_ROOT)?.id ?? "";
@@ -295,7 +300,8 @@ export function versionScene(scene: ReadonlySet<string>): VersionScene {
     packages: [],
     installed: [],
     shelf: { exists: !scene.has("undercroftnone"), items: [] },
-    putAwayFails: scene.has("putawayfail"),
+    putAwayFails: scene.has("putawayfail") || scene.has("putawayhalf"),
+    putAwayHalf: scene.has("putawayhalf"),
   };
   if (scene.has("undercroft")) {
     const lead = familyPackage("1.3");
@@ -312,10 +318,10 @@ export function versionScene(scene: ReadonlySet<string>): VersionScene {
   const lead = familyPackage("1.3");
   const older = familyPackage("1.2");
   out.packages.push(lead, older);
-  const fresh = ["familyfresh", "putaway", "putawaytaken", "putawayfail"].some((s) => scene.has(s));
+  const fresh = ["familyfresh", "putaway", "putawaytaken", "putawayfail", "putawayhalf"].some((s) => scene.has(s));
   out.installed.push(mainOf(older));
   if (!fresh) out.installed.push(mainOf(lead));
-  if (scene.has("familythree")) out.packages.push(familyPackage("1.1"));
+  if (scene.has("familythree") || scene.has("putawayhalf")) out.packages.push(familyPackage("1.1"));
   if (scene.has("putawaytaken")) {
     // an earlier v1.2 the player set in the folder by hand, under the same name
     const earlier = familyPackage("1.2");

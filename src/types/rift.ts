@@ -1333,6 +1333,14 @@ export interface KeepNewestPlanView {
   refused: string | null;
 }
 
+/** v0.5: the put-away an install makes, made again (`retry_put_away`). */
+export interface PutAwayResultView {
+  /** What moved, in the install's order. */
+  putAway: PutAwayView[];
+  /** A sentence naming what would not move, and why; null when everything moved. */
+  putAwayFailed: string | null;
+}
+
 export interface KeepNewestResultView {
   uninstalled: number;
   putAway: PutAwayView[];

@@ -376,6 +376,45 @@ fn a_put_away_that_cannot_move_leaves_the_install_standing_and_says_so() {
     assert_eq!(v.game_file(EMBER).unwrap(), b"ember 1.1");
     assert!(v.in_mods(OLD), "the older version stays where it was");
     assert_eq!(fs::read(v.older_folder()).unwrap(), b"not a folder");
+
+    // Try again, while the folder is still blocked: the same sentence, nothing moved.
+    let again = versions::retry_put_away_impl(&state, &v.new.0).unwrap();
+    assert!(again.put_away.is_empty());
+    assert!(again.put_away_failed.is_some_and(|s| s.contains(OLD)));
+    assert!(v.in_mods(OLD));
+
+    // The folder is free: the spine works out what goes and says what moved.
+    fs::remove_file(v.older_folder()).unwrap();
+    let again = versions::retry_put_away_impl(&state, &v.new.0).unwrap();
+    assert_eq!(again.put_away_failed, None);
+    assert_eq!(again.put_away.len(), 1);
+    assert_eq!(again.put_away[0].file_name, OLD);
+    assert!(!v.in_mods(OLD) && v.older_folder().join(OLD).exists());
+    assert_eq!(
+        v.installed(&state),
+        [v.option(&v.new)],
+        "the install stands"
+    );
+    state.wait_until_scanned();
+
+    // Nothing older is left: a third press moves nothing and names nothing.
+    let again = versions::retry_put_away_impl(&state, &v.new.0).unwrap();
+    assert!(again.put_away.is_empty() && again.put_away_failed.is_none());
+}
+
+#[test]
+fn trying_a_put_away_again_never_moves_an_older_version_that_still_has_an_install() {
+    let v = versions_bench(true);
+    let state = v.open();
+    // The older version is installed on purpose; the newer one is the lead.
+    deploy::install_impl(&state, &v.option(&v.old)).unwrap();
+    let again = versions::retry_put_away_impl(&state, &v.new.0).unwrap();
+    assert!(again.put_away.is_empty() && again.put_away_failed.is_none());
+    assert!(v.in_mods(OLD) && v.in_mods(NEW));
+    assert!(matches!(
+        versions::retry_put_away_impl(&state, "no such package"),
+        Err(RiftError::EntryNotFound { .. })
+    ));
 }
 
 /// The investor's state from before v0.5: the newer version installed over the older one, both

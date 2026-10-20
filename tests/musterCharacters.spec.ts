@@ -418,6 +418,19 @@ describe("THE MUSTER by character — following and pinned (R18.23–R18.25)", (
     expect(line()).toMatch(/moved from Slot 9/);
   });
 
+  it("should keep following when the slot followed is picked while the newest is being written (General, PR #2)", async () => {
+    await openMuster("musterfollow");
+    spine().musterMock.saveSlot("data008Slot", true);
+    await until(() => line().includes("the game is saving in Slot 8"), "the saving words");
+    expect(buttonSlot()).toBe("Slot 9");
+    // Slot 9 is the save following opens while Slot 8 is written: picking it pins nothing
+    await pickFromMenu("data009Slot");
+    await until(() => entry("data009Slot") === null, "the menu closed");
+    expect(line()).not.toContain("pinned");
+    await until(() => buttonSlot() === "Slot 8", "the move once the save settled", 4000);
+    expect(line()).toMatch(/moved from Slot 9/);
+  });
+
   it("should light the slot number for a frame after a move", async () => {
     await openMuster("musterfollow");
     let litSlot = false;

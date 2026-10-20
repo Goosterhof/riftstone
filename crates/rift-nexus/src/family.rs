@@ -7,8 +7,11 @@
 //! file. A family is every package tied to another that way, directly or through others. Names
 //! and sizes alone never tie anything: they cannot tell a new version from another file.
 //!
-//! The newest leads: the latest upload time, then the higher file id. A member whose link states
-//! neither comes last, by file name.
+//! The newest leads. A check that named another member's file as newer is the one proof of age
+//! the rule holds, so that member comes before the one whose check named it, whatever their links
+//! say about upload times (a link pasted as a file URL carries a file id and no upload time).
+//! Among members no check orders, the latest upload time comes first, then the higher file id. A
+//! member whose link states neither comes last, by file name.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -45,8 +48,12 @@ fn tied(a: &FamilyMember, b: &FamilyMember) -> bool {
         return false;
     }
     let same_group = matches!((la.group_id, lb.group_id), (Some(x), Some(y)) if x == y);
-    let named = |newer: Option<u64>, file: Option<u64>| matches!((newer, file), (Some(n), Some(f)) if n == f);
-    same_group || named(a.newer_file_id, lb.file_id) || named(b.newer_file_id, la.file_id)
+    same_group || named_newer(a, b) || named_newer(b, a)
+}
+
+/// `a`'s last check named `b`'s exact file as its newer file.
+fn named_newer(a: &FamilyMember, b: &FamilyMember) -> bool {
+    matches!((a.newer_file_id, b.link.and_then(|l| l.file_id)), (Some(n), Some(f)) if n == f)
 }
 
 /// Newest first: the latest upload, then the higher file id, then the file name.
@@ -57,6 +64,25 @@ fn newest_first(a: &FamilyMember, b: &FamilyMember) -> Ordering {
         .cmp(&uploaded(a))
         .then_with(|| file(b).cmp(&file(a)))
         .then_with(|| a.file_name.cmp(b.file_name))
+}
+
+/// One family's members, newest first. The named-newer proof decides before the upload times
+/// do: a member goes next only when no member still waiting was named newer than it. That is a
+/// pass over the recency order, not a comparator, because the proof is a relation between two
+/// members and not a total order (`sort_by` must be given one). A cycle of proofs, which Nexus
+/// never gives, falls back to the recency order.
+fn newest_order(members: &[FamilyMember], mut set: Vec<usize>) -> Vec<usize> {
+    set.sort_by(|&a, &b| newest_first(&members[a], &members[b]));
+    let mut out = Vec::with_capacity(set.len());
+    while !set.is_empty() {
+        let ready = |&i: &usize| {
+            !set.iter()
+                .any(|&j| j != i && named_newer(&members[i], &members[j]))
+        };
+        let next = set.iter().position(ready).unwrap_or(0);
+        out.push(set.remove(next));
+    }
+    out
 }
 
 fn root(parent: &mut [usize], mut i: usize) -> usize {
@@ -96,9 +122,8 @@ pub fn families(members: &[FamilyMember]) -> Vec<Family> {
     let mut out: Vec<Family> = sets
         .into_values()
         .filter(|set| set.len() > 1)
-        .map(|mut set| {
-            set.sort_by(|&a, &b| newest_first(&members[a], &members[b]));
-            Family { members: set }
+        .map(|set| Family {
+            members: newest_order(members, set),
         })
         .collect();
     out.sort_by_key(Family::lead);
@@ -208,6 +233,47 @@ mod tests {
         assert!(
             families(&members).is_empty(),
             "the same group number on another mod is another file"
+        );
+    }
+
+    #[test]
+    fn a_check_that_named_the_other_file_as_newer_decides_before_the_upload_times() {
+        // A pasted file URL pins a file id and no upload time; the older package's check
+        // named that file as newer, so it leads although its own upload time sorts first.
+        let older = link(2207, Some(1), None, Some(1_000));
+        let mut pasted = link(2207, Some(2410), None, None);
+        pasted.source = LinkSource::Manual;
+        let members = [
+            member("Lantern Glow 1.2.zip", Some(&older), Some(2410)),
+            member("Lantern Glow 1.3.zip", Some(&pasted), None),
+        ];
+        let families = families(&members);
+        assert_eq!(
+            families,
+            [Family {
+                members: vec![1, 0]
+            }]
+        );
+        assert_eq!(families[0].lead(), 1);
+    }
+
+    #[test]
+    fn a_named_pair_keeps_its_order_among_versions_ordered_by_upload_time() {
+        // v1 named v2 newer; v3 is ordered by upload time only. v2 has no upload time,
+        // so recency alone would put it last, below the v1 that named it newer.
+        let v1 = link(7140, Some(1), Some(9), Some(100));
+        let v2 = link(7140, Some(2), Some(9), None);
+        let v3 = link(7140, Some(3), Some(9), Some(300));
+        let members = [
+            member("v1.zip", Some(&v1), Some(2)),
+            member("v2.zip", Some(&v2), None),
+            member("v3.zip", Some(&v3), None),
+        ];
+        assert_eq!(
+            families(&members),
+            [Family {
+                members: vec![2, 1, 0]
+            }]
         );
     }
 

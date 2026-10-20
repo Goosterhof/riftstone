@@ -32,6 +32,7 @@ import type {
   NxmHandlerView,
   OlderShelfView,
   ParkedRestoreReport,
+  PutAwayResultView,
   PutAwayView,
   NexusSummary,
   OptionDetail,
@@ -191,6 +192,9 @@ export interface RiftBackend {
   keepNewest(packageId: string): Promise<KeepNewestResultView>;
   /** v0.5: move an older version with no installs to the older-versions folder. */
   putAway(packageId: string): Promise<PutAwayView>;
+  /** v0.5: the put-away an install of this package makes, made again: the spine works out what
+   *  goes, moves what it can and names what would not move. */
+  retryPutAway(packageId: string): Promise<PutAwayResultView>;
   /** v0.5: what the older-versions folder holds. */
   getOlderVersions(): Promise<OlderShelfView>;
   /** v0.5: move a put-away version back into the mods folder. */
@@ -215,12 +219,44 @@ function insideTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+
+type VersionsCommands = Pick<
+  RiftBackend,
+  | "planKeepNewest"
+  | "keepNewest"
+  | "putAway"
+  | "retryPutAway"
+  | "getOlderVersions"
+  | "bringBack"
+  | "openOlderVersionsFolder"
+  | "joinVersions"
+  | "partVersions"
+  | "declineVersionQuestion"
+>;
+
+/** v0.5: the versions of one file and the player's word (WINDOW-CONTRACT § v0.5). */
+function versionsCommands(invoke: Invoke): VersionsCommands {
+  return {
+    planKeepNewest: (packageId) => invoke("plan_keep_newest", { packageId }),
+    keepNewest: (packageId) => invoke("keep_newest", { packageId }),
+    putAway: (packageId) => invoke("put_away", { packageId }),
+    retryPutAway: (packageId) => invoke("retry_put_away", { packageId }),
+    getOlderVersions: () => invoke("get_older_versions"),
+    bringBack: (fileName) => invoke("bring_back", { fileName }),
+    openOlderVersionsFolder: () => invoke("open_older_versions_folder"),
+    joinVersions: (packageId, ofPackageId) => invoke("join_versions", { packageId, ofPackageId }),
+    partVersions: (packageId) => invoke("part_versions", { packageId }),
+    declineVersionQuestion: (packageId, ofPackageId) => invoke("decline_version_question", { packageId, ofPackageId }),
+  };
+}
+
 async function tauriBackend(): Promise<RiftBackend> {
   const core = await import("@tauri-apps/api/core");
   const { listen } = await import("@tauri-apps/api/event");
   const opener = await import("@tauri-apps/plugin-opener");
   const dialog = await import("@tauri-apps/plugin-dialog");
-  const invoke = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
+  const invoke: Invoke = <T>(cmd: string, args?: Record<string, unknown>): Promise<T> =>
     core.invoke<T>(cmd, args).catch((raw: unknown) => {
       throw asRiftFailure(raw);
     });
@@ -273,15 +309,7 @@ async function tauriBackend(): Promise<RiftBackend> {
     getMusterSlots: () => invoke("get_muster_slots"),
     getMuster: (slotId) => invoke("get_muster", { slotId }),
     openSavesFolder: (slotId) => invoke("open_saves_folder", { slotId }),
-    planKeepNewest: (packageId) => invoke("plan_keep_newest", { packageId }),
-    keepNewest: (packageId) => invoke("keep_newest", { packageId }),
-    putAway: (packageId) => invoke("put_away", { packageId }),
-    getOlderVersions: () => invoke("get_older_versions"),
-    bringBack: (fileName) => invoke("bring_back", { fileName }),
-    openOlderVersionsFolder: () => invoke("open_older_versions_folder"),
-    joinVersions: (packageId, ofPackageId) => invoke("join_versions", { packageId, ofPackageId }),
-    partVersions: (packageId) => invoke("part_versions", { packageId }),
-    declineVersionQuestion: (packageId, ofPackageId) => invoke("decline_version_question", { packageId, ofPackageId }),
+    ...versionsCommands(invoke),
     on: async (event, handler) => {
       const unlisten = await listen(event, (e) => {
         handler(e.payload as never);

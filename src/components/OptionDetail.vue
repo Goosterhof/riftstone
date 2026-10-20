@@ -266,12 +266,12 @@ function crumb(name: string): void {
         @click="world.beginInstall()"
         >{{ installLabel }}</RiftButton
       >
-      <RiftButton v-if="familyLine?.door?.door === 'keepNewest'" variant="primary" @click="keepOnlyTheNewest()">{{
-        familyLine.door.doorLabel
-      }}</RiftButton>
       <RiftButton v-else variant="danger" :busy="world.planning.value" @click="world.beginUninstall()"
         >Uninstall…</RiftButton
       >
+      <RiftButton v-if="familyLine?.door?.door === 'keepNewest'" variant="primary" @click="keepOnlyTheNewest()">{{
+        familyLine.door.doorLabel
+      }}</RiftButton>
       <RiftButton @click="nav.openPackage(detail.package.id, option.name)">Open in package</RiftButton>
       <RiftButton @click="preflight.reveal(detail.package.path)">Show in archive</RiftButton>
     </div>

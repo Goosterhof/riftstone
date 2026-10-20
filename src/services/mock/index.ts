@@ -124,6 +124,7 @@ import type {
   PlanWarning,
   PlannedRemoval,
   PlannedWrite,
+  PutAwayResultView,
   PutAwayView,
   RemovalAction,
   ReplacesView,
@@ -360,6 +361,7 @@ export function createMockBackend(): MockBackend {
   /** The older-versions folder beside the mods folder (THE UNDERCROFT). */
   const shelf: { exists: boolean; items: ShelfEntry[] } = versionsAt.shelf;
   let putAwayFails = versionsAt.putAwayFails;
+  let putAwayHalf = versionsAt.putAwayHalf;
   // v0.5: the Muster's mock owns its state (./muster.ts); `gameRoot` is read when asked.
   const muster = createMusterMock(scene, () => gameRoot === null, emit, wait);
   let settings: Settings = { veil: "off", autoCheckUpdates: true, musterCharacter: muster.rememberedAtStart() };
@@ -588,13 +590,16 @@ export function createMockBackend(): MockBackend {
     if (!members) return { putAway: [], putAwayFailed: null };
     const older = members.slice(members.indexOf(pkg) + 1).filter((m) => installedIn(m) === 0);
     if (!older.length) return { putAway: [], putAwayFailed: null };
+    const refused = (stay: MockPackage[]): string =>
+      `The stone couldn't move ${stay.map((m) => m.summary.fileName).join(", ")} to mods (older versions): access is denied.`;
     if (putAwayFails) {
       putAwayFails = false;
-      const names = older.map((m) => m.summary.fileName).join(", ");
-      return {
-        putAway: [],
-        putAwayFailed: `The stone couldn't move ${names} to mods (older versions): access is denied.`,
-      };
+      return { putAway: [], putAwayFailed: refused(older) };
+    }
+    if (putAwayHalf && older.length > 1) {
+      putAwayHalf = false;
+      const [first, ...stay] = older;
+      return { putAway: [moveToShelf(first)], putAwayFailed: refused(stay) };
     }
     return { putAway: older.map(moveToShelf), putAwayFailed: null };
   }
@@ -2453,6 +2458,14 @@ export function createMockBackend(): MockBackend {
       const moved = moveToShelf(pkg);
       emit(EVENTS.libraryChanged, {});
       return moved;
+    },
+    async retryPutAway(packageId) {
+      await wait(60);
+      const pkg = packages.find((p) => p.summary.id === packageId);
+      if (!pkg) throw notFound(packageId);
+      const result: PutAwayResultView = putAwayAfter(pkg);
+      if (result.putAway.length) emit(EVENTS.libraryChanged, {});
+      return result;
     },
     async getOlderVersions() {
       await wait(30);

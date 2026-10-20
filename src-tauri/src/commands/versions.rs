@@ -28,7 +28,7 @@ use crate::commands::deploy::refusal;
 use crate::commands::{blocking, not_found, Spine};
 use crate::dto::{
     BringBackResult, KeepNewestPlanView, KeepNewestResultView, OlderShelfItem, OlderShelfView,
-    PutAwayView, ReplacesView,
+    PutAwayResultView, PutAwayView, ReplacesView,
 };
 use crate::events;
 use crate::family::{self, Families};
@@ -323,25 +323,27 @@ pub fn keep_newest_impl(
 }
 
 /// Move one older version with no installs to the older-versions folder, at the player's press.
+/// The family is read under the turn, so a join taken back or a scan that landed since the press
+/// cannot let a version that is no longer an older one move.
 pub fn put_away_impl(state: &Arc<AppState>, package_id: &str) -> Result<PutAwayView, RiftError> {
-    let shelf = state.shelf();
     let id = PackageId(package_id.to_string());
-    let package = shelf.package(&id).ok_or_else(|| not_found(package_id))?;
-    let families = Families::of_shelf(&shelf, &lock(&state.nexus));
-    if families.family(&id).is_none() {
-        return Err(RiftError::refused(alone(package)));
-    }
-    if !families.is_older(&id) {
-        return Err(RiftError::refused(format!(
-            "\"{}\" is the newest version of its file. Only older versions are put away.",
-            package.file_name
-        )));
-    }
-    let folder =
-        family::older_folder(state.library_dir()).ok_or_else(|| RiftError::refused(NO_ROOM))?;
     let view = {
         // One change at a time: no install of it can start while it moves.
         let _turn = state.turn();
+        let shelf = state.shelf();
+        let package = shelf.package(&id).ok_or_else(|| not_found(package_id))?;
+        let families = Families::of_shelf(&shelf, &lock(&state.nexus));
+        if families.family(&id).is_none() {
+            return Err(RiftError::refused(alone(package)));
+        }
+        if !families.is_older(&id) {
+            return Err(RiftError::refused(format!(
+                "\"{}\" is the newest version of its file. Only older versions are put away.",
+                package.file_name
+            )));
+        }
+        let folder =
+            family::older_folder(state.library_dir()).ok_or_else(|| RiftError::refused(NO_ROOM))?;
         let journal = ready_journal(state)?;
         if has_install(&journal, &id) {
             return Err(RiftError::refused(format!(
@@ -354,6 +356,34 @@ pub fn put_away_impl(state: &Arc<AppState>, package_id: &str) -> Result<PutAwayV
     };
     state.request_scan();
     Ok(view)
+}
+
+/// The put-away an install of `package_id` makes after it commits, made again (the landing's
+/// `Try again`): every member older than it left without installs, the family read under one
+/// turn. Like the install's own, it moves what it can and names what would not move, so a
+/// landing never loses a move that worked to a later one that failed.
+pub fn retry_put_away_impl(
+    state: &Arc<AppState>,
+    package_id: &str,
+) -> Result<PutAwayResultView, RiftError> {
+    let id = PackageId(package_id.to_string());
+    let put = {
+        let _turn = state.turn();
+        let shelf = state.shelf();
+        shelf.package(&id).ok_or_else(|| not_found(package_id))?;
+        let journal = ready_journal(state)?;
+        let families = Families::of_shelf(&shelf, &lock(&state.nexus));
+        put_away_older(state, &shelf, families.older_than(&id), |older| {
+            has_install(&journal, older)
+        })
+    };
+    if !put.moved.is_empty() {
+        state.request_scan();
+    }
+    Ok(PutAwayResultView {
+        put_away: put.moved,
+        put_away_failed: put.failed,
+    })
 }
 
 /// A folder version's bytes on disk, as the scan counts a folder package's size.
@@ -654,6 +684,14 @@ pub async fn keep_newest(
 #[tauri::command]
 pub async fn put_away(state: Spine<'_>, package_id: String) -> Result<PutAwayView, RiftError> {
     blocking(&state, move |state| put_away_impl(state, &package_id)).await
+}
+
+#[tauri::command]
+pub async fn retry_put_away(
+    state: Spine<'_>,
+    package_id: String,
+) -> Result<PutAwayResultView, RiftError> {
+    blocking(&state, move |state| retry_put_away_impl(state, &package_id)).await
 }
 
 #[tauri::command]

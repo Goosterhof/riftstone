@@ -2579,6 +2579,14 @@ pub struct KeepNewestPlanView {
     pub refused: Option<String>,
 }
 
+/// v0.5: a put-away made again after one failed: what moved, and the sentence for what did not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PutAwayResultView {
+    pub put_away: Vec<PutAwayView>,
+    pub put_away_failed: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KeepNewestResultView {

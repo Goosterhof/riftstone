@@ -54,6 +54,7 @@ export type SceneName =
   | "putaway"
   | "putawaytaken"
   | "putawayfail"
+  | "putawayhalf"
   | "undercroft"
   | "undercroftempty"
   | "undercroftnone"

@@ -118,7 +118,7 @@ const isAre = (n: number): string => (n === 1 ? "is" : "are");
 // --- R18.1: the lead's row ---------------------------------------------------
 
 export interface OlderMark {
-  /** `+1 older` / `+1 older, installed`. */
+  /** `+1 older` / `+1 older, installed`; `+2 older, 1 installed` when only some are. */
   text: string;
   /** The folded form below the threshold (Q18.1's fallback): `+1`. */
   short: string;
@@ -130,14 +130,22 @@ export interface OlderMark {
 export function olderMark(older: readonly OlderVersionView[]): OlderMark | null {
   if (!older.length) return null;
   const n = older.length;
-  const warn = older.some((o) => o.installed > 0);
+  // count the installed ones: two older versions with only v1.2 installed are
+  // never `+2 older, installed` (General, PR #2)
+  const installed = older.filter((o) => o.installed > 0).length;
+  const warn = installed > 0;
   const versions = n === 1 ? "1 older version" : `${n} older versions`;
-  return {
-    text: warn ? `+${n} older, installed` : `+${n} older`,
-    short: `+${n}`,
-    warn,
-    hidden: warn ? `${versions} of this file, still installed` : `${versions} of this file in your mods folder`,
-  };
+  const some = installed > 0 && installed < n;
+  let text = `+${n} older`;
+  let hidden = `${versions} of this file in your mods folder`;
+  if (some) {
+    text = `+${n} older, ${installed} installed`;
+    hidden = `${versions} of this file, ${installed} still installed`;
+  } else if (warn) {
+    text = `+${n} older, installed`;
+    hidden = `${versions} of this file, still installed`;
+  }
+  return { text, short: `+${n}`, warn, hidden };
 }
 
 /** R18.2: a version row's label; R18.18.3: a joined member says whose word it is. */

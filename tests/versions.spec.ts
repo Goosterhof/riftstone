@@ -61,6 +61,9 @@ const lineText = (el: HTMLElement): string => textOf(line(el)).replace(/\s+/g, "
 const label = (el: HTMLElement): string => textOf(must(line(el).querySelector(".ltr__label"), "label")).trim();
 const card = (): HTMLElement | null => document.querySelector<HTMLElement>(".world .vc, .vc");
 const cardRows = (): HTMLElement[] => [...(card()?.querySelectorAll<HTMLElement>(".vc__row") ?? [])];
+/** The option detail's doors, in the order drawn. */
+const doors = (): string[] =>
+  [...document.querySelectorAll<HTMLElement>(".odetail__doors button")].map((b) => textOf(b).trim());
 
 /** An older version as the spine names it, for the pure rules. */
 const olderAt = (installed: number) => ({ packageId: "p", fileName: "f.zip", version: "1.2", installed, matches: [] });
@@ -127,8 +130,9 @@ describe("THE RIFT, one entry per family (R18.1)", () => {
   it("should read `+1 older` faint, and the rail gold, once no older version has an install", async () => {
     await wakeFamily("familythree");
     const leadId = member("1.3").package.id;
+    // v1.2 is installed and v1.1 is not: the mark counts the one
     expect(textOf(must(line(item(leadId)).querySelector(".ltr__older-full"), "mark")).trim()).toBe(
-      "+2 older, installed",
+      "+2 older, 1 installed",
     );
     await spine().uninstall(mainOf(member("1.2")));
     await until(() => !line(item(leadId)).classList.contains("rail--warn"), "the warn rail going out");
@@ -149,7 +153,10 @@ describe("THE RIFT, one entry per family (R18.1)", () => {
       warn: false,
       hidden: "1 older version of this file in your mods folder",
     });
-    expect(olderMark([olderAt(0), olderAt(2)])?.text).toBe("+2 older, installed");
+    expect(olderMark([olderAt(0), olderAt(2)])?.text).toBe("+2 older, 1 installed");
+    expect(olderMark([olderAt(0), olderAt(2)])?.hidden).toBe("2 older versions of this file, 1 still installed");
+    expect(olderMark([olderAt(1), olderAt(2)])?.text).toBe("+2 older, installed");
+    expect(olderMark([olderAt(1), olderAt(2)])?.hidden).toBe("2 older versions of this file, still installed");
     expect(olderMark([olderAt(1)])?.hidden).toBe("1 older version of this file, still installed");
     // a leading v is never doubled
     expect(versionLabel("v1.3")).toBe("v1.3");
@@ -361,6 +368,8 @@ describe("Your World, an option among its file's versions (R18.4 doors)", () => 
     expect(textOf(must(document.querySelector(".odetail__family"), "line")).trim()).toBe(
       "v1.2 of this option is still installed under it, so any of its files v1.3 lacks are still in your game.",
     );
+    // the door joins the installed pair, never takes Uninstall's place (General, PR #2)
+    expect(doors()).toStrictEqual(["Uninstall…", "Keep only the newest…", "Open in package", "Show in archive"]);
     button("Keep only the newest…").click();
     await until(() => text().includes("THE RETURN — OLDER VERSIONS"), "the keep-newest plan");
   });
@@ -372,7 +381,8 @@ describe("Your World, an option among its file's versions (R18.4 doors)", () => 
     expect(textOf(must(document.querySelector(".odetail__family"), "line")).trim()).toBe(
       "This option is from v1.1, an older version. v1.3 is in your mods folder.",
     );
-    expect(hasButton("Install…")).toBe(true);
+    // an option not installed offers Install… alone, never Uninstall… beside it
+    expect(doors()).toStrictEqual(["Install…", "Open in package", "Show in archive"]);
   });
 });
 
