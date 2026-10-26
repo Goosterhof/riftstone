@@ -114,6 +114,9 @@ export interface FrayFight {
   unattributed: FraySource;
   /** The world row (throws, terrain, gimmicks): only on evidence, else null. */
   world: FraySource | null;
+  /** Characters outside the party (an ally, a foe striking a foe) on the foes the party fought.
+   *  Not the party and not the world, so outside hAll; null when none struck. Not drawn yet. */
+  others: FraySource | null;
   /** The game's own party ledger (TotalDamageFromPlayerParty) over this fight, or null. */
   ledger: number | null;
   /** False when no roster was read, so no member could be credited. */

@@ -919,15 +919,21 @@ exact path). Types live in `src/types/fray.ts`, mirrored by `crates/rift-fray/sr
   attacker resolved as `gimmick` is the world's; no attacker, or `none`, is unattributed (damage
   over time arrives this way until the debilitation's causer is read); otherwise the slot the eye
   wrote, or the slot of (address, CharacterID) under the line's roster generation, names a
-  member, and any other character goes to the world row as a known source that is not the
-  party. The damage credited is the hit's post `dmg1`.
+  member, and any other character (an ally, a foe striking a foe) goes to `others`, kept apart
+  and outside `hAll`. A hit credits the HP its victim lost (`hp0 − hp1`); the game's `dmg1`
+  stands in only when HP was not read, because `dmg1` is reckoned before HP clamps it: on the
+  first real session the party's `dmg1` summed to 96,058 against 38,820 HP lost and a game ledger
+  of 40,008.
 - **Keys**: the custom skill in use (`kind: "skill"`, its CustomSkillState id), else the shell's
   param id (`"shell <id>"`), else the action hash in hex (`kind: "action"`), else `unknown`.
-- **A fight** opens at the first damage dealt to a foe. It settles after 8 game seconds without
-  a hit on a foe while the game does not signal battle, after 30 whatever it signals, or at the
-  eye's stop line. A settled fight lasts from its first hit to its last.
-- **A roster change** applies between fights (FQ.21's fallback): a member who leaves mid-fight
-  keeps what they dealt, with `left: true`, and a newcomer's hits in that fight are unattributed.
+- **A fight** opens at the party's first damage to a foe and gathers every hit on the foes the
+  party struck. It settles after 8 game seconds without party damage while the game does not
+  signal battle, after 30 whatever it signals, or at the eye's stop line. A settled fight lasts
+  from the party's first hit to its last.
+- **Cards are people**, known by CharacterID (else address): a member who changes slot or
+  respawns keeps their card, one who leaves keeps what they dealt (`left: true`, back to false if
+  they return), and a newcomer takes their own slot's place when free, else the first free one;
+  with all four taken, their hits are unattributed.
 - **`hParty`** is the four members' damage, **`hAll`** that plus the unattributed and the world;
   **`ledger`** sums, over the fight's foes, the rise of the game's own `TotalDamageFromPlayerParty`.
   The honesty line is hParty ÷ ledger.

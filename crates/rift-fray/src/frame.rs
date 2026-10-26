@@ -159,6 +159,8 @@ pub struct Fight {
     pub h_all: u64,
     pub unattributed: Source,
     pub world: Option<Source>,
+    /// Characters outside the party (allies, foes striking foes): kept apart, outside hAll.
+    pub others: Option<Source>,
     pub ledger: Option<u64>,
     pub party_formed: bool,
     pub attribution: Attribution,

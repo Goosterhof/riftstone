@@ -932,6 +932,7 @@ function toFight(f: F, now: Date): FrayFight {
     hAll: hParty + f.unat + f.world,
     unattributed: { damage: f.unat, hits: f.unatHits, biggest: f.unatBiggest },
     world,
+    others: null,
     ledger: f.ledger,
     partyFormed: f.partyFormed,
     attribution: f.attribution,

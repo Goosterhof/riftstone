@@ -82,6 +82,9 @@ pub struct Victim {
     /// The foe lifecycle id; None when the victim is no foe (a party member, or nobody).
     pub vid: Option<u64>,
     pub cid: Option<i64>,
+    /// The victim Character's HP in the pre and the post: what the hit really took.
+    pub hp0: Option<f64>,
+    pub hp1: Option<f64>,
     /// TotalDamageFromPlayerParty in the pre and the post: the game's own party ledger.
     pub tdp0: Option<f64>,
     pub tdp1: Option<f64>,
@@ -89,7 +92,8 @@ pub struct Victim {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Hit {
-    /// Damage in the post (`dmg1`): what the Fray credits.
+    /// Damage in the post (`dmg1`): the game's figure before HP clamps it (overkill, an immune
+    /// part). The Fray credits the HP the victim lost, and falls back to this when HP is unread.
     pub dmg: Option<f64>,
     pub cmp: Option<[f64; PARTS]>,
     /// None when the line carries no attacker object.
@@ -246,6 +250,8 @@ fn victim(o: &Map<String, Value>) -> Victim {
     Victim {
         vid: vid(o, "vid"),
         cid: int(o, "cid"),
+        hp0: num(o, "hp0"),
+        hp1: num(o, "hp1"),
         tdp0: num(o, "tdp0"),
         tdp1: num(o, "tdp1"),
     }

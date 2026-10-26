@@ -18,7 +18,11 @@ fn main() -> ExitCode {
     let mut dir: Option<PathBuf> = None;
     let mut ses: Option<String> = None;
     let mut json = false;
-    let mut settings = Settings::default();
+    // A readout shows every fight of the session, not only the screen's shelf of five.
+    let mut settings = Settings {
+        shelf: usize::MAX,
+        ..Settings::default()
+    };
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--ses" => ses = args.next(),
@@ -88,10 +92,7 @@ fn main() -> ExitCode {
             "no stop line (the eye may still run, or stopped without one)"
         }
     );
-    println!(
-        "{} fights on the shelf (the newest five are kept)",
-        frame.recent.len()
-    );
+    println!("{} fights", frame.recent.len());
     for fight in frame.recent.iter().rev() {
         print_fight(fight);
     }
@@ -187,6 +188,12 @@ fn print_fight(f: &Fight) {
     );
     if let Some(w) = &f.world {
         println!("  the world {} ({} hits)", w.damage, w.hits);
+    }
+    if let Some(o) = &f.others {
+        println!(
+            "  others, outside the party and outside every source {} ({} hits)",
+            o.damage, o.hits
+        );
     }
     println!("  kills {}", f.kills.len());
 }

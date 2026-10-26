@@ -14,6 +14,11 @@ const BRAMBLE: u64 = 0x2C5_0000_3000;
 const SABLE: u64 = 0x2C5_0000_4000;
 const CORVIN: u64 = 0x2C5_0000_5000;
 
+/// Each invented character's own CharacterID.
+fn cid_of(a: u64) -> i64 {
+    130_000 + ((a >> 12) & 0xff) as i64
+}
+
 struct Eye {
     seq: u64,
     rg: i64,
@@ -49,7 +54,7 @@ impl Eye {
         self.rg += 1;
         let members: Vec<Value> = members
             .iter()
-            .map(|(slot, a, job)| json!({"slot": slot, "a": a, "cid": 131000 + slot, "job": job}))
+            .map(|(slot, a, job)| json!({"slot": slot, "a": a, "cid": cid_of(*a), "job": job}))
             .collect();
         self.push(gt, "rost", json!({ "members": members }))
     }
@@ -86,7 +91,7 @@ impl Eye {
             "hit",
             json!({
                 "dmg0": dmg, "dmg1": dmg, "cmp": [dmg, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                "atk": {"how": "owner", "a": a, "cid": 131000 + slot, "slot": slot, "sk": sk, "ah": ah, "inparty": true},
+                "atk": {"how": "owner", "a": a, "cid": cid_of(a), "slot": slot, "sk": sk, "ah": ah, "inparty": true},
                 "vic": {"vid": vid, "a": 0x2C5_0009_0000_u64 + vid, "cid": 133179, "slot": -1, "tdp0": tdp.0, "tdp1": tdp.1},
             }),
         )
@@ -118,7 +123,7 @@ fn atk(how: Option<&str>, a: Option<u64>, slot: Option<i64>) -> Attacker {
     Attacker {
         how: how.map(str::to_owned),
         a,
-        cid: Some(131000),
+        cid: a.map(cid_of),
         slot,
         ..Attacker::default()
     }
@@ -299,7 +304,7 @@ fn should_settle_at_the_stop_line_and_keep_five() {
 fn should_mark_the_killing_blow() {
     let mut eye = Eye::new();
     eye.party().hit(1.0, 2, 33, 1, 1, 900.0, (0.0, 900.0));
-    eye.push(1.1, "die", json!({"vic": {"vid": 1}, "atk": {"how": "owner", "a": BRAMBLE, "cid": 131002, "slot": 2, "sk": 33}}));
+    eye.push(1.1, "die", json!({"vic": {"vid": 1}, "atk": {"how": "owner", "a": BRAMBLE, "cid": cid_of(BRAMBLE), "slot": 2, "sk": 33}}));
     let f = eye.fray().frame(feed()).fight.expect("a fight");
     assert_eq!(f.kills.len(), 1);
     assert_eq!(
@@ -310,7 +315,7 @@ fn should_mark_the_killing_blow() {
 }
 
 #[test]
-fn should_freeze_a_member_who_leaves_and_not_credit_the_newcomer() {
+fn should_freeze_a_member_who_leaves_and_not_credit_a_fifth() {
     let mut eye = Eye::new();
     eye.party().hit(1.0, 3, 9, 1, 1, 100.0, (0.0, 100.0));
     eye.roster(
@@ -325,7 +330,7 @@ fn should_freeze_a_member_who_leaves_and_not_credit_the_newcomer() {
     eye.push(
         3.0,
         "hit",
-        json!({"dmg1": 70.0, "atk": {"how": "owner", "a": CORVIN, "cid": 131003, "slot": 3, "sk": 9}, "vic": {"vid": 1, "tdp0": 100.0, "tdp1": 170.0}}),
+        json!({"dmg1": 70.0, "atk": {"how": "owner", "a": CORVIN, "cid": cid_of(CORVIN), "slot": 3, "sk": 9}, "vic": {"vid": 1, "tdp0": 100.0, "tdp1": 170.0}}),
     );
     let f = eye.fray().frame(feed()).fight.expect("a fight");
     let sable = f.members[3].as_ref().expect("the departed card");
@@ -333,7 +338,7 @@ fn should_freeze_a_member_who_leaves_and_not_credit_the_newcomer() {
     assert_eq!(sable.damage, 100);
     assert_eq!(
         f.unattributed.damage, 70,
-        "a roster change applies between fights"
+        "four places held: a fifth character's hits are nobody's credit"
     );
 }
 
@@ -492,4 +497,80 @@ fn should_carry_the_party_outside_a_fight() {
     assert!(frame.party[2]
         .as_ref()
         .is_some_and(|m| m.damage == 0 && m.skills.is_empty()));
+}
+
+#[test]
+fn should_keep_a_card_through_a_slot_change_and_a_respawn() {
+    // The first real session: a hired pawn left, the Mage moved from slot 3 to slot 2, and came
+    // back from a respawn under a new address. She is one person throughout.
+    let mut eye = Eye::new();
+    eye.party().hit(1.0, 3, 9, 1, 1, 100.0, (0.0, 100.0));
+    eye.roster(2.0, &[(0, ODALRIC, 5), (1, WREN, 4), (2, SABLE, 3)]);
+    let respawned = SABLE + 0x10_0000;
+    eye.push(
+        3.0,
+        "hit",
+        json!({"dmg1": 60.0, "atk": {"how": "owner", "a": respawned, "cid": cid_of(SABLE), "slot": 2, "sk": 9}, "vic": {"vid": 1}}),
+    );
+    eye.roster(4.0, &[(0, ODALRIC, 5), (1, WREN, 4), (2, CORVIN, 2)]);
+    let f = eye.fray().frame(feed()).fight.expect("a fight");
+    let sable = f.members[3].as_ref().expect("her card stays in its place");
+    assert_eq!((sable.damage, sable.hits, sable.left), (160, 2, true));
+    let bramble = f.members[2].as_ref().expect("the departed sorcerer's card");
+    assert!(bramble.left);
+    assert_eq!(f.unattributed.damage, 0);
+}
+
+#[test]
+fn should_credit_the_hp_lost_not_the_rolled_damage() {
+    let mut eye = Eye::new();
+    eye.party().push(
+        1.0,
+        "hit",
+        json!({"dmg1": 12245.0, "cmp": [0.0, 0.0, 0.0, 12245.0, 0.0, 0.0, 0.0],
+               "atk": {"how": "shell", "a": BRAMBLE, "cid": cid_of(BRAMBLE), "slot": 2, "shell": {"paramid": 7}},
+               "vic": {"vid": 1, "hp0": 3000.0, "hp1": 0.0, "tdp0": 0.0, "tdp1": 3000.0}}),
+    );
+    eye.push(
+        1.5,
+        "hit",
+        json!({"dmg1": 900.0, "atk": {"how": "shell", "a": BRAMBLE, "cid": cid_of(BRAMBLE), "slot": 2, "shell": {"paramid": 7}},
+               "vic": {"vid": 2, "hp0": 0.0, "hp1": 0.0}}),
+    );
+    let f = eye.fray().frame(feed()).fight.expect("a fight");
+    let bramble = f.members[2].as_ref().expect("a card");
+    assert_eq!(
+        (bramble.damage, bramble.hits),
+        (3000, 1),
+        "overkill and a dead target take no HP"
+    );
+    assert_eq!(
+        bramble.parts.map(|p| p[3]),
+        Some(3000),
+        "the parts follow the credited damage"
+    );
+    assert_eq!(f.ledger, Some(3000));
+}
+
+#[test]
+fn should_open_fights_on_party_damage_only_and_keep_others_apart() {
+    let mut eye = Eye::new();
+    eye.party()
+        .push(0.5, "hit", json!({"dmg1": 586.0, "atk": {"how": "gimmick"}, "vic": {"vid": 9}}))
+        .push(0.6, "hit", json!({"dmg1": 90.0, "atk": {"how": "owner", "a": CORVIN, "cid": cid_of(CORVIN), "slot": -1}, "vic": {"vid": 9}}));
+    assert!(
+        eye.fray().frame(feed()).fight.is_none(),
+        "the world and the others open no fight"
+    );
+    eye.hit(1.0, 0, 12, 1, 1, 100.0, (0.0, 100.0))
+        .push(1.2, "hit", json!({"dmg1": 40.0, "atk": {"how": "owner", "a": CORVIN, "cid": cid_of(CORVIN), "slot": -1}, "vic": {"vid": 1}}))
+        .push(1.3, "hit", json!({"dmg1": 55.0, "atk": {"how": "owner", "a": CORVIN, "cid": cid_of(CORVIN), "slot": -1}, "vic": {"vid": 9}}));
+    let f = eye.fray().frame(feed()).fight.expect("a fight");
+    assert_eq!(
+        f.others.as_ref().map(|o| (o.damage, o.hits)),
+        Some((40, 1)),
+        "only on the party's foes"
+    );
+    assert_eq!(f.h_all, 100, "the others stand outside every source");
+    assert!(f.world.is_none());
 }

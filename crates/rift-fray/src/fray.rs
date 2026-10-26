@@ -1,18 +1,24 @@
 //! The fold: the eye's lines in, fights out.
 //!
-//! Credit follows the reviewed analyzer's `attackerLabel` (probe/analyze.mjs §4) to the letter: a
-//! hit whose attacker resolved as `gimmick` is the world's; one with no attacker, or `none`, is
+//! **Who.** Credit follows the reviewed analyzer's `attackerLabel` (probe/analyze.mjs §4): a hit
+//! whose attacker resolved as `gimmick` is the world's; one with no attacker, or `none`, is
 //! unattributed; otherwise the slot the eye wrote, or the slot of (address, CharacterID) under the
-//! line's roster generation, names a party member, and any other character is not the party. The
-//! damage credited is the post's `dmg1`.
+//! line's roster generation, names a party member, and any other character is one of the others
+//! (an ally, or a foe striking a foe), never the party and never the world.
 //!
-//! A fight opens at the first damage dealt to a foe and settles once no foe has been hit for
+//! **How much.** A hit credits the HP its victim lost (`hp0 − hp1`), not the game's `dmg1`: the
+//! first real session (2026-10-26) measured the party's `dmg1` at 96,058 against 38,820 HP lost
+//! and a game ledger of 40,008, because `dmg1` is reckoned before HP clamps it (overkill, a dead
+//! or immune target). `dmg1` stands in only when the HP could not be read.
+//!
+//! **A fight** opens at the party's first damage to a foe; from then on it gathers every hit on
+//! the foes the party has struck, and settles once the party has dealt nothing for
 //! [`Settings::quiet_s`] game seconds while the game does not say battle, or for
-//! [`Settings::hard_quiet_s`] whatever it says, or at the eye's stop line. A member who leaves
-//! mid-fight keeps what they dealt, frozen; a newcomer's hits in that fight are unattributed
-//! (#00015 RF.3 and FQ.21's fallback: a roster change applies between fights).
+//! [`Settings::hard_quiet_s`] whatever it says, or at the eye's stop line. Its cards are people,
+//! known by CharacterID: a member who changes slot or respawns keeps their card, one who leaves
+//! keeps what they dealt (`left`, #00015 RF.3), and a newcomer takes a free place.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use crate::frame::{
     Attribution, Biggest, Feed, Fight, FightState, Foe, Frame, Kill, Member, Parts, Role, Skill,
@@ -23,7 +29,7 @@ use crate::record::{Attacker, Hit, Line, Record, RosterMember, SlotVitals, PARTS
 /// The four places on the screen: the Arisen, the main pawn, two hired pawns.
 pub const PLACES: usize = 4;
 
-/// A hit counts as additive when its parts sum to its damage within max(1 HP, 1%) (G7's rule),
+/// A hit counts as additive when its parts sum to its `dmg1` within max(1 HP, 1%) (G7's rule),
 /// and a fight's types are additive when this share of its readable hits is (G7's 95%).
 const ADDITIVE_ABS: f64 = 1.0;
 const ADDITIVE_REL: f64 = 0.01;
@@ -31,9 +37,9 @@ const ADDITIVE_SHARE: f64 = 0.95;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
-    /// Game seconds without a hit on a foe, battle not signalled, before a fight settles.
+    /// Game seconds without party damage, battle not signalled, before a fight settles.
     pub quiet_s: f64,
-    /// Game seconds without a hit on a foe before a fight settles even while the game says battle.
+    /// Game seconds without party damage before a fight settles even while the game says battle.
     pub hard_quiet_s: f64,
     /// Settled fights kept for THE STRATA (RF.26).
     pub shelf: usize,
@@ -74,6 +80,39 @@ pub fn local_time(unix: i64) -> String {
         .unwrap_or_default()
 }
 
+/// The HP a hit took from its victim, or its `dmg1` when the HP was not read.
+pub fn credited(hit: &Hit) -> f64 {
+    let lost = hit
+        .vic
+        .as_ref()
+        .and_then(|v| Some(v.hp0? - v.hp1?))
+        .map(|d| d.max(0.0));
+    lost.or(hit.dmg)
+        .filter(|d| d.is_finite())
+        .unwrap_or(0.0)
+        .max(0.0)
+}
+
+/// A party member as one fight knows them.
+#[derive(Debug, Clone, PartialEq)]
+struct Person {
+    cid: Option<i64>,
+    a: Option<u64>,
+    /// The roster slot they held when they took this place.
+    slot: i64,
+    job: Option<i64>,
+}
+
+impl Person {
+    /// The same character: by CharacterID when both are read, else by address.
+    fn is(&self, cid: Option<i64>, a: Option<u64>) -> bool {
+        match (self.cid, cid) {
+            (Some(x), Some(y)) => x == y,
+            _ => self.a.is_some() && self.a == a,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct SkillAcc {
     kind: Option<SkillKind>,
@@ -107,12 +146,12 @@ impl SourceAcc {
         self.biggest = self.biggest.max(dmg);
     }
 
-    fn frame(&self) -> Source {
-        Source {
+    fn frame(&self) -> Option<Source> {
+        (self.hits > 0).then(|| Source {
             damage: round(self.damage),
             hits: self.hits,
             biggest: round(self.biggest),
-        }
+        })
     }
 }
 
@@ -129,11 +168,12 @@ struct FightAcc {
     start_gt: f64,
     last_hit_gt: f64,
     last_hit_t: f64,
-    roster: Vec<RosterMember>,
+    places: [Option<Person>; PLACES],
     members: [MemberAcc; PLACES],
     left: [bool; PLACES],
     unattributed: SourceAcc,
     world: SourceAcc,
+    others: SourceAcc,
     foes: BTreeMap<u64, FoeAcc>,
     kills: Vec<Kill>,
     gaps: u64,
@@ -144,17 +184,18 @@ struct FightAcc {
 }
 
 impl FightAcc {
-    fn new(n: u32, gt: f64, t: f64, roster: Vec<RosterMember>) -> Self {
-        FightAcc {
+    fn new(n: u32, gt: f64, t: f64, roster: &[RosterMember]) -> Self {
+        let mut acc = FightAcc {
             n,
             start_gt: gt,
             last_hit_gt: gt,
             last_hit_t: t,
-            roster,
+            places: Default::default(),
             members: Default::default(),
             left: [false; PLACES],
             unattributed: SourceAcc::default(),
             world: SourceAcc::default(),
+            others: SourceAcc::default(),
             foes: BTreeMap::new(),
             kills: Vec::new(),
             gaps: 0,
@@ -162,21 +203,56 @@ impl FightAcc {
             cmp_additive: 0,
             keys_readable: false,
             biggest: None,
+        };
+        acc.seat(roster);
+        acc
+    }
+
+    /// Give every roster member a place: their own slot when it is free, else the first free one.
+    fn seat(&mut self, roster: &[RosterMember]) {
+        for m in roster {
+            self.place_of(m.cid, m.a, m.slot, m.job);
         }
     }
 
-    /// The place a party credit lands in, or None when the hit belongs to no card: a slot past
-    /// the four, or a character who was not in that slot when the fight opened.
-    fn place(&self, slot: i64, atk: Option<&Attacker>) -> Option<usize> {
-        let place = usize::try_from(slot).ok().filter(|p| *p < PLACES)?;
-        if self.roster.is_empty() {
-            return Some(place);
+    /// The place of the character (cid, a), seating them when they have none and one is free.
+    fn place_of(
+        &mut self,
+        cid: Option<i64>,
+        a: Option<u64>,
+        slot: i64,
+        job: Option<i64>,
+    ) -> Option<usize> {
+        if cid.is_none() && a.is_none() {
+            return None;
         }
-        let held = self.roster.iter().find(|m| m.slot == slot)?;
-        match (held.a, atk.and_then(|a| a.a)) {
-            (Some(was), Some(now)) if was != now => None,
-            _ => Some(place),
+        if let Some(i) = self
+            .places
+            .iter()
+            .position(|p| p.as_ref().is_some_and(|p| p.is(cid, a)))
+        {
+            if let Some(p) = &mut self.places[i] {
+                p.a = a.or(p.a);
+                p.job = job.or(p.job);
+            }
+            return Some(i);
         }
+        let own = usize::try_from(slot)
+            .ok()
+            .filter(|i| *i < PLACES && self.places[*i].is_none());
+        let free = own.or_else(|| self.places.iter().position(Option::is_none))?;
+        self.places[free] = Some(Person { cid, a, slot, job });
+        Some(free)
+    }
+
+    /// The roster changed: who is still here, who left, who came back.
+    fn roster(&mut self, roster: &[RosterMember]) {
+        for (i, place) in self.places.iter().enumerate() {
+            if let Some(p) = place {
+                self.left[i] = !roster.iter().any(|m| p.is(m.cid, m.a));
+            }
+        }
+        self.seat(roster);
     }
 }
 
@@ -189,7 +265,8 @@ pub struct Fray {
     time_format: TimeFormat,
     rosters: HashMap<i64, Vec<RosterMember>>,
     roster_now: Vec<RosterMember>,
-    vitals: [Option<SlotVitals>; PLACES],
+    vitals_by_slot: [Option<SlotVitals>; PLACES],
+    vitals_by_cid: HashMap<i64, SlotVitals>,
     battle: Option<bool>,
     paused: bool,
     foe_tdp: HashMap<u64, f64>,
@@ -212,7 +289,8 @@ impl Fray {
             time_format: local_time,
             rosters: HashMap::new(),
             roster_now: Vec::new(),
-            vitals: Default::default(),
+            vitals_by_slot: Default::default(),
+            vitals_by_cid: HashMap::new(),
             battle: None,
             paused: false,
             foe_tdp: HashMap::new(),
@@ -285,8 +363,16 @@ impl Fray {
             Record::Heartbeat(slots) => {
                 self.last_beat_t = Some(line.t);
                 for v in slots {
+                    if let Some(cid) = self
+                        .roster_now
+                        .iter()
+                        .find(|m| m.slot == v.slot)
+                        .and_then(|m| m.cid)
+                    {
+                        self.vitals_by_cid.insert(cid, v.clone());
+                    }
                     if let Some(place) = usize::try_from(v.slot).ok().filter(|p| *p < PLACES) {
-                        self.vitals[place] = Some(v.clone());
+                        self.vitals_by_slot[place] = Some(v.clone());
                     }
                 }
             }
@@ -360,29 +446,23 @@ impl Fray {
                     .roster_now
                     .iter()
                     .find(|r| usize::try_from(r.slot).ok() == Some(place))?;
-                let vitals = self.vitals[place].as_ref();
-                Some(Member {
-                    slot: place,
-                    role: Role::of_slot(place),
-                    name: None,
-                    vocation: Vocation {
-                        id: held.job.or_else(|| vitals.and_then(|v| v.job)),
-                        name: None,
-                    },
-                    hp: vitals.and_then(|v| fraction(v.hp, v.maxhp)),
-                    st: vitals.and_then(|v| fraction(v.st, v.stmax)),
-                    down: vitals.and_then(|v| v.hp).is_some_and(|hp| hp <= 0.0),
-                    left: false,
-                    damage: 0,
-                    dps: None,
-                    hits: 0,
-                    skills: Vec::new(),
-                    no_damage_skills: None,
-                    parts: None,
-                    mix: None,
-                })
+                let vitals = self.vitals_of(held.cid, place);
+                Some(card(
+                    place,
+                    held.job,
+                    vitals,
+                    false,
+                    &MemberAcc::default(),
+                    0.0,
+                    Types::Unknown,
+                ))
             })
             .collect()
+    }
+
+    fn vitals_of(&self, cid: Option<i64>, slot: usize) -> Option<&SlotVitals> {
+        cid.and_then(|cid| self.vitals_by_cid.get(&cid))
+            .or_else(|| self.vitals_by_slot.get(slot).and_then(Option::as_ref))
     }
 
     fn roster(&mut self, rg: Option<i64>, members: &[RosterMember]) {
@@ -391,22 +471,24 @@ impl Fray {
         }
         self.roster_now = members.to_vec();
         if let Some(acc) = &mut self.open {
-            if acc.roster.is_empty() {
-                acc.roster = members.to_vec();
-                return;
-            }
-            for held in &acc.roster {
-                let Some(place) = usize::try_from(held.slot).ok().filter(|p| *p < PLACES) else {
-                    continue;
-                };
-                let stays = members
-                    .iter()
-                    .any(|m| m.slot == held.slot && (m.a == held.a || m.a.is_none()));
-                if !stays {
-                    acc.left[place] = true;
-                }
-            }
+            acc.roster(members);
         }
+    }
+
+    /// The person behind a party credit: the attacker's own CharacterID and address, the slot's
+    /// member under the line's generation filling what the attacker line lacks.
+    fn person(
+        &self,
+        rg: Option<i64>,
+        slot: i64,
+        atk: Option<&Attacker>,
+    ) -> (Option<i64>, Option<u64>, Option<i64>) {
+        let held = rg
+            .and_then(|rg| self.rosters.get(&rg))
+            .and_then(|r| r.iter().find(|m| m.slot == slot));
+        let cid = atk.and_then(|a| a.cid).or(held.and_then(|m| m.cid));
+        let a = atk.and_then(|a| a.a).or(held.and_then(|m| m.a));
+        (cid, a, held.and_then(|m| m.job))
     }
 
     fn hit(&mut self, line: &Line, hit: &Hit) {
@@ -419,23 +501,27 @@ impl Fray {
         if let Some(tdp) = vic.tdp1 {
             self.foe_tdp.insert(vid, tdp);
         }
-        let dmg = hit.dmg.unwrap_or(0.0);
-        if dmg <= 0.0 && self.open.is_none() {
-            return;
-        }
-        let gt = line.gt.unwrap_or(self.last_gt);
-        if self.open.is_none() {
-            self.fights += 1;
-            self.open = Some(FightAcc::new(
-                self.fights,
-                gt,
-                line.t,
-                self.roster_now.clone(),
-            ));
-        }
+        let dmg = credited(hit);
         let credit = self.credit(line.rg, hit.atk.as_ref());
+        let gt = line.gt.unwrap_or(self.last_gt);
+
+        let party = match credit {
+            Credit::Party(slot) => Some(self.person(line.rg, slot, hit.atk.as_ref())),
+            _ => None,
+        };
+        // Only the party's damage opens a fight; anything else counts only on a foe it struck.
+        if self.open.is_none() {
+            if party.is_none() || dmg <= 0.0 {
+                return;
+            }
+            self.fights += 1;
+            self.open = Some(FightAcc::new(self.fights, gt, line.t, &self.roster_now));
+        }
         let cid = self.foe_cid.get(&vid).copied();
         let Some(acc) = &mut self.open else { return };
+        if party.is_none() && !acc.foes.contains_key(&vid) {
+            return;
+        }
 
         let foe = acc.foes.entry(vid).or_insert_with(|| FoeAcc {
             cid,
@@ -448,22 +534,22 @@ impl Fray {
         if dmg <= 0.0 {
             return;
         }
-        acc.last_hit_gt = acc.last_hit_gt.max(gt);
-        acc.last_hit_t = acc.last_hit_t.max(line.t);
-        if let Some(cmp) = hit.cmp {
+        if let (Some(cmp), Some(dmg1)) = (hit.cmp, hit.dmg) {
             acc.cmp_readable += 1;
             let sum: f64 = cmp.iter().sum();
-            if (sum - dmg).abs() <= ADDITIVE_ABS.max(ADDITIVE_REL * dmg.abs()) {
+            if (sum - dmg1).abs() <= ADDITIVE_ABS.max(ADDITIVE_REL * dmg1.abs()) {
                 acc.cmp_additive += 1;
             }
         }
 
-        let place = match credit {
-            Credit::Party(slot) => acc.place(slot, hit.atk.as_ref()),
+        let place = match (credit, party) {
+            (Credit::Party(slot), Some((cid, a, job))) => acc.place_of(cid, a, slot, job),
             _ => None,
         };
         match (credit, place) {
             (Credit::Party(_), Some(place)) => {
+                acc.last_hit_gt = acc.last_hit_gt.max(gt);
+                acc.last_hit_t = acc.last_hit_t.max(line.t);
                 let atk = hit.atk.as_ref();
                 if atk.is_some_and(|a| a.sk.is_some() || a.ah.is_some()) {
                     acc.keys_readable = true;
@@ -494,7 +580,9 @@ impl Fray {
                     acc.biggest = Some((place, id, dmg));
                 }
             }
-            (Credit::World | Credit::NonParty, _) => acc.world.add(dmg),
+            (Credit::World, _) => acc.world.add(dmg),
+            (Credit::NonParty, _) => acc.others.add(dmg),
+            // No attacker, or a party slot with no place left: nobody's credit.
             _ => acc.unattributed.add(dmg),
         }
     }
@@ -502,15 +590,16 @@ impl Fray {
     fn die(&mut self, line: &Line, vid: Option<u64>, atk: Option<&Attacker>) {
         let Some(vid) = vid else { return };
         let credit = self.credit(line.rg, atk);
+        let person = match credit {
+            Credit::Party(slot) => Some((slot, self.person(line.rg, slot, atk))),
+            _ => None,
+        };
         let gt = line.gt.unwrap_or(self.last_gt);
         let Some(acc) = &mut self.open else { return };
         if !acc.foes.contains_key(&vid) {
             return;
         }
-        let place = match credit {
-            Credit::Party(slot) => acc.place(slot, atk),
-            _ => None,
-        };
+        let place = person.and_then(|(slot, (cid, a, job))| acc.place_of(cid, a, slot, job));
         let (kind, id) = key_of(atk);
         if let Some(place) = place {
             if let Some(skill) = acc.members[place].skills.get_mut(&skill_key(kind, &id)) {
@@ -561,63 +650,29 @@ impl Fray {
 
         let members: Vec<Option<Member>> = (0..PLACES)
             .map(|place| {
-                let m = &acc.members[place];
-                let held = acc
-                    .roster
-                    .iter()
-                    .find(|r| usize::try_from(r.slot).ok() == Some(place));
-                if held.is_none() && m.hits == 0 {
-                    return None;
-                }
-                let vitals = self.vitals[place].as_ref();
-                let damage = round(m.damage);
-                let mix = (m.cmp_hits > 0).then(|| m.cmp.map(round));
-                let parts =
-                    (types == Types::Additive && m.cmp_hits > 0).then(|| partition(&m.cmp, damage));
-                Some(Member {
-                    slot: place,
-                    role: Role::of_slot(place),
-                    name: None,
-                    vocation: Vocation {
-                        id: held
-                            .and_then(|r| r.job)
-                            .or_else(|| vitals.and_then(|v| v.job)),
-                        name: None,
-                    },
-                    hp: vitals.and_then(|v| fraction(v.hp, v.maxhp)),
-                    st: vitals.and_then(|v| fraction(v.st, v.stmax)),
-                    down: vitals.and_then(|v| v.hp).is_some_and(|hp| hp <= 0.0),
-                    left: acc.left[place],
-                    damage,
-                    dps: (duration_s > 0.0).then(|| m.damage / duration_s),
-                    hits: m.hits,
-                    skills: m
-                        .skills
-                        .iter()
-                        .map(|(key, s)| Skill {
-                            kind: s.kind.unwrap_or(SkillKind::Unknown),
-                            id: key
-                                .split_once(':')
-                                .map_or(key.as_str(), |(_, id)| id)
-                                .to_owned(),
-                            name: None,
-                            damage: round(s.damage),
-                            hits: s.hits,
-                            biggest: round(s.biggest),
-                            last_blow: s.last_blow,
-                            first_at: s.first_at,
-                        })
-                        .collect(),
-                    no_damage_skills: None,
-                    parts,
-                    mix,
-                })
+                let person = acc.places[place].as_ref()?;
+                let vitals =
+                    self.vitals_of(person.cid, usize::try_from(person.slot).unwrap_or(place));
+                Some(card(
+                    place,
+                    person.job,
+                    vitals,
+                    acc.left[place],
+                    &acc.members[place],
+                    duration_s,
+                    types,
+                ))
             })
             .collect();
 
         let h_party: u64 = members.iter().flatten().map(|m| m.damage).sum();
-        let unattributed = acc.unattributed.frame();
-        let world = (acc.world.hits > 0).then(|| acc.world.frame());
+        let unattributed = acc.unattributed.frame().unwrap_or(Source {
+            damage: 0,
+            hits: 0,
+            biggest: 0,
+        });
+        let world = acc.world.frame();
+        let others = acc.others.frame();
         let h_all = h_party + unattributed.damage + world.as_ref().map_or(0, |w| w.damage);
 
         let mut ledger: Option<f64> = None;
@@ -636,6 +691,7 @@ impl Fray {
             _ => None,
         };
         let ended_at = ended_ms.map(|ms| (self.time_format)(ms.div_euclid(1000)));
+        let seated: BTreeSet<usize> = (0..PLACES).filter(|i| acc.places[*i].is_some()).collect();
 
         Fight {
             id: format!("{}-{}", self.ses, acc.n),
@@ -658,8 +714,9 @@ impl Fray {
             h_all,
             unattributed,
             world,
+            others,
             ledger: ledger.map(round),
-            party_formed: !acc.roster.is_empty(),
+            party_formed: !seated.is_empty(),
             attribution: Attribution::Unqualified,
             types,
             skills: if acc.keys_readable {
@@ -675,6 +732,55 @@ impl Fray {
                 damage: round(*dmg),
             }),
         }
+    }
+}
+
+/// One member's card from what the fight gathered for them.
+fn card(
+    place: usize,
+    job: Option<i64>,
+    vitals: Option<&SlotVitals>,
+    left: bool,
+    m: &MemberAcc,
+    duration_s: f64,
+    types: Types,
+) -> Member {
+    let damage = round(m.damage);
+    Member {
+        slot: place,
+        role: Role::of_slot(place),
+        name: None,
+        vocation: Vocation {
+            id: job.or_else(|| vitals.and_then(|v| v.job)),
+            name: None,
+        },
+        hp: vitals.and_then(|v| fraction(v.hp, v.maxhp)),
+        st: vitals.and_then(|v| fraction(v.st, v.stmax)),
+        down: vitals.and_then(|v| v.hp).is_some_and(|hp| hp <= 0.0),
+        left,
+        damage,
+        dps: (duration_s > 0.0).then(|| m.damage / duration_s),
+        hits: m.hits,
+        skills: m
+            .skills
+            .iter()
+            .map(|(key, s)| Skill {
+                kind: s.kind.unwrap_or(SkillKind::Unknown),
+                id: key
+                    .split_once(':')
+                    .map_or(key.as_str(), |(_, id)| id)
+                    .to_owned(),
+                name: None,
+                damage: round(s.damage),
+                hits: s.hits,
+                biggest: round(s.biggest),
+                last_blow: s.last_blow,
+                first_at: s.first_at,
+            })
+            .collect(),
+        no_damage_skills: None,
+        parts: (types == Types::Additive && m.cmp_hits > 0).then(|| partition(&m.cmp, damage)),
+        mix: (m.cmp_hits > 0).then(|| m.cmp.map(round)),
     }
 }
 
