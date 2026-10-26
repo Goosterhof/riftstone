@@ -106,6 +106,7 @@ fn feed() -> Feed {
         state: FeedState::Live,
         last_beat_ago_s: Some(0.2),
         game_running: true,
+        game_started_ms: None,
         reframework: true,
         eye_installed: true,
         eye_recording: Some(true),
@@ -417,6 +418,10 @@ fn should_write_the_settled_time_from_the_session_clock() {
     fray.finish();
     // The hit's os.clock is 5.0: one second after the start at 14:13:24 UTC.
     assert_eq!(
+        fray.frame(feed()).fight.and_then(|f| f.ended_at_ms),
+        Some(1_790_000_005_000)
+    );
+    assert_eq!(
         fray.frame(feed()).fight.and_then(|f| f.ended_at).as_deref(),
         Some("14:13:25")
     );
@@ -461,4 +466,30 @@ fn should_tail_whole_lines_only_and_pick_the_newest_session() {
     assert_eq!(second.iter().map(|l| l.seq).collect::<Vec<_>>(), vec![3, 4]);
     assert_eq!(tail.bad_lines, 1);
     assert!(tail.poll().expect("poll").is_empty());
+}
+
+#[test]
+fn should_carry_the_party_outside_a_fight() {
+    let mut eye = Eye::new();
+    assert!(
+        eye.fray().frame(feed()).party.is_empty(),
+        "no roster read yet"
+    );
+    eye.roster(0.0, &[(0, ODALRIC, 5), (2, BRAMBLE, 6)]).push(
+        0.5,
+        "hb",
+        json!({"slots": [{"slot": 0, "hp": 30.0, "maxhp": 120.0, "st": 10.0, "stmax": 10.0}]}),
+    );
+    let frame = eye.fray().frame(feed());
+    assert!(frame.fight.is_none());
+    assert_eq!(frame.party.len(), 4);
+    let arisen = frame.party[0].as_ref().expect("the Arisen's place");
+    assert_eq!(
+        (arisen.hp, arisen.st, arisen.vocation.id),
+        (Some(0.25), Some(1.0), Some(5))
+    );
+    assert!(frame.party[1].is_none(), "an empty place");
+    assert!(frame.party[2]
+        .as_ref()
+        .is_some_and(|m| m.damage == 0 && m.skills.is_empty()));
 }

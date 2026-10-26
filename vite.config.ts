@@ -15,6 +15,16 @@ export default defineConfig(async () => ({
     },
   },
 
+  // Two windows, two pages: the Riftstone (index.html) and THE FRAY (fray.html).
+  build: {
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        fray: fileURLToPath(new URL("./fray.html", import.meta.url)),
+      },
+    },
+  },
+
   // Vite options tailored for Tauri development.
   clearScreen: false,
   server: {

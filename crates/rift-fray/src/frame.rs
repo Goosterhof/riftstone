@@ -152,6 +152,7 @@ pub struct Fight {
     pub paused: bool,
     pub foes: Vec<Foe>,
     pub ended_at: Option<String>,
+    pub ended_at_ms: Option<i64>,
     /// Four entries in slot order; None where the slot is empty.
     pub members: Vec<Option<Member>>,
     pub h_party: u64,
@@ -182,6 +183,7 @@ pub struct Feed {
     pub state: FeedState,
     pub last_beat_ago_s: Option<f64>,
     pub game_running: bool,
+    pub game_started_ms: Option<u64>,
     pub reframework: bool,
     pub eye_installed: bool,
     pub eye_recording: Option<bool>,
@@ -192,6 +194,8 @@ pub struct Feed {
 #[serde(rename_all = "camelCase")]
 pub struct Frame {
     pub feed: Feed,
+    /// The party outside any fight, four places (empty before the first roster).
+    pub party: Vec<Option<Member>>,
     pub fight: Option<Fight>,
     pub recent: Vec<Fight>,
 }

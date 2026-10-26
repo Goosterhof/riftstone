@@ -68,6 +68,8 @@ pub struct FrayDesk {
 pub struct GameView {
     pub root: Option<PathBuf>,
     pub running: bool,
+    /// When the spine first saw this run, epoch ms.
+    pub started_ms: Option<u64>,
 }
 
 impl FrayDesk {
@@ -118,6 +120,7 @@ impl FrayDesk {
             state,
             last_beat_ago_s: ago,
             game_running: game.running,
+            game_started_ms: game.started_ms,
             reframework,
             eye_installed,
             eye_recording: recording,
@@ -127,6 +130,7 @@ impl FrayDesk {
             Some(f) => f.fray.frame(feed),
             None => Frame {
                 feed,
+                party: Vec::new(),
                 fight: None,
                 recent: Vec::new(),
             },
@@ -231,10 +235,16 @@ mod tests {
         let game = GameView {
             root: Some(dir.path().to_path_buf()),
             running: true,
+            started_ms: Some(1_790_000_000_000),
         };
         let t0 = Instant::now();
 
         let first = desk.frame(&game, t0, || None);
+        assert_eq!(first.feed.game_started_ms, Some(1_790_000_000_000));
+        assert!(
+            first.party[0].is_some(),
+            "the eye's roster stands outside the fight too"
+        );
         assert!(first.feed.eye_installed && first.feed.reframework);
         assert_eq!(first.fight.as_ref().map(|f| f.h_party), Some(120));
         assert_eq!(first.feed.state, FeedState::Stale, "no heartbeat read yet");
@@ -280,6 +290,7 @@ mod tests {
         let game = GameView {
             root: Some(dir.path().to_path_buf()),
             running: true,
+            started_ms: Some(1_790_000_000_000),
         };
         let frame = FrayDesk::default().frame(&game, Instant::now(), || None);
         assert_eq!(

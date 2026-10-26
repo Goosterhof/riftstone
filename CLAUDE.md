@@ -276,6 +276,12 @@ never made). The player's word (#00015 §18.18): `question` (the unpacked Lanter
 linked by mod id, beside the pinned v1.3, and the stone asks), `questioninstalled`, `questionjoined`,
 `questionmanual` (no question, two pinned files to pick from) and `questionrefused` (the join refused once).
 
+THE FRAY's scenes (v0.6, `src/services/mock/fray.ts`, whose header lists all 51) open at
+`fray.html?mock=<scene>`: `fray` (FIGHT 7 at 1:36), `fraysettle` (the last six seconds, then THE
+SETTLING), `fraysettled`, `fraymember`, `fraytypes`, `frayworld`, `frayleft`, `frayshelf`,
+`frayidle`, `fraystale`, `fraysilent`, `frayasleep` and more. The pillar's THE FRAY door opens
+`fray.html?mock=fray` on the mock.
+
 ```sh
 npm run dev            # the window in a browser on the mock backend (?mock=empty|emptymods|nofloor|gonemods|nogame|scanning|refoff|patched|offline|fresh|firstrun|key|premium|rejected|quotalow|running|nxmother|nocreations, comma-separated)
 npm run tauri dev      # the real app (WSL bench: set RIFTSTONE_GAME_ROOT / RIFTSTONE_MODS_DIR / RIFTSTONE_DATA_HOME)

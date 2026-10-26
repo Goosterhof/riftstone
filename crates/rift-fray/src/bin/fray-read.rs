@@ -61,6 +61,7 @@ fn main() -> ExitCode {
         state: FeedState::None,
         last_beat_ago_s: None,
         game_running: false,
+        game_started_ms: None,
         reframework: true,
         eye_installed: true,
         eye_recording: None,

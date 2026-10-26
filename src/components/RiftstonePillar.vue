@@ -14,6 +14,7 @@ import PlayStone from "./PlayStone.vue";
 import FarWorldLabels from "./FarWorldLabels.vue";
 import { useLabels } from "@/composables/useLabels";
 import { seamReach } from "@/services/seam";
+import { rift } from "@/services/rift";
 
 const search = useSearch();
 const stone = useStone();
@@ -108,6 +109,17 @@ onMounted(() => {
   }
 });
 
+/** v0.6: THE FRAY is no room: it opens its own window, for the second monitor. */
+const frayRefused = ref(false);
+async function openFray(): Promise<void> {
+  try {
+    await (await rift()).openFray();
+    frayRefused.value = false;
+  } catch {
+    frayRefused.value = true;
+  }
+}
+
 defineExpose({ focusSearch: () => well.value?.focus() });
 </script>
 
@@ -200,6 +212,22 @@ defineExpose({ focusSearch: () => well.value?.focus() });
         </span>
       </button>
     </nav>
+
+    <!-- v0.6: THE FRAY, the party screen, opens in its own window (#00015 §19) -->
+    <button
+      type="button"
+      class="navlink pillar__fray"
+      title="The party screen, in its own window: drag it to your second monitor"
+      @click="openFray"
+    >
+      <span class="navlink__words"
+        ><span>THE FRAY</span
+        ><span class="navlink__hint">{{
+          frayRefused ? "It would not open. Press again" : "Party screen · its own window"
+        }}</span></span
+      >
+      <span class="navlink__meta"><span class="navlink__k" aria-hidden="true">↗</span></span>
+    </button>
 
     <!-- §16.2: Play, its own pinned slab between the rooms and the foot -->
     <PlayStone />

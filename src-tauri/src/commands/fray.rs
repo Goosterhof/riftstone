@@ -18,9 +18,11 @@ use crate::state::AppState;
 pub const FRAY_WINDOW: &str = "fray";
 
 pub fn fray_frame_impl(state: &AppState, desk: &FrayDesk) -> Frame {
+    let run = state.game_run();
     let game = GameView {
         root: state.world().game.map(|g| g.root),
-        running: state.game_run().running,
+        running: run.running,
+        started_ms: run.started_ms,
     };
     desk.frame(&game, Instant::now(), || crate::muster::codex(state).ok())
 }

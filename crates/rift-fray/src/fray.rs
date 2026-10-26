@@ -342,9 +342,47 @@ impl Fray {
         };
         Frame {
             feed,
+            party: self.party_now(),
             fight,
             recent: self.recent.iter().cloned().collect(),
         }
+    }
+
+    /// The party as the eye last read it, outside any fight: the roster's places with their
+    /// vitals, no damage and no skills. Empty before the eye's first roster.
+    fn party_now(&self) -> Vec<Option<Member>> {
+        if self.roster_now.is_empty() {
+            return Vec::new();
+        }
+        (0..PLACES)
+            .map(|place| {
+                let held = self
+                    .roster_now
+                    .iter()
+                    .find(|r| usize::try_from(r.slot).ok() == Some(place))?;
+                let vitals = self.vitals[place].as_ref();
+                Some(Member {
+                    slot: place,
+                    role: Role::of_slot(place),
+                    name: None,
+                    vocation: Vocation {
+                        id: held.job.or_else(|| vitals.and_then(|v| v.job)),
+                        name: None,
+                    },
+                    hp: vitals.and_then(|v| fraction(v.hp, v.maxhp)),
+                    st: vitals.and_then(|v| fraction(v.st, v.stmax)),
+                    down: vitals.and_then(|v| v.hp).is_some_and(|hp| hp <= 0.0),
+                    left: false,
+                    damage: 0,
+                    dps: None,
+                    hits: 0,
+                    skills: Vec::new(),
+                    no_damage_skills: None,
+                    parts: None,
+                    mix: None,
+                })
+            })
+            .collect()
     }
 
     fn roster(&mut self, rg: Option<i64>, members: &[RosterMember]) {
@@ -591,12 +629,13 @@ impl Fray {
             }
         }
 
-        let ended_at = match (state, self.clock) {
-            (FightState::Settled, Some(c)) => Some((self.time_format)(
-                c.unix + (acc.last_hit_t - c.clock).round() as i64,
-            )),
+        let ended_ms = match (state, self.clock) {
+            (FightState::Settled, Some(c)) => {
+                Some(((c.unix as f64 + (acc.last_hit_t - c.clock)) * 1000.0).round() as i64)
+            }
             _ => None,
         };
+        let ended_at = ended_ms.map(|ms| (self.time_format)(ms.div_euclid(1000)));
 
         Fight {
             id: format!("{}-{}", self.ses, acc.n),
@@ -613,6 +652,7 @@ impl Fray {
                 })
                 .collect(),
             ended_at,
+            ended_at_ms: ended_ms,
             members,
             h_party,
             h_all,

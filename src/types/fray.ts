@@ -105,6 +105,8 @@ export interface FrayFight {
   foes: FrayFoe[];
   /** Local wall-clock time it settled, "21:04", or null while open. */
   endedAt: string | null;
+  /** The same moment as epoch milliseconds, for "6 min ago" across midnight; null while open or unknown. */
+  endedAtMs: number | null;
   /** Four entries, slot order; null where the slot is empty. */
   members: (FrayMember | null)[];
   hParty: number;
@@ -132,6 +134,8 @@ export interface FrayFeed {
   /** Seconds since the last heartbeat, or null when there has been none. */
   lastBeatAgoS: number | null;
   gameRunning: boolean;
+  /** When the spine first saw this run of the game, epoch ms; null while it does not run. */
+  gameStartedMs: number | null;
   reframework: boolean;
   eyeInstalled: boolean;
   /** Whether the eye says it is recording, and why not when it is not. */
@@ -141,6 +145,10 @@ export interface FrayFeed {
 
 export interface FrayFrame {
   feed: FrayFeed;
+  /** The party as the eye last read it, outside any fight: four places in slot order, null where
+   *  empty, each with zero damage and no skills (S5 idle, S7 the eye silent). Empty before the
+   *  eye's first roster. */
+  party: (FrayMember | null)[];
   /** The fight on the stele now: open while it runs, the last settled one after. */
   fight: FrayFight | null;
   /** Up to five settled fights, newest first (THE STRATA, RF.26). */
