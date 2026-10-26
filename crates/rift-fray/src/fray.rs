@@ -6,10 +6,12 @@
 //! line's roster generation, names a party member, and any other character is one of the others
 //! (an ally, or a foe striking a foe), never the party and never the world.
 //!
-//! **How much.** A hit credits the HP its victim lost (`hp0 − hp1`), not the game's `dmg1`: the
-//! first real session (2026-10-26) measured the party's `dmg1` at 96,058 against 38,820 HP lost
-//! and a game ledger of 40,008, because `dmg1` is reckoned before HP clamps it (overkill, a dead
-//! or immune target). `dmg1` stands in only when the HP could not be read.
+//! **How much.** A hit credits its `dmg1` capped at the HP its victim had before it
+//! (`min(dmg1, hp0)`), the game's own rule: on the first real session (2026-10-26) the party's
+//! raw `dmg1` summed to 96,058, the capped sum to 40,008, and the game's ledger
+//! (TotalDamageFromPlayerParty) to exactly 40,008. The HP read after the hit (`hp0 − hp1`) summed
+//! to 38,820, short by 1,188, so it is not the ledger's rule. `dmg1` stands alone only when `hp0`
+//! was not read.
 //!
 //! **A fight** opens at the party's first damage to a foe; from then on it gathers every hit on
 //! the foes the party has struck, and settles once the party has dealt nothing for
@@ -80,17 +82,14 @@ pub fn local_time(unix: i64) -> String {
         .unwrap_or_default()
 }
 
-/// The HP a hit took from its victim, or its `dmg1` when the HP was not read.
+/// A hit's credit: its `dmg1` capped at the HP its victim had before it, the game's own ledger
+/// rule (measured 40,008 against 40,008); `dmg1` alone when `hp0` was not read.
 pub fn credited(hit: &Hit) -> f64 {
-    let lost = hit
-        .vic
-        .as_ref()
-        .and_then(|v| Some(v.hp0? - v.hp1?))
-        .map(|d| d.max(0.0));
-    lost.or(hit.dmg)
-        .filter(|d| d.is_finite())
-        .unwrap_or(0.0)
-        .max(0.0)
+    let Some(dmg) = hit.dmg.filter(|d| d.is_finite()) else {
+        return 0.0;
+    };
+    let cap = hit.vic.as_ref().and_then(|v| v.hp0).map(|hp| hp.max(0.0));
+    cap.map_or(dmg, |hp| dmg.min(hp)).max(0.0)
 }
 
 /// A party member as one fight knows them.

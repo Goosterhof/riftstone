@@ -522,7 +522,7 @@ fn should_keep_a_card_through_a_slot_change_and_a_respawn() {
 }
 
 #[test]
-fn should_credit_the_hp_lost_not_the_rolled_damage() {
+fn should_cap_the_credit_at_the_hp_the_foe_had() {
     let mut eye = Eye::new();
     eye.party().push(
         1.0,

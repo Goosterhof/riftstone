@@ -920,10 +920,11 @@ exact path). Types live in `src/types/fray.ts`, mirrored by `crates/rift-fray/sr
   over time arrives this way until the debilitation's causer is read); otherwise the slot the eye
   wrote, or the slot of (address, CharacterID) under the line's roster generation, names a
   member, and any other character (an ally, a foe striking a foe) goes to `others`, kept apart
-  and outside `hAll`. A hit credits the HP its victim lost (`hp0 − hp1`); the game's `dmg1`
-  stands in only when HP was not read, because `dmg1` is reckoned before HP clamps it: on the
-  first real session the party's `dmg1` summed to 96,058 against 38,820 HP lost and a game ledger
-  of 40,008.
+  and outside `hAll`. A hit credits its `dmg1` capped at the HP its victim had before it
+  (`min(dmg1, hp0)`), the game's own ledger rule: on the first real session the party's raw
+  `dmg1` summed to 96,058, the capped sum to 40,008, and TotalDamageFromPlayerParty to exactly
+  40,008 (the HP read after each hit summed to 38,820, so it is not the rule). `dmg1` stands
+  alone only when `hp0` was not read.
 - **Keys**: the custom skill in use (`kind: "skill"`, its CustomSkillState id), else the shell's
   param id (`"shell <id>"`), else the action hash in hex (`kind: "action"`), else `unknown`.
 - **A fight** opens at the party's first damage to a foe and gathers every hit on the foes the

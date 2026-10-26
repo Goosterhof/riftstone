@@ -82,7 +82,7 @@ pub struct Victim {
     /// The foe lifecycle id; None when the victim is no foe (a party member, or nobody).
     pub vid: Option<u64>,
     pub cid: Option<i64>,
-    /// The victim Character's HP in the pre and the post: what the hit really took.
+    /// The victim Character's HP in the pre and the post; `hp0` caps the hit's credit.
     pub hp0: Option<f64>,
     pub hp1: Option<f64>,
     /// TotalDamageFromPlayerParty in the pre and the post: the game's own party ledger.
@@ -92,8 +92,8 @@ pub struct Victim {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Hit {
-    /// Damage in the post (`dmg1`): the game's figure before HP clamps it (overkill, an immune
-    /// part). The Fray credits the HP the victim lost, and falls back to this when HP is unread.
+    /// Damage in the post (`dmg1`): the game's figure before HP clamps it (overkill on a dying or
+    /// dead foe). The Fray credits it capped at the victim's `hp0`, as the game's ledger does.
     pub dmg: Option<f64>,
     pub cmp: Option<[f64; PARTS]>,
     /// None when the line carries no attacker object.
