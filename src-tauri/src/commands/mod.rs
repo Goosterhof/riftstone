@@ -21,6 +21,7 @@ use crate::state::AppState;
 pub mod browse;
 pub mod deploy;
 pub mod downloads;
+pub mod fray;
 pub mod library;
 pub mod muster;
 pub mod nexus;

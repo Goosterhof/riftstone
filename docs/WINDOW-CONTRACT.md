@@ -894,3 +894,48 @@ the window's alone: they add no command, event or type, and the two library acti
   away*, *Bring it back*) do not wait on a write the option detail has in flight. The spine takes
   every write one at a time under its deploy lock and works each one out again when its turn
   comes, so a keep-newest after an uninstall of the same version finds that install gone.
+
+## v0.6 — THE FRAY, the party screen (in progress, branch `feat/fray`)
+
+A second window, `fray` (`fray.html`, #00015 §19), for the player's second monitor: the party's
+damage while a fight runs, the fight's record when it settles, and the last five fights. The
+numbers come from the eye, a read-only REFramework script inside the game that writes every hit,
+death, foe sample and heartbeat as one JSON line under `<game>\reframework\data\riftstone\probe\`.
+`crates/rift-fray` reads those lines, credits each hit, cuts the session into fights and builds
+the frame; `src-tauri/src/fray.rs` (the desk) follows the newest session. Read-only: nothing
+here writes, and the autorun folder is never listed (the desk checks the eye's one file by its
+exact path). Types live in `src/types/fray.ts`, mirrored by `crates/rift-fray/src/frame.rs`.
+
+### Commands
+
+| Command (invoke name) | Args (JS, camelCase) | Returns | Notes |
+|---|---|---|---|
+| `fray_frame` | — | `FrayFrame` | The window pulls it every 250 ms (no events: a push travels by webview eval, which WebView2 starves). Each pull reads the lines the eye wrote since the last one. `feed.state` is `live` while heartbeats arrive (one within 3 s, FQ.3's fallback), `stale` when the game runs and they stopped, `none` with no session, with the game closed, or after the eye's stop line (`eyeRecording: false`, `eyeReason: "stopped"`). The last fight and the shelf stay in the frame after the game closes. Vocations are named from THE MUSTER's Codex; members, foes and skills travel as ids (`name: null`) until their names are joined. |
+| `open_fray` | — | `void` | Builds the `fray` window from `tauri.conf.json` (`create: false`, `focus: false`), or shows it when it is open. It never takes focus, so the game keeps the keyboard (FQ.8; native acceptance owed). The pillar's door below the rooms calls it. |
+
+### Credit, fights and the two totals
+
+- **Credit** is the reviewed analyzer's `attackerLabel` (party-screen probe, `analyze.mjs` §4): an
+  attacker resolved as `gimmick` is the world's; no attacker, or `none`, is unattributed (damage
+  over time arrives this way until the debilitation's causer is read); otherwise the slot the eye
+  wrote, or the slot of (address, CharacterID) under the line's roster generation, names a
+  member, and any other character goes to the world row as a known source that is not the
+  party. The damage credited is the hit's post `dmg1`.
+- **Keys**: the custom skill in use (`kind: "skill"`, its CustomSkillState id), else the shell's
+  param id (`"shell <id>"`), else the action hash in hex (`kind: "action"`), else `unknown`.
+- **A fight** opens at the first damage dealt to a foe. It settles after 8 game seconds without
+  a hit on a foe while the game does not signal battle, after 30 whatever it signals, or at the
+  eye's stop line. A settled fight lasts from its first hit to its last.
+- **A roster change** applies between fights (FQ.21's fallback): a member who leaves mid-fight
+  keeps what they dealt, with `left: true`, and a newcomer's hits in that fight are unattributed.
+- **`hParty`** is the four members' damage, **`hAll`** that plus the unattributed and the world;
+  **`ledger`** sums, over the fight's foes, the rise of the game's own `TotalDamageFromPlayerParty`.
+  The honesty line is hParty ÷ ledger.
+- **`types`** is `additive` when 95% of the fight's readable hits split into their seven parts
+  within max(1 HP, 1%) (the probe's G7 rule); then each member's `parts` sum to its damage
+  exactly (the remainder on the largest part). Otherwise `mix`, with `parts: null`.
+- **`attribution`** is `unqualified` until a witness check runs live; the probe's offline
+  analysis (8.B) is still owed.
+
+`fray-read <the eye's folder>` (the crate's binary) prints one session's fights, ids and numbers
+only, for a recording read away from the window.

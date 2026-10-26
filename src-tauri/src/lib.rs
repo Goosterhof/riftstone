@@ -33,6 +33,7 @@ pub mod downloads;
 pub mod dto;
 pub mod events;
 pub mod family;
+pub mod fray;
 pub mod fresh;
 pub mod keys;
 pub mod landing;
@@ -138,6 +139,7 @@ pub fn run() {
                 Box::new(keys::SystemKeyStore),
             );
             app.manage(Arc::clone(&spine));
+            app.manage(Arc::new(fray::FrayDesk::default()));
             // A cold start for a Mod Manager Download link: held at the door
             // until the key is validated and the window listens (startup
             // step 9).
@@ -228,5 +230,7 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         commands::versions::join_versions,
         commands::versions::part_versions,
         commands::versions::decline_version_question,
+        commands::fray::fray_frame,
+        commands::fray::open_fray,
     ])
 }

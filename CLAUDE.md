@@ -80,6 +80,19 @@ meaning faster* — and the voice lives in the frame, the states and the two sig
   needed and applies the player's launch options); otherwise it starts `DD2.exe` in the game folder.
   REFramework's `dinput8.dll` loads from the game folder either way.
 
+## THE FRAY — the party screen (v0.6, in progress on `feat/fray`)
+
+A second window, `fray`, for the investor's portrait second monitor: the party's damage per
+member while a fight runs, what it was made of (skills first, then the seven damage parts), the
+fight's record when it settles, and the last five fights (#00015 §19, ruled in three passes). Its
+numbers come from **the eye**, a read-only REFramework script that writes every hit, death, foe
+sample and heartbeat as one JSON line under `<game>\reframework\data\riftstone\probe\`. Today
+the eye is the lab's frozen party-screen probe (final-6, md5 `889b3ca5…`, kept in the private lab
+repo, not here); a slimmer production eye follows once a real session has been read.
+`crates/rift-fray` credits each hit by the reviewed analyzer's rule and cuts fights;
+`src-tauri/src/fray.rs` follows the newest session and answers `fray_frame` (WINDOW-CONTRACT
+§ v0.6). The eye's folder is read; the autorun folder is never listed.
+
 ## Workspace
 
 ```
@@ -88,6 +101,7 @@ crates/rift-archive   zip / 7z / rar (UnRAR) / folder readers behind rift_core::
 crates/rift-pak       RE Engine KPKA table of contents + the engine's murmur3 path hash; v0.4: the game's own pak (its encrypted table, chunked/zstd/deflate entries) and its GMSG text files
 crates/rift-save      v0.4: a save file, read-only: the DSSS container, its Mandarin cipher, the self-describing class stream
 crates/rift-muster    v0.4: the party in a save, the save folders and slot files, and the Codex (the game's names, by id)
+crates/rift-fray      v0.6 (in progress): THE FRAY's numbers — the eye's NDJSON tail, credit per member, fights, the frame; `fray-read` prints a session
 crates/rift-catalog   modinfo.ini, option discovery, the addon tree and its nesting, search, conflicts, the scan cache
 crates/rift-deploy    game/REFramework discovery, Play's plan, the journal (schema 2) and its relink, install/uninstall/reorder, preflight
 crates/rift-nexus     anonymous Nexus v2 GraphQL (updates, labels, Find, browse, a mod's files), v1 with the key (account, downloads, tracking, endorsing), the downloader, nxm links

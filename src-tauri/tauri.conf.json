@@ -26,6 +26,21 @@
         "transparent": false,
         "center": true,
         "url": "index.html"
+      },
+      {
+        "label": "fray",
+        "create": false,
+        "title": "The Fray",
+        "width": 720,
+        "height": 1280,
+        "minWidth": 480,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true,
+        "transparent": false,
+        "focus": false,
+        "url": "fray.html"
       }
     ],
     "security": {

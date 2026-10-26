@@ -22,6 +22,7 @@ rift-deploy.workspace = true
 rift-nexus.workspace = true
 rift-save.workspace = true
 rift-muster.workspace = true
+rift-fray.workspace = true
 
 tauri = { version = "2", features = [] }
 # The first plugin (v0.3): a second launch — Windows starting
