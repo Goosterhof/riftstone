@@ -97,10 +97,11 @@ pub async fn open_fray<R: tauri::Runtime>(
         .focused(false);
     if let Some(index) = target {
         builder = builder.decorations(false).shadow(false);
-        // Born on its monitor, so it never shows on the game's screen first. tao places a
-        // logical birth point on the first monitor that holds it in THAT monitor's scale, so on
-        // a mixed-DPI desk the target's own origin can land on another one: the point is
-        // chosen by tao's rule ([`birth_point`]). The fit below then sets the exact bounds.
+        // Born on its monitor when a grid point lands there. tao places a logical birth point
+        // on the first monitor that holds it in THAT monitor's scale, so on a mixed-DPI desk the
+        // target's own origin can land on another one: the point is chosen by tao's rule
+        // ([`birth_point`]). With no such point it is born at Windows' default spot, which can
+        // be the game's screen; either way the fit below sets the exact bounds at once.
         let screens: Vec<Screen> = monitors.iter().map(Screen::of).collect();
         if let Some((x, y)) = birth_point(&screens, index) {
             builder = builder.position(x, y);
