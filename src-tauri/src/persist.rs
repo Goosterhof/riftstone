@@ -151,6 +151,12 @@ pub struct StoredSettings {
     pub manual_game_root: Option<PathBuf>,
     /// v0.5: THE MUSTER's chosen character (a hash of private names): never logged.
     pub muster_character: Option<String>,
+    /// v0.6: the monitor THE FRAY took last, by the OS's name for it (`\\.\DISPLAY2`), and by
+    /// its place in the list for a monitor the OS did not name (`commands::fray::own_monitor`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fray_display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fray_display: Option<usize>,
 }
 
 /// `settings.json` as any version wrote it.
@@ -172,6 +178,18 @@ struct SettingsFile {
     /// v0.5. Anything but a character key reads as absent rather than failing the whole file.
     #[serde(default, deserialize_with = "known_character")]
     muster_character: Option<String>,
+    /// v0.6. Anything but a string, or a whole number, reads as absent, as above.
+    #[serde(default, deserialize_with = "lenient")]
+    fray_display_name: Option<String>,
+    #[serde(default, deserialize_with = "lenient")]
+    fray_display: Option<usize>,
+}
+
+fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
 }
 
 fn known_character<'de, D: serde::Deserializer<'de>>(
@@ -208,6 +226,8 @@ impl From<SettingsFile> for StoredSettings {
             auto_check_updates: file.auto_check_updates,
             manual_game_root: file.manual_game_root,
             muster_character: file.muster_character,
+            fray_display_name: file.fray_display_name,
+            fray_display: file.fray_display,
         }
     }
 }
@@ -224,6 +244,8 @@ impl Default for StoredSettings {
             auto_check_updates: window.auto_check_updates,
             manual_game_root: None,
             muster_character: None,
+            fray_display_name: None,
+            fray_display: None,
         }
     }
 }

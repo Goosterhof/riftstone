@@ -826,6 +826,14 @@ fn service_invoke_names() -> Vec<&'static str> {
         .collect()
 }
 
+/// The spine's own handler list, for the commands the mock runtime cannot run.
+const HANDLERS: &str = include_str!("../src/lib.rs");
+
+/// Commands that ask the OS about its monitors: Tauri's mock runtime answers
+/// `available_monitors` with `unimplemented!()`, so these are checked against the handler list
+/// rather than invoked (v0.6, THE FRAY takes a monitor of its own).
+const ASKS_THE_SCREENS: [&str; 1] = ["open_fray"];
+
 #[test]
 fn every_invoke_name_the_window_sends_is_registered() {
     let names = service_invoke_names();
@@ -842,6 +850,13 @@ fn every_invoke_name_the_window_sends_is_registered() {
     // what it misses; only an unregistered one is "not found". (The bench's
     // launcher records, its Nexus is unreachable: nothing leaves the bench.)
     for name in names {
+        if ASKS_THE_SCREENS.contains(&name) {
+            assert!(
+                HANDLERS.contains(&format!("::{name},")),
+                "{name} is invoked by the window and not registered"
+            );
+            continue;
+        }
         if let Err(err) = window.invoke(name, json!({})) {
             assert!(
                 !err.to_string()
