@@ -338,3 +338,194 @@ fn names_that_do_not_match_ask_nothing_but_the_word_still_joins() {
         w.other.0
     );
 }
+
+/// The older-versions folder, beside the bench's mods folder.
+fn older_folder(w: &Word) -> std::path::PathBuf {
+    w.bench.mods.with_file_name("mods (older versions)")
+}
+
+/// A player's own package already holds the folder's name there, so a put-away takes ` (2)`.
+fn occupy_older_name(w: &Word) {
+    let taken = older_folder(w).join(FOLDER);
+    fs::create_dir_all(&taken).unwrap();
+    fs::write(taken.join("existing.txt"), b"the player's own").unwrap();
+}
+
+/// RS-A2 (the Heretic's Assay, 2026-10-20): the record follows the new name onto disk before
+/// the move, so a save that fails refuses the move instead of reporting a put-away that the next
+/// launch forgets the join of.
+#[test]
+fn a_put_away_that_cannot_save_the_record_first_moves_nothing() {
+    let w = word_bench();
+    let state = found(&w);
+    versions::join_versions_impl(&state, &w.folder.0, &w.new.0).unwrap();
+    occupy_older_name(&w);
+    let file = w.dirs.nexus_file();
+    let durable = fs::read(&file).unwrap();
+    // A write that fails at nexus.json, as a full disk or a refused permission does.
+    fs::remove_file(&file).unwrap();
+    fs::create_dir(&file).unwrap();
+
+    match versions::put_away_impl(&state, &w.folder.0) {
+        Err(RiftError::Io { detail }) => assert_eq!(
+            detail,
+            "its Nexus record could not be saved under the new name first"
+        ),
+        other => panic!("expected the move refused, got {other:?}"),
+    }
+    assert!(
+        w.bench.mods.join(FOLDER).join(SCRIPT).is_file(),
+        "still in the mods folder"
+    );
+    assert!(!older_folder(&w).join("Hearth Embers (2)").exists());
+    let view = library::get_library_impl(&state);
+    assert!(
+        entry(&view, &w.folder).family.is_some(),
+        "the record written ahead is taken back in memory too"
+    );
+    drop(state);
+
+    fs::remove_dir(&file).unwrap();
+    fs::write(&file, durable).unwrap();
+    let state = w.open();
+    let view = library::get_library_impl(&state);
+    assert_eq!(
+        entry(&view, &w.folder).family.as_ref().unwrap().lead,
+        w.new.0
+    );
+}
+
+#[test]
+fn a_renamed_put_away_keeps_the_join_on_disk_across_a_restart_and_back() {
+    let w = word_bench();
+    let state = found(&w);
+    versions::join_versions_impl(&state, &w.folder.0, &w.new.0).unwrap();
+    occupy_older_name(&w);
+
+    let away = versions::put_away_impl(&state, &w.folder.0).unwrap();
+    assert_eq!(away.landed_as, "Hearth Embers (2)");
+    let renamed = PackageId::for_folder(&away.landed_as);
+    let on_disk: serde_json::Value =
+        serde_json::from_slice(&fs::read(w.dirs.nexus_file()).unwrap()).unwrap();
+    assert_eq!(on_disk["packages"][&renamed.0]["link"]["source"], "joined");
+    assert!(
+        on_disk["packages"].get(&w.folder.0).is_none(),
+        "the old name's record goes once the move landed"
+    );
+    drop(state);
+
+    let state = w.open();
+    let shelf = versions::get_older_versions_impl(&state).unwrap();
+    let row = shelf
+        .items
+        .iter()
+        .find(|item| item.file_name == away.landed_as)
+        .unwrap();
+    assert!(
+        row.newer_in_mods,
+        "the restart still knows its newer version"
+    );
+    let back = versions::bring_back_impl(&state, &away.landed_as).unwrap();
+    state.wait_until_scanned();
+    let view = library::get_library_impl(&state);
+    let returned = entry(&view, &PackageId::for_folder(&back.landed_as));
+    assert_eq!(returned.family.as_ref().unwrap().lead, w.new.0);
+}
+
+#[test]
+fn a_bring_back_that_cannot_save_the_record_first_stays_away() {
+    let w = word_bench();
+    let state = found(&w);
+    versions::join_versions_impl(&state, &w.folder.0, &w.new.0).unwrap();
+    let away = versions::put_away_impl(&state, &w.folder.0).unwrap();
+    assert_eq!(away.landed_as, FOLDER);
+    // Another folder of that name lands in the mods folder meanwhile: the way back takes ` (2)`.
+    fs::create_dir_all(w.bench.mods.join(FOLDER)).unwrap();
+    fs::write(w.bench.mods.join(FOLDER).join("readme.txt"), b"another").unwrap();
+    let file = w.dirs.nexus_file();
+    fs::remove_file(&file).unwrap();
+    fs::create_dir(&file).unwrap();
+
+    match versions::bring_back_impl(&state, &away.landed_as) {
+        Err(RiftError::Io { detail }) => assert_eq!(
+            detail,
+            "its Nexus record could not be saved under the new name first"
+        ),
+        other => panic!("expected the move refused, got {other:?}"),
+    }
+    assert!(
+        older_folder(&w).join(FOLDER).join(SCRIPT).is_file(),
+        "still away"
+    );
+    assert!(!w.bench.mods.join("Hearth Embers (2)").exists());
+}
+
+/// The Heretic's counterexample on PR #3 (at f0769ac): a crash between the save ahead and the
+/// move leaves the record under both names, and a restart loads the leftover. The player then
+/// joins the folder elsewhere; the next put-away onto that name must carry the NEW join, not
+/// the leftover's.
+#[test]
+fn a_leftover_record_under_the_landing_name_is_written_over_not_inherited() {
+    let w = word_bench();
+    let state = found(&w);
+    versions::join_versions_impl(&state, &w.folder.0, &w.new.0).unwrap();
+    drop(state);
+    occupy_older_name(&w);
+    let renamed = PackageId::for_folder("Hearth Embers (2)");
+    // The durable bytes of that crash: the record under the old name and the landing name.
+    let file = w.dirs.nexus_file();
+    let mut on_disk: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    let record = on_disk["packages"][&w.folder.0].clone();
+    on_disk["packages"][&renamed.0] = record;
+    fs::write(&file, serde_json::to_vec(&on_disk).unwrap()).unwrap();
+
+    let state = w.open();
+    versions::part_versions_impl(&state, &w.folder.0).unwrap();
+    versions::join_versions_impl(&state, &w.folder.0, &w.other.0).unwrap();
+    let away = versions::put_away_impl(&state, &w.folder.0).unwrap();
+    assert_eq!(away.landed_as, "Hearth Embers (2)");
+    let on_disk: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    assert_eq!(
+        on_disk["packages"][&renamed.0]["link"]["groupId"],
+        GROUP + 1,
+        "the join the player made last, not the leftover's"
+    );
+}
+
+/// Ids go by name, not by folder: a version brought back must not take the name of another
+/// version still in the older-versions folder, or it would take that one's record.
+#[test]
+fn a_bring_back_passes_over_a_name_another_version_carries() {
+    let w = word_bench();
+    let state = found(&w);
+    versions::join_versions_impl(&state, &w.folder.0, &w.new.0).unwrap();
+    let away = versions::put_away_impl(&state, &w.folder.0).unwrap();
+    assert_eq!(away.landed_as, FOLDER);
+    drop(state);
+    // Another version of the mod, away as "Hearth Embers (2)" with its own record.
+    let other_away = older_folder(&w).join("Hearth Embers (2)");
+    fs::create_dir_all(&other_away).unwrap();
+    fs::write(other_away.join("readme.txt"), b"an older one").unwrap();
+    let theirs = PackageId::for_folder("Hearth Embers (2)");
+    let file = w.dirs.nexus_file();
+    let mut on_disk: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    on_disk["packages"][&theirs.0] = json!({ "link": pinned(3001, GROUP + 1, "0.9", 500) });
+    fs::write(&file, serde_json::to_vec(&on_disk).unwrap()).unwrap();
+    // The mods folder holds the name the folder left with, so the way back is renamed.
+    fs::create_dir_all(w.bench.mods.join(FOLDER)).unwrap();
+    fs::write(w.bench.mods.join(FOLDER).join("readme.txt"), b"another").unwrap();
+
+    let state = w.open();
+    let back = versions::bring_back_impl(&state, FOLDER).unwrap();
+    assert_eq!(
+        back.landed_as, "Hearth Embers (3)",
+        "(2) is another version's"
+    );
+    let on_disk: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    assert_eq!(
+        on_disk["packages"][&theirs.0]["link"]["fileId"], 3001,
+        "theirs untouched"
+    );
+    let ours = PackageId::for_folder(&back.landed_as);
+    assert_eq!(on_disk["packages"][&ours.0]["link"]["source"], "joined");
+}

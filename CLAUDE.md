@@ -80,6 +80,22 @@ meaning faster* — and the voice lives in the frame, the states and the two sig
   needed and applies the player's launch options); otherwise it starts `DD2.exe` in the game folder.
   REFramework's `dinput8.dll` loads from the game folder either way.
 
+## THE FRAY — the party screen (v0.6, in progress on `feat/fray`)
+
+A second window, `fray`, for the investor's portrait second monitor: the party's damage per
+member while a fight runs, what it was made of (skills first, then the seven damage parts), the
+fight's record when it settles, and the last five fights (#00015 §19, ruled in three passes). Its
+numbers come from **the eye**, a read-only REFramework script that writes every hit, death, foe
+sample and heartbeat as one JSON line under `<game>\reframework\data\riftstone\probe\`. Today
+the eye is the lab's frozen party-screen probe (final-6, md5 `889b3ca5…`, kept in the private lab
+repo, not here); a slimmer production eye follows once a real session has been read.
+`crates/rift-fray` credits each hit by the reviewed analyzer's rule and cuts fights;
+`src-tauri/src/fray.rs` follows the newest session and answers `fray_frame` (WINDOW-CONTRACT
+§ v0.6), naming vocations and custom skills from THE MUSTER's Codex: the eye's `sk` is the id
+the save carries (measured on the first real session, every skill a member used fell in its own
+vocation's block, and the game's text named all of them). The eye's folder is read; the autorun
+folder is never listed.
+
 ## Workspace
 
 ```
@@ -88,6 +104,7 @@ crates/rift-archive   zip / 7z / rar (UnRAR) / folder readers behind rift_core::
 crates/rift-pak       RE Engine KPKA table of contents + the engine's murmur3 path hash; v0.4: the game's own pak (its encrypted table, chunked/zstd/deflate entries) and its GMSG text files
 crates/rift-save      v0.4: a save file, read-only: the DSSS container, its Mandarin cipher, the self-describing class stream
 crates/rift-muster    v0.4: the party in a save, the save folders and slot files, and the Codex (the game's names, by id)
+crates/rift-fray      v0.6 (in progress): THE FRAY's numbers — the eye's NDJSON tail, credit per member, fights, the frame; `fray-read` prints a session
 crates/rift-catalog   modinfo.ini, option discovery, the addon tree and its nesting, search, conflicts, the scan cache
 crates/rift-deploy    game/REFramework discovery, Play's plan, the journal (schema 2) and its relink, install/uninstall/reorder, preflight
 crates/rift-nexus     anonymous Nexus v2 GraphQL (updates, labels, Find, browse, a mod's files), v1 with the key (account, downloads, tracking, endorsing), the downloader, nxm links
@@ -262,6 +279,12 @@ never made). The player's word (#00015 §18.18): `question` (the unpacked Lanter
 linked by mod id, beside the pinned v1.3, and the stone asks), `questioninstalled`, `questionjoined`,
 `questionmanual` (no question, two pinned files to pick from) and `questionrefused` (the join refused once).
 
+THE FRAY's scenes (v0.6, `src/services/mock/fray.ts`, whose header lists all 52) open at
+`fray.html?mock=<scene>`: `fray` (FIGHT 7 at 1:36), `fraysettle` (the last six seconds, then THE
+SETTLING), `fraysettled`, `fraymember`, `fraytypes`, `frayworld`, `frayleft`, `frayshelf`,
+`frayidle`, `fraystale`, `fraysilent`, `frayasleep` and more. The pillar's THE FRAY door opens
+`fray.html?mock=fray` on the mock.
+
 ```sh
 npm run dev            # the window in a browser on the mock backend (?mock=empty|emptymods|nofloor|gonemods|nogame|scanning|refoff|patched|offline|fresh|firstrun|key|premium|rejected|quotalow|running|nxmother|nocreations, comma-separated)
 npm run tauri dev      # the real app (WSL bench: set RIFTSTONE_GAME_ROOT / RIFTSTONE_MODS_DIR / RIFTSTONE_DATA_HOME)
@@ -408,11 +431,16 @@ The new regressions are `tests/selectionLifetime.spec.ts` and `tests/libraryUsab
   there (the install still stands and says why). Nor is anything put away when the mods folder is
   a link to another drive: the older-versions folder sits beside the link, and a move across
   drives is refused rather than turned into a copy.
-- A collision rename during put-away or bring-back moves the package before its changed
-  identity is saved to `nexus.json`. If that save fails, the move still reports success;
-  after restart a joined folder can lose its version association. Its bytes remain present.
-  A disposable failure-injection probe reproduced this; durable relocation/recovery remains
-  open. No data-loss claim or native Windows reproduction is implied.
+- A put-away or bring-back that has to take another name (` (2)` …) saves the record under that
+  name to `nexus.json` BEFORE the move (RS-A2, closed in v0.6): a save that fails refuses the
+  move with nothing moved. A crash between that save and the move leaves the record under both
+  names, and a restart loads both, so a leftover can outlive every later save. The stone's own
+  moves are safe from it: before a move takes a name it writes over whatever record that name
+  holds (the Heretic's counterexample on PR #3), and it passes over a name whose id another
+  archive or folder on disk already carries, since ids go by name and not by folder. A package
+  the PLAYER later puts in the mods folder under exactly a leftover's name would still inherit
+  it. While `nexus.json` is held (unreadable at launch), nothing is saved, so the move goes ahead
+  as before and the window already names the file held.
 - THE MUSTER tells characters apart by the Arisen's and the main pawn's names within one Steam
   account: the saves carry no playthrough id. Two playthroughs begun with the same two names read
   as one character, and the slot menu tells their saves apart by level and time.

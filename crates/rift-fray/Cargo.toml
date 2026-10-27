@@ -1,0 +1,16 @@
+[package]
+name = "rift-fray"
+description = "THE FRAY's stone: reads the eye's fight log, credits every hit to a party member, and cuts the session into fights for the party screen."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

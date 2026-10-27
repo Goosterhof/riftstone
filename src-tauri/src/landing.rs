@@ -168,7 +168,18 @@ pub(crate) fn copy_new(from: &Path, to: &Path) -> io::Result<()> {
 /// under its own name or ` (2)` … when that one is taken there (any case). The move never lands
 /// on an existing name and leaves no copy behind ([`move_new`]); a folder is never copied.
 /// Returns the name it took.
-pub(crate) fn move_aside(entry: &Path, into: &Path) -> io::Result<String> {
+///
+/// `ahead` runs on each free name before the move onto it: what must be on disk before the
+/// package carries that name (RS-A2, the record that follows it). `Ok(false)` passes the name
+/// over for the next one; an `Err` stops with nothing moved. When the move onto a name fails,
+/// `undo` takes back what `ahead` wrote for it before the next name is tried or the error
+/// returns.
+pub(crate) fn move_aside(
+    entry: &Path,
+    into: &Path,
+    mut ahead: impl FnMut(&str) -> io::Result<bool>,
+    mut undo: impl FnMut(&str),
+) -> io::Result<String> {
     let wanted = entry
         .file_name()
         .and_then(|name| name.to_str())
@@ -189,7 +200,14 @@ pub(crate) fn move_aside(entry: &Path, into: &Path) -> io::Result<String> {
         if occupant(into, &name).is_some() {
             continue;
         }
-        match move_new(entry, &into.join(&name)) {
+        if !ahead(&name)? {
+            continue;
+        }
+        let moved = move_new(entry, &into.join(&name));
+        if moved.is_err() {
+            undo(&name);
+        }
+        match moved {
             Ok(()) => return Ok(name),
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(err),
@@ -282,7 +300,7 @@ mod tests {
         let archive = mods.join("Lantern Glow 1.0.zip");
         fs::write(&archive, b"version one").unwrap();
         assert_eq!(
-            move_aside(&archive, &older).unwrap(),
+            move_aside(&archive, &older, |_| Ok(true), |_| ()).unwrap(),
             "Lantern Glow 1.0.zip",
             "the folder is made at the first move"
         );
@@ -300,7 +318,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            move_aside(&archive, &older).unwrap(),
+            move_aside(&archive, &older, |_| Ok(true), |_| ()).unwrap(),
             "Lantern Glow 1.0 (2).zip"
         );
         assert_eq!(
@@ -322,7 +340,7 @@ mod tests {
         fs::write(folder.join("modinfo.ini"), b"name=Ermine Cape").unwrap();
         let older = dir.path().join("mods (older versions)");
         assert_eq!(
-            move_aside(&folder, &older).unwrap(),
+            move_aside(&folder, &older, |_| Ok(true), |_| ()).unwrap(),
             "Ermine Cape v2",
             "a folder keeps its dots in its name"
         );
@@ -334,7 +352,7 @@ mod tests {
         // And back again.
         let mods = dir.path().join("mods");
         assert_eq!(
-            move_aside(&older.join("Ermine Cape v2"), &mods).unwrap(),
+            move_aside(&older.join("Ermine Cape v2"), &mods, |_| Ok(true), |_| ()).unwrap(),
             "Ermine Cape v2"
         );
         assert_eq!(

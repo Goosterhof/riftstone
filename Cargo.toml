@@ -1,6 +1,6 @@
 # The Riftstone — workspace root.
 #
-# Eight small crates and the Tauri spine. The pure crates (everything under
+# Nine small crates and the Tauri spine. The pure crates (everything under
 # crates/) compile and test without a webview, so `cargo test --workspace
 # --exclude riftstone` runs in seconds on any bench; only src-tauri pulls in
 # Tauri. Every crate depends on rift-core for the shared domain contract.
@@ -14,6 +14,7 @@
 #                 account, downloads, tracking and endorsing; nxm links
 #   rift-save     a Dragon's Dogma 2 save: the container, its cipher, the class stream
 #   rift-muster   the party in a save, named from the game's own text
+#   rift-fray     THE FRAY: the eye's fight log, credited per member and cut into fights
 #   src-tauri     the window's spine: state, commands, events, downloads, Play
 
 [workspace]
@@ -21,7 +22,7 @@ resolver = "2"
 members = ["crates/*", "src-tauri"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 authors = ["Gerard Oosterhof <gerard@script.nl>"]
 rust-version = "1.85"
@@ -35,6 +36,7 @@ rift-deploy = { path = "crates/rift-deploy" }
 rift-nexus = { path = "crates/rift-nexus" }
 rift-save = { path = "crates/rift-save" }
 rift-muster = { path = "crates/rift-muster" }
+rift-fray = { path = "crates/rift-fray" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

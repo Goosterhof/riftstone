@@ -758,7 +758,10 @@ mods folder (archives and folders, by name, case-blind). `exists` is false until
 put-away makes it. Each item carries its Nexus mod name and version from `nexus.json`, where its
 record stays under its package id while it is away, and whether a newer version of the same file
 is in the mods folder now (the family rule over the mods folder and that record). A move that
-has to take another name carries the record to the id that name gives, both ways.
+has to take another name carries the record to the id that name gives, both ways, and saves it
+there BEFORE the move (v0.6, RS-A2), so the next launch finds it whatever happens after. It
+writes over a leftover record under that name, and passes over a name whose id another archive
+or folder in either folder already carries (ids go by name), so `landedAs` can skip a number.
 `bring_back(fileName)` takes a name the folder lists (any case; anything else is `entryNotFound`,
 never a path), moves it back into the mods folder by the same rules, never onto an existing name,
 and returns `landedAs`. A scan follows (`rift://library-changed`), and the version is in its
@@ -767,7 +770,10 @@ family again. `open_older_versions_folder()` shows the folder in Explorer, Rust-
 
 **Errors.** A move or a read of the folder that cannot be made is an `io` error whose detail is
 the OS's own words only (`Access is denied. (os error 5)`): the window voices it in the context
-`olderVersions`, naming the file and what was tried itself. `putAwayFailed` is a whole sentence
+`olderVersions`, naming the file and what was tried itself. One detail is the stone's own (v0.6,
+RS-A2): `its Nexus record could not be saved under the new name first`, when the record written
+ahead of a renaming move could not reach `nexus.json`; nothing moved, and the same press can be
+made again. `putAwayFailed` is a whole sentence
 that names the files and the reason; the window shows it as it is and adds where the version
 stays. No sentence names more of a path than a file's own name.
 
@@ -894,3 +900,72 @@ the window's alone: they add no command, event or type, and the two library acti
   away*, *Bring it back*) do not wait on a write the option detail has in flight. The spine takes
   every write one at a time under its deploy lock and works each one out again when its turn
   comes, so a keep-newest after an uninstall of the same version finds that install gone.
+
+## v0.6 — THE FRAY, the party screen (in progress, branch `feat/fray`)
+
+A second window, `fray` (`fray.html`, #00015 §19), for the player's second monitor: the party's
+damage while a fight runs, the fight's record when it settles, and the last five fights. The
+numbers come from the eye, a read-only REFramework script inside the game that writes every hit,
+death, foe sample and heartbeat as one JSON line under `<game>\reframework\data\riftstone\probe\`.
+`crates/rift-fray` reads those lines, credits each hit, cuts the session into fights and builds
+the frame; `src-tauri/src/fray.rs` (the desk) follows the newest session. Read-only: nothing
+here writes, and the autorun folder is never listed (the desk checks the eye's one file by its
+exact path). Types live in `src/types/fray.ts`, mirrored by `crates/rift-fray/src/frame.rs`.
+
+### Commands
+
+| Command (invoke name) | Args (JS, camelCase) | Returns | Notes |
+|---|---|---|---|
+| `fray_frame` | — | `FrayFrame` | The window pulls it every 250 ms (no events: a push travels by webview eval, which WebView2 starves). Each pull reads the lines the eye wrote since the last one. `feed.state` is `live` while heartbeats arrive (one within 3 s, FQ.3's fallback), `stale` when the game runs and they stopped, `none` with no session, with the game closed, or after the eye's stop line (`eyeRecording: false`, `eyeReason: "stopped"`). The last fight and the shelf stay in the frame after the game closes. `party` carries the eye's last roster outside any fight (vitals, no damage; empty before the first roster), `fight.endedAtMs` the settle as epoch ms, and `feed.gameStartedMs` when the spine first saw this run of the game. Vocations and custom skills (`kind: "skill"`) are named from THE MUSTER's Codex, in the fight, on the shelf and in `party`; a skill id the Codex lacks keeps `name: null`. Members, foes, actions and shells travel as ids (`name: null`). |
+| `open_fray` | — | `void` | Builds the `fray` window from `tauri.conf.json` (`create: false`, `focus: false`), or shows it when it is open. It never takes focus, so the game keeps the keyboard (FQ.8; native acceptance owed). The pillar's door below the rooms calls it. |
+
+### Credit, fights and the two totals
+
+- **Credit** is the reviewed analyzer's `attackerLabel` (party-screen probe, `analyze.mjs` §4): an
+  attacker resolved as `gimmick` is the world's; no attacker, or `none`, is unattributed (damage
+  over time arrives this way until the debilitation's causer is read); otherwise the slot the eye
+  wrote, or the slot of (address, CharacterID) under the line's roster generation, names a
+  member, and any other character (an ally, a foe striking a foe) goes to `others`, kept apart
+  and outside `hAll`. A hit credits its `dmg1` capped at the HP its victim had before it
+  (`min(dmg1, hp0)`), the game's own ledger rule: on the first real session the party's raw
+  `dmg1` summed to 96,058, the capped sum to 40,008, and TotalDamageFromPlayerParty to exactly
+  40,008 (the HP read after each hit summed to 38,820, so it is not the rule). `dmg1` stands
+  alone only when `hp0` was not read.
+- **Keys**: the custom skill in use (`kind: "skill"`, its CustomSkillState id), else the shell's
+  param id (`"shell <id>"`), else the action hash in hex (`kind: "action"`), else `unknown`.
+- **A fight** opens at the party's first damage to a foe and gathers every hit on the foes the
+  party struck. It settles after 8 game seconds without party damage while the game does not
+  signal battle, after 30 whatever it signals, or at the eye's stop line. A settled fight lasts
+  from the party's first hit to its last.
+- **Cards are people**, known by CharacterID (else address): a member who changes slot or
+  respawns keeps their card, one who leaves keeps what they dealt (`left: true`, back to false if
+  they return), and a newcomer takes their own slot's place when free, else the first free one;
+  with all four taken, their hits are unattributed.
+- **`hParty`** is the four members' damage, **`hAll`** that plus the unattributed and the world;
+  **`ledger`** sums, over the fight's foes, the rise of the game's own `TotalDamageFromPlayerParty`.
+  The honesty line is hParty ÷ ledger.
+- **`types`** is `additive` when 95% of the fight's readable hits split into their seven parts
+  within max(1 HP, 1%) (the probe's G7 rule); then each member's `parts` sum to its damage
+  exactly (the remainder on the largest part). Otherwise `mix`, with `parts: null`. A hit's parts
+  are scaled by its credit over its roll before they are summed, so a capped hit's parts shrink
+  with it (`parts` and `mix` alike).
+- **`dps`** is the member's damage over the fight's `durationS`, `null` for a fight of no length.
+  The window divides the party's head by the same rule and prints `—` where there is none.
+- **The eye's lines** are read segment by segment in order; a segment the OS will not read stops
+  that pull there, and the lines already read from earlier segments still reach the fight.
+- **`attribution`** is `unqualified` until a witness check runs live; the probe's offline
+  analysis (8.B) is still owed.
+
+`fray-read <the eye's folder>` (the crate's binary) prints one session's fights, ids and numbers
+only, for a recording read away from the window.
+
+### What the window may not claim (PR #3's review)
+
+- **Pulls that fail.** The last frame stands, but a `live` feed reads `stale` once no pull has
+  answered for 3 s (the spine's own heartbeat deadline), its heartbeat aged by the wait.
+- **The eye's stop line** (`eyeRecording: false`, `eyeReason: "stopped"`) is a finished recording:
+  THE EYE HAS CLOSED, with no doors. Any other `eyeRecording: false` is THE EYE IS SHUT.
+- **Browsing** a fight credited unchecked gives the doors' words to the legend: the doors read
+  `◀` and `▶` (named Older fight and Newer fight), and the credit's note shortens to
+  `≈ unchecked`, so every verdict fits beside the switch at 720 px. A step along the shelf keeps
+  the keyboard on the door pressed.

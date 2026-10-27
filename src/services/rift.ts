@@ -186,6 +186,9 @@ export interface RiftBackend {
   getMuster(slotId: string): Promise<MusterView>;
   /** v0.4: open the slot's save folder in Explorer, Rust-side (its path stays out of the window). */
   openSavesFolder(slotId: string): Promise<void>;
+  /** v0.6: open THE FRAY, the party screen, in its own window without taking focus
+   *  (WINDOW-CONTRACT § v0.6); a second press brings it forward. */
+  openFray(): Promise<void>;
   /** v0.5: what keeping only the newest version of one file would uninstall and put away. */
   planKeepNewest(packageId: string): Promise<KeepNewestPlanView>;
   /** v0.5: uninstall the older versions' installs of one file, then put them away. */
@@ -309,6 +312,7 @@ async function tauriBackend(): Promise<RiftBackend> {
     getMusterSlots: () => invoke("get_muster_slots"),
     getMuster: (slotId) => invoke("get_muster", { slotId }),
     openSavesFolder: (slotId) => invoke("open_saves_folder", { slotId }),
+    openFray: () => invoke("open_fray"),
     ...versionsCommands(invoke),
     on: async (event, handler) => {
       const unlisten = await listen(event, (e) => {

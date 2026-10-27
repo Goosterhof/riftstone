@@ -2413,6 +2413,11 @@ export function createMockBackend(): MockBackend {
     getMusterSlots: () => muster.getMusterSlots(),
     getMuster: (slotId) => muster.getMuster(slotId),
     openSavesFolder: (slotId) => muster.openSavesFolder(slotId),
+    // --- v0.6: THE FRAY opens as its own page on the mock (never under a test runner) ---
+    openFray() {
+      if (import.meta.env.MODE !== "test") window.open("fray.html?mock=fray", "_blank");
+      return Promise.resolve();
+    },
     musterMock: muster,
     // --- v0.5: versions of one file (./versions.ts, WINDOW-CONTRACT § v0.5) ---
     async planKeepNewest(packageId) {
