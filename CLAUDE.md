@@ -433,12 +433,14 @@ The new regressions are `tests/selectionLifetime.spec.ts` and `tests/libraryUsab
   drives is refused rather than turned into a copy.
 - A put-away or bring-back that has to take another name (` (2)` …) saves the record under that
   name to `nexus.json` BEFORE the move (RS-A2, closed in v0.6): a save that fails refuses the
-  move with nothing moved. Until the save after the move lands, both names hold the same record,
-  which is never wrong for that package. Two failures in a row (the move fails, then the save
-  that takes the new name's record back) can leave that record under a name nothing holds, until
-  the next save; a different package that later lands under exactly that name would inherit it.
-  While `nexus.json` is held (unreadable at launch), nothing is saved, so the move goes ahead as
-  before and the window already names the file held.
+  move with nothing moved. A crash between that save and the move leaves the record under both
+  names, and a restart loads both, so a leftover can outlive every later save. The stone's own
+  moves are safe from it: before a move takes a name it writes over whatever record that name
+  holds (the Heretic's counterexample on PR #3), and it passes over a name whose id another
+  archive or folder on disk already carries, since ids go by name and not by folder. A package
+  the PLAYER later puts in the mods folder under exactly a leftover's name would still inherit
+  it. While `nexus.json` is held (unreadable at launch), nothing is saved, so the move goes ahead
+  as before and the window already names the file held.
 - THE MUSTER tells characters apart by the Arisen's and the main pawn's names within one Steam
   account: the saves carry no playthrough id. Two playthroughs begun with the same two names read
   as one character, and the slot menu tells their saves apart by level and time.

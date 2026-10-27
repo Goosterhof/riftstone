@@ -149,11 +149,16 @@ fn move_package(state: &AppState, package: &Package, folder: &Path) -> io::Resul
 const RECORD_UNSAVED: &str = "its Nexus record could not be saved under the new name first";
 
 /// Move the package at `path`, known as `from`, whole into `into`, its `nexus.json` record
-/// following the name it lands as (`id_of`). RS-A2: when that name is another, the record is
-/// written under it and SAVED before the move, so a save that fails refuses the move with
-/// nothing moved, and a crash after the move still finds the record under the new name at the
-/// next launch. The old name's record goes once the move landed; until a save takes it out,
-/// both names hold the same record, which is never wrong for this package.
+/// following the name it lands as (`id_of`). RS-A2: when that name is another, the new name's
+/// record is made the package's own and SAVED before the move, so a save that fails refuses the
+/// move with nothing moved, and a crash after the move still finds the record under the new
+/// name at the next launch. The old name's record goes once the move landed.
+///
+/// A name whose id a package on disk already carries (the other folder can hold one: ids go by
+/// name, not by folder) is passed over, so a move never takes another package's record. Any
+/// other record under the new name is a leftover, from a crash between the save and the move or
+/// from a package long gone, and is written over (the Heretic's counterexample on PR #3: a kept
+/// leftover outlives every save after a restart, and the next move onto that name inherits it).
 fn relocate(
     state: &AppState,
     path: &Path,
@@ -162,14 +167,20 @@ fn relocate(
     id_of: impl Fn(&str) -> PackageId,
 ) -> io::Result<String> {
     // The name whose record was written ahead of its move: both closures reach it, one at a time.
-    let copied: RefCell<Option<PackageId>> = RefCell::new(None);
+    let written: RefCell<Option<PackageId>> = RefCell::new(None);
     let landed_as = landing::move_aside(
         path,
         into,
         |name| {
             let to = id_of(name);
-            if !lock(&state.nexus).copy_record(from, &to) {
-                return Ok(());
+            if to == *from {
+                return Ok(true);
+            }
+            if carried_on_disk(state, &to) {
+                return Ok(false);
+            }
+            if !lock(&state.nexus).mirror_record(from, &to) {
+                return Ok(true);
             }
             if let Err(err) = state.try_save_nexus() {
                 lock(&state.nexus).drop_record(&to);
@@ -178,21 +189,38 @@ fn relocate(
                 log::warn!("a move was held back: {err}");
                 return Err(io::Error::other(RECORD_UNSAVED));
             }
-            *copied.borrow_mut() = Some(to);
-            Ok(())
+            *written.borrow_mut() = Some(to);
+            Ok(true)
         },
         |_| {
-            if let Some(to) = copied.borrow_mut().take() {
+            if let Some(to) = written.borrow_mut().take() {
                 lock(&state.nexus).drop_record(&to);
                 state.save_nexus();
             }
         },
     )?;
-    if copied.into_inner().is_some() {
-        lock(&state.nexus).drop_record(from);
+    let landed = id_of(&landed_as);
+    if landed != *from && lock(&state.nexus).drop_record(from) {
         state.save_nexus();
     }
     Ok(landed_as)
+}
+
+/// Whether an archive or folder in the mods folder or the older-versions folder carries `id`.
+/// Read from disk, not the shelf: a scan can lag a move.
+fn carried_on_disk(state: &AppState, id: &PackageId) -> bool {
+    let mods = state.library_dir();
+    [Some(mods.to_path_buf()), family::older_folder(mods)]
+        .into_iter()
+        .flatten()
+        .flat_map(|folder| rift_catalog::scan::list_library(&folder))
+        .any(|path| {
+            let name = path.file_name().and_then(|name| name.to_str());
+            match (name, fs::metadata(&path)) {
+                (Some(name), Ok(meta)) => id_for(name, meta.is_dir(), meta.len()) == *id,
+                _ => false,
+            }
+        })
 }
 
 /// The installs a put-away must not run past: none when the journal cannot be read.

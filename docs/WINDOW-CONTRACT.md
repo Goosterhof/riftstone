@@ -759,7 +759,9 @@ put-away makes it. Each item carries its Nexus mod name and version from `nexus.
 record stays under its package id while it is away, and whether a newer version of the same file
 is in the mods folder now (the family rule over the mods folder and that record). A move that
 has to take another name carries the record to the id that name gives, both ways, and saves it
-there BEFORE the move (v0.6, RS-A2), so the next launch finds it whatever happens after.
+there BEFORE the move (v0.6, RS-A2), so the next launch finds it whatever happens after. It
+writes over a leftover record under that name, and passes over a name whose id another archive
+or folder in either folder already carries (ids go by name), so `landedAs` can skip a number.
 `bring_back(fileName)` takes a name the folder lists (any case; anything else is `entryNotFound`,
 never a path), moves it back into the mods folder by the same rules, never onto an existing name,
 and returns `landedAs`. A scan follows (`rift://library-changed`), and the version is in its

@@ -416,24 +416,25 @@ impl NexusStore {
         moved
     }
 
-    /// The record of `from` copied to `to` as well, ahead of a move that takes `to`'s name
-    /// (RS-A2). Like [`NexusStore::move_records`], it never writes over a record `to` has.
-    /// False when there was nothing to copy.
-    pub fn copy_record(&mut self, from: &PackageId, to: &PackageId) -> bool {
-        if from == to || self.packages.contains_key(&to.0) {
+    /// `to` holds exactly what `from` holds (its record, or none), ahead of a move that takes
+    /// `to`'s name (RS-A2). Unlike [`NexusStore::move_records`] it writes over a record `to`
+    /// had: the caller has made sure no package on disk carries `to`, so such a record is a
+    /// leftover. True when `to` changed.
+    pub fn mirror_record(&mut self, from: &PackageId, to: &PackageId) -> bool {
+        let record = self.packages.get(&from.0).cloned();
+        if self.packages.get(&to.0) == record.as_ref() {
             return false;
         }
-        let Some(record) = self.packages.get(&from.0).cloned() else {
-            return false;
+        match record {
+            Some(record) => self.packages.insert(to.0.clone(), record),
+            None => self.packages.remove(&to.0),
         };
-        self.packages.insert(to.0.clone(), record);
         true
     }
 
-    /// Forget the record under `id`: the half of a [`NexusStore::copy_record`] a move made true
-    /// or proved wrong.
-    pub fn drop_record(&mut self, id: &PackageId) {
-        self.packages.remove(&id.0);
+    /// Forget the record under `id`. True when there was one.
+    pub fn drop_record(&mut self, id: &PackageId) -> bool {
+        self.packages.remove(&id.0).is_some()
     }
 
     /// The labels a package carries now: those of the mod its link names, as
