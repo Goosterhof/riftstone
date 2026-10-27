@@ -1,7 +1,7 @@
 {
   "name": "riftstone",
   "private": true,
-  "version": "0.6.0",
+  "version": "0.6.2",
   "type": "module",
   "description": "The Riftstone — a Dragon's Dogma 2 mod manager that can see inside every archive",
   "scripts": {

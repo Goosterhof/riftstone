@@ -1121,6 +1121,16 @@ export interface Named {
   name: string | null;
 }
 
+/** A verified raw save snapshot in the folder the player chose. */
+export interface SaveBackupReport {
+  path: string;
+  folderName: string;
+  createdAt: string;
+  accounts: number;
+  files: number;
+  bytes: number;
+}
+
 export interface MusterSlotsView {
   /** Why no slot can be listed, or null when the stone found a save folder. */
   problem: MusterFolderProblem | null;

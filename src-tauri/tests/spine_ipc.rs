@@ -89,6 +89,60 @@ fn mock_window(state: &Arc<AppState>) -> (tauri::App<tauri::test::MockRuntime>, 
 }
 
 #[test]
+fn save_backup_uses_the_window_argument_and_returns_a_private_verified_receipt() {
+    let bench = Bench::new();
+    let (state, _) = bench.open(bench.config(DataDirs::under(&bench.data_home())));
+    let source = bench.dir.path().join("saves");
+    let destination = bench.dir.path().join("Save Backups");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::create_dir(&destination).unwrap();
+    std::fs::write(source.join("data00-1.bin"), b"invented system data").unwrap();
+    state.fix_save_folders(vec![rift_muster::saves::SaveFolder {
+        account_id: 17,
+        path: source.clone(),
+    }]);
+    let (_app, window) = mock_window(&state);
+    let report = window
+        .invoke("backup_saves", json!({ "destination": destination }))
+        .unwrap();
+    assert_eq!(report["files"], 1);
+    assert_eq!(report["accounts"], 1);
+    assert_eq!(report["bytes"], 20);
+    assert!(report["folderName"]
+        .as_str()
+        .unwrap()
+        .starts_with("DD2 saves "));
+    assert!(report["createdAt"].as_str().unwrap().ends_with('Z'));
+    assert!(std::path::Path::new(report["path"].as_str().unwrap())
+        .join("manifest.json")
+        .is_file());
+    assert!(!report.to_string().contains(source.to_str().unwrap()));
+    assert!(report.get("accountId").is_none());
+    let older = riftstone_lib::family::older_folder(&bench.mods).unwrap();
+    let shelf_child = older.join("player-chosen-destination");
+    std::fs::create_dir_all(&shelf_child).unwrap();
+    let error = window
+        .invoke("backup_saves", json!({ "destination": shelf_child }))
+        .unwrap_err();
+    assert_eq!(error["kind"], "refused");
+    assert_eq!(std::fs::read_dir(shelf_child).unwrap().count(), 0);
+    bench.game_watch.set(true);
+    let error = window
+        .invoke("backup_saves", json!({ "destination": destination }))
+        .unwrap_err();
+    assert_eq!(error["kind"], "refused");
+    assert!(error["detail"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("Close Dragon's Dogma 2"));
+    assert_eq!(std::fs::read_dir(destination).unwrap().count(), 1);
+    assert_eq!(
+        std::fs::read(source.join("data00-1.bin")).unwrap(),
+        b"invented system data"
+    );
+}
+
+#[test]
 fn every_command_answers_the_window_by_its_invoke_name_and_argument_keys() {
     let bench = Bench::new();
     let (state, events) = bench.open(bench.config(DataDirs::under(&bench.data_home())));

@@ -969,3 +969,39 @@ only, for a recording read away from the window.
   `◀` and `▶` (named Older fight and Newer fight), and the credit's note shortens to
   `≈ unchecked`, so every verdict fits beside the switch at 720 px. A step along the shelf keeps
   the keyboard on the door pressed.
+
+
+## Manual save backups — investor request, 27 October 2026
+
+`backup_saves(destination: string) -> SaveBackupReport` runs on the blocking pool.
+THE MUSTER's **Back up all saves…** first asks for an existing destination folder;
+cancelling the picker makes no call and writes nothing. The action covers every
+found Steam account's whole `win64_save` folder, including system/creator files,
+regardless of which character is currently selected or whether a slot parses.
+
+The game-folder turn prevents Play launching through the stone during a backup.
+The process watcher is checked before, during and after copying. A running game
+refuses the action. The destination is canonicalized and must lie outside every
+source's Steam Cloud subtree, game folder, mod library, its older-versions shelf
+and Riftstone app data.
+Sources containing links/special files are refused rather than followed.
+
+A first inventory records each relative file's size, timestamp and SHA-256.
+Original encrypted bytes are copied into an exclusively created staging folder,
+read back and hashed; a second full source inventory must match. Failure removes
+only this attempt's staging folder and never reports success. Publication uses
+an atomic no-replace move to a fresh dated `DD2 saves …` directory, so an earlier
+backup is never replaced. An interrupted process can leave a hidden staging
+folder; it is incomplete and is never presented as a completed snapshot.
+
+The backup contains account-N/win64_save files, manifest.json (local account
+mapping, relative names, SHA-256 and file sizes) and RESTORE.txt. No parser, decryption
+or save sealer runs. No original save, Steam Cloud setting or source metadata is
+written. Restoration and scheduled backups are outside this change.
+
+`SaveBackupReport` is `{path, folderName, createdAt, accounts, files, bytes}`.
+Only the player-chosen destination path is returned; source paths and account
+ids never cross the bridge or appear in errors/logs. THE MUSTER reports verified
+file/account counts and offers **Show backup** using the existing reveal action.
+A refused/failed attempt keeps an actionable inline error; repeated presses are
+held until the picker and backup finish. This is RS-8's explicit backup exception.

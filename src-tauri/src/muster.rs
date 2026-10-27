@@ -147,6 +147,11 @@ fn folders(state: &AppState) -> (Vec<SaveFolder>, bool) {
     }
 }
 
+/// The same discovered save folders used by the Muster, for explicit raw backups.
+pub(crate) fn backup_folders(state: &AppState) -> Vec<SaveFolder> {
+    folders(state).0
+}
+
 fn modified(meta: &fs::Metadata) -> Option<SystemTime> {
     meta.modified().ok()
 }

@@ -2413,6 +2413,22 @@ export function createMockBackend(): MockBackend {
     getMusterSlots: () => muster.getMusterSlots(),
     getMuster: (slotId) => muster.getMuster(slotId),
     openSavesFolder: (slotId) => muster.openSavesFolder(slotId),
+    async backupSaves(destination) {
+      if (running) throw refusedWith("Close Dragon's Dogma 2 before backing up its saves, then try again.");
+      const accounts = (await muster.getMusterSlots()).accountCount;
+      if (!accounts)
+        throw refusedWith("No Dragon's Dogma 2 save folder was found. Start the game and save once, then look again.");
+      await wait(100);
+      const folderName = "DD2 saves 2026-10-27_20-00-00-000Z";
+      return {
+        path: `${destination}/${folderName}`,
+        folderName,
+        createdAt: "2026-10-27T20:00:00.000Z",
+        accounts,
+        files: 8,
+        bytes: 10_000_000,
+      };
+    },
     // --- v0.6: THE FRAY opens as its own page on the mock (never under a test runner) ---
     openFray() {
       if (import.meta.env.MODE !== "test") window.open("fray.html?mock=fray", "_blank");
