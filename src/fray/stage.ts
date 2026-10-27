@@ -4,7 +4,7 @@
 
 import type { FrayFeed, FrayFight, FrayFrame, FrayMember, FrayRole } from "@/types/fray";
 
-export type FraySleep = "asleep" | "norefw" | "noeye" | "shut" | "silent";
+export type FraySleep = "asleep" | "norefw" | "noeye" | "done" | "shut" | "silent";
 export type FrayDoor = "Open the Riftstone" | "Open Preflight" | "Copy details";
 
 export type FrayMode =
@@ -18,9 +18,26 @@ export function sleepOf(feed: FrayFeed): FraySleep | null {
   if (!feed.gameRunning) return "asleep";
   if (!feed.reframework) return "norefw";
   if (!feed.eyeInstalled) return "noeye";
-  if (feed.eyeRecording === false) return "shut";
+  // The eye's stop line: a recording that finished, never a hook that failed (WINDOW-CONTRACT § v0.6).
+  if (feed.eyeRecording === false) return feed.eyeReason === "stopped" ? "done" : "shut";
   if (feed.state === "none") return "silent";
   return null;
+}
+
+/** How long the window waits on pulls that fail before it calls a live feed stale: the
+ *  spine's own heartbeat deadline (`STALE_AFTER`, 3 s). */
+export const PULL_STALE_S = 3;
+
+/**
+ * The frame as the window may still believe it. A pull that fails leaves the last frame
+ * standing, and a live frame must not stand for long: once no pull has answered for
+ * `PULL_STALE_S`, a live feed reads stale, its heartbeat aged by the wait.
+ */
+export function freshened(frame: FrayFrame | null, lastPullMs: number | null, nowMs: number): FrayFrame | null {
+  if (!frame || lastPullMs === null || frame.feed.state !== "live") return frame;
+  const waited = (nowMs - lastPullMs) / 1000;
+  if (waited < PULL_STALE_S) return frame;
+  return { ...frame, feed: { ...frame.feed, state: "stale", lastBeatAgoS: (frame.feed.lastBeatAgoS ?? 0) + waited } };
 }
 
 const keptOf = (frame: FrayFrame): FrayFight | null => frame.fight ?? frame.recent.at(0) ?? null;

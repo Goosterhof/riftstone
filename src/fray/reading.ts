@@ -27,8 +27,13 @@ export function ageText(s: number): string {
   return `${Math.floor(s / 3600)} h`;
 }
 
-/** The fight's per-second figure over its own duration (never ÷ 0). */
-export const perSecond = (damage: number, durationS: number): number => damage / Math.max(1, durationS);
+/** The fight's per-second figure over its own duration: the stone's own rule for a member's
+ *  `dps`, so the party's head and its cards divide alike. A fight of no length has none. */
+export const perSecond = (damage: number, durationS: number): number | null =>
+  durationS > 0 ? damage / durationS : null;
+
+/** A per-second figure as the window prints it: `—` when there is none. */
+export const rateText = (rate: number | null): string => (rate === null ? "—" : nf(rate));
 
 export const isWarm = (m: FrayMember): boolean => m.role !== "hiredPawn";
 
@@ -350,7 +355,9 @@ export function settledWords(f: FrayFight): string {
   const mins = Math.floor(f.durationS / 60);
   const lead = mins ? `${mins} minute${mins > 1 ? "s" : ""} ` : "";
   const dur = `${lead}${Math.floor(f.durationS % 60)}`;
-  return `Fight settled: ${dur}, the party dealt ${nf(f.hParty)}, ${nf(perSecond(f.hParty, f.durationS))} per second.`;
+  const rate = perSecond(f.hParty, f.durationS);
+  const per = rate === null ? "" : `, ${nf(rate)} per second`;
+  return `Fight settled: ${dur}, the party dealt ${nf(f.hParty)}${per}.`;
 }
 
 /** The wall clock `ago` seconds before `now`, "21:03:52". */

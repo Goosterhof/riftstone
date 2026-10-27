@@ -946,9 +946,26 @@ exact path). Types live in `src/types/fray.ts`, mirrored by `crates/rift-fray/sr
   The honesty line is hParty ÷ ledger.
 - **`types`** is `additive` when 95% of the fight's readable hits split into their seven parts
   within max(1 HP, 1%) (the probe's G7 rule); then each member's `parts` sum to its damage
-  exactly (the remainder on the largest part). Otherwise `mix`, with `parts: null`.
+  exactly (the remainder on the largest part). Otherwise `mix`, with `parts: null`. A hit's parts
+  are scaled by its credit over its roll before they are summed, so a capped hit's parts shrink
+  with it (`parts` and `mix` alike).
+- **`dps`** is the member's damage over the fight's `durationS`, `null` for a fight of no length.
+  The window divides the party's head by the same rule and prints `—` where there is none.
+- **The eye's lines** are read segment by segment in order; a segment the OS will not read stops
+  that pull there, and the lines already read from earlier segments still reach the fight.
 - **`attribution`** is `unqualified` until a witness check runs live; the probe's offline
   analysis (8.B) is still owed.
 
 `fray-read <the eye's folder>` (the crate's binary) prints one session's fights, ids and numbers
 only, for a recording read away from the window.
+
+### What the window may not claim (PR #3's review)
+
+- **Pulls that fail.** The last frame stands, but a `live` feed reads `stale` once no pull has
+  answered for 3 s (the spine's own heartbeat deadline), its heartbeat aged by the wait.
+- **The eye's stop line** (`eyeRecording: false`, `eyeReason: "stopped"`) is a finished recording:
+  THE EYE HAS CLOSED, with no doors. Any other `eyeRecording: false` is THE EYE IS SHUT.
+- **Browsing** a fight credited unchecked gives the doors' words to the legend: the doors read
+  `◀` and `▶` (named Older fight and Newer fight), and the credit's note shortens to
+  `≈ unchecked`, so every verdict fits beside the switch at 720 px. A step along the shelf keeps
+  the keyboard on the door pressed.

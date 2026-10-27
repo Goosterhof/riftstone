@@ -4,7 +4,7 @@
 // every 250 ms (src/services/fray.ts) and draws from that frame alone. Its own
 // state is only the view's: the 4 s beat's reading, which card is open, which
 // breakdown is pressed, and which shelf fight is browsed.
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
 import type { FrayFight, FrayFrame } from "@/types/fray";
 import { fraySource, mockScene, startFrayPoll } from "@/services/fray";
 import {
@@ -17,7 +17,7 @@ import {
   takeBeat,
   type BeatState,
 } from "./reading";
-import { isNewcomer, modeOf, placesOf, type FrayDoor } from "./stage";
+import { freshened, isNewcomer, modeOf, placesOf, type FrayDoor } from "./stage";
 import FrayCard, { type FrayCardKind } from "./components/FrayCard.vue";
 import FrayHead from "./components/FrayHead.vue";
 import FrayIdle from "./components/FrayIdle.vue";
@@ -27,7 +27,9 @@ import FrayStateHead from "./components/FrayStateHead.vue";
 import FrayStrata from "./components/FrayStrata.vue";
 import FrayTrust from "./components/FrayTrust.vue";
 
-const frame = shallowRef<FrayFrame | null>(null);
+/** The last frame a pull answered with, and when (ms). */
+const pulled = shallowRef<FrayFrame | null>(null);
+const pulledAt = ref<number | null>(null);
 const beat = shallowRef<BeatState>(freshBeat());
 const sub = ref<"skills" | "types">("skills");
 const openSlot = ref<number | null>(null);
@@ -35,6 +37,8 @@ const browseN = ref<number | null>(null);
 const announce = ref("");
 const now = ref(new Date());
 const mocked = mockScene() !== null || !("__TAURI_INTERNALS__" in window);
+// Pulls that fail leave the last frame standing; it may not stand for live (stage.ts).
+const frame = computed(() => freshened(pulled.value, pulledAt.value, now.value.getTime()));
 
 const mode = computed(() => (frame.value ? modeOf(frame.value) : null));
 const shelf = computed(() => (frame.value ? shelfOf(frame.value.fight, frame.value.recent) : []));
@@ -91,14 +95,20 @@ function freshFight(prev: FrayFight | null, fight: FrayFight): void {
 }
 
 function onFrame(next: FrayFrame): void {
-  const prev = frame.value?.fight ?? null;
+  const prev = pulled.value?.fight ?? null;
   const fight = next.fight;
   if (fight) {
     beat.value = takeBeat(beat.value, fight);
     if (settles(prev, fight)) announce.value = settledWords(fight);
     freshFight(prev, fight);
   }
-  frame.value = next;
+  pulled.value = next;
+  now.value = new Date();
+  pulledAt.value = now.value.getTime();
+}
+
+/** A pull that failed: the clock still moves, so a frame left standing can go stale. */
+function onPullFailed(): void {
   now.value = new Date();
 }
 
@@ -108,8 +118,16 @@ function browseTo(n: number | undefined): void {
   openSlot.value = null;
   browseN.value = n;
 }
-const older = (): void => browseTo(shelf.value[shelfIdx() + 1]?.n);
-const newer = (): void => browseTo(shelfIdx() > 0 ? shelf.value[shelfIdx() - 1]?.n : undefined);
+/** A step along the shelf rebuilds the head: the door pressed keeps the keyboard (PR #3). */
+async function step(door: "older" | "newer", n: number | undefined): Promise<void> {
+  const held = document.activeElement?.getAttribute("data-act") === door;
+  browseTo(n);
+  if (!held) return;
+  await nextTick();
+  document.querySelector<HTMLElement>(`[data-act="${door}"]`)?.focus();
+}
+const older = (): Promise<void> => step("older", shelf.value[shelfIdx() + 1]?.n);
+const newer = (): Promise<void> => step("newer", shelfIdx() > 0 ? shelf.value[shelfIdx() - 1]?.n : undefined);
 function pick(n: number | null): void {
   const s = shelf.value;
   browseTo(n ?? (s[shelfIdx() + 1] ?? s[1] ?? s[0])?.n);
@@ -132,7 +150,7 @@ onMounted(async () => {
   sub.value = source.view.sub ?? "skills";
   openSlot.value = source.view.open ?? null;
   browseN.value = source.view.browse ?? null;
-  stop = startFrayPoll(onFrame);
+  stop = startFrayPoll(onFrame, onPullFailed);
 });
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKey);

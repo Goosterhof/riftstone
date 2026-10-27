@@ -279,7 +279,7 @@ never made). The player's word (#00015 §18.18): `question` (the unpacked Lanter
 linked by mod id, beside the pinned v1.3, and the stone asks), `questioninstalled`, `questionjoined`,
 `questionmanual` (no question, two pinned files to pick from) and `questionrefused` (the join refused once).
 
-THE FRAY's scenes (v0.6, `src/services/mock/fray.ts`, whose header lists all 51) open at
+THE FRAY's scenes (v0.6, `src/services/mock/fray.ts`, whose header lists all 52) open at
 `fray.html?mock=<scene>`: `fray` (FIGHT 7 at 1:36), `fraysettle` (the last six seconds, then THE
 SETTLING), `fraysettled`, `fraymember`, `fraytypes`, `frayworld`, `frayleft`, `frayshelf`,
 `frayidle`, `fraystale`, `fraysilent`, `frayasleep` and more. The pillar's THE FRAY door opens

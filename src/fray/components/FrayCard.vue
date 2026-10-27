@@ -5,7 +5,19 @@
 // and idle/save (names only, no figure). A null member is an empty place.
 import { computed } from "vue";
 import type { FrayFight, FrayMember } from "@/types/fray";
-import { approximate, blockOf, isWarm, nameOf, nf, pct, roleLabel, roleLine, share, type SkillBlock } from "../reading";
+import {
+  approximate,
+  blockOf,
+  isWarm,
+  nameOf,
+  nf,
+  pct,
+  rateText,
+  roleLabel,
+  roleLine,
+  share,
+  type SkillBlock,
+} from "../reading";
 import FrayLintel from "./FrayLintel.vue";
 import FrayMark from "./FrayMark.vue";
 import FrayRemainder from "./FrayRemainder.vue";
@@ -32,7 +44,7 @@ const warm = computed(() => (member ? isWarm(member) : false));
 const name = computed(() => (member ? nameOf(member) : ""));
 const roleText = computed(() => (member ? roleLine(member) : ""));
 const label = computed(() => (member ? `${roleLabel(member)}, ${name.value}` : ""));
-const rate = computed(() => member?.dps ?? 0);
+const rate = computed(() => member?.dps ?? null);
 const approx = computed(() => (fight ? approximate(fight) : false));
 const record = computed(() => kind === "record");
 const figures = computed(() => fight !== null && (kind === "live" || record.value));
@@ -82,7 +94,7 @@ function open(): void {
       ><span class="ln2 ell">{{ roleText }}</span>
     </div>
     <span class="sd"
-      >{{ nf(rate) }}<span class="per">{{ " /s" }}</span></span
+      >{{ rateText(rate) }}<span class="per">{{ " /s" }}</span></span
     >
     <span class="sp">{{ pct(share(member.damage, fight.hAll)) }}</span>
   </article>
@@ -113,13 +125,15 @@ function open(): void {
         </div>
       </div>
       <template v-if="figures && fight">
-        <data v-if="!fight.partyFormed" class="dps" value="" aria-label="damage per second not known">—</data>
+        <data v-if="!fight.partyFormed || rate === null" class="dps" value="" aria-label="damage per second not known"
+          >—</data
+        >
         <data
           v-else
           class="dps"
           :value="String(Math.round(rate))"
-          :aria-label="`${nf(rate)} damage per second, pauses left out`"
-          ><span v-if="approx" class="approx">≈</span>{{ nf(rate) }}<span class="per">/s</span></data
+          :aria-label="`${rateText(rate)} damage per second, pauses left out`"
+          ><span v-if="approx" class="approx">≈</span>{{ rateText(rate) }}<span class="per">/s</span></data
         >
       </template>
     </div>

@@ -41,6 +41,10 @@ const AP_LONG: Record<string, string> = {
 const AP_SHORT = " credit not yet checked";
 
 const ap = computed(() => approximate(fight));
+/** A browsed fight credited unchecked: the doors give their words to the legend, which needs
+ *  them (720 px leaves the say ~300 px beside two worded doors and the switch, PR #3). */
+const tight = computed(() => mode === "record" && !!browse && ap.value);
+const apWords = computed(() => (tight.value ? " unchecked" : AP_SHORT));
 const verdict = computed(() => verdictOf(fight.types));
 const asleep = computed(() => openSlot !== null && openSlot !== undefined);
 const typesSay = computed(() => mode === "record" && sub === "types" && !asleep.value);
@@ -85,7 +89,7 @@ const liveSay = computed(() => (ap.value ? (AP_LONG[fight.attribution] ?? AP_SHO
     </div>
     <div class="l2">
       <span class="cz party">PARTY</span>
-      <span v-if="!fight.partyFormed" class="pdps na">—</span>
+      <span v-if="!fight.partyFormed || partyRate === null" class="pdps na">—</span>
       <template v-else
         ><span class="pdps">{{ nf(partyRate) }}</span
         ><span class="per">/s</span></template
@@ -98,12 +102,30 @@ const liveSay = computed(() => (ap.value ? (AP_LONG[fight.attribution] ?? AP_SHO
     <FrayVein :fight="fight" :mode="mode === 'record' ? 'carved' : mode === 'stale' ? 'stale' : 'lit'" />
     <div class="legend">
       <template v-if="mode === 'record' && browse">
-        <button type="button" class="door" data-act="older" @click="emit('older')">◀ Older</button>
-        <button type="button" class="door" data-act="newer" @click="emit('newer')">Newer ▶</button>
+        <button
+          type="button"
+          class="door"
+          data-act="older"
+          :aria-label="tight ? 'Older fight' : undefined"
+          :title="tight ? 'Older fight' : undefined"
+          @click="emit('older')"
+        >
+          {{ tight ? "◀" : "◀ Older" }}
+        </button>
+        <button
+          type="button"
+          class="door"
+          data-act="newer"
+          :aria-label="tight ? 'Newer fight' : undefined"
+          :title="tight ? 'Newer fight' : undefined"
+          @click="emit('newer')"
+        >
+          {{ tight ? "▶" : "Newer ▶" }}
+        </button>
       </template>
       <span v-if="mode === 'stale'" class="say ell stl"
         ><template v-if="ap"
-          ><span class="ap"><span class="n">≈</span>{{ AP_SHORT }}</span
+          ><span class="ap"><span class="n">≈</span>{{ apWords }}</span
           >{{ ` · nothing from the eye since ${lastBeatAt}, not live` }}</template
         ><template v-else>{{
           `Nothing from the eye since ${lastBeatAt}. The numbers stood then. They are not live.`
@@ -115,13 +137,13 @@ const liveSay = computed(() => (ap.value ? (AP_LONG[fight.attribution] ?? AP_SHO
       >
       <span v-else-if="typesSay" class="say ell"
         ><template v-if="ap"
-          ><span class="ap"><span class="n">≈</span>{{ AP_SHORT }}</span
+          ><span class="ap"><span class="n">≈</span>{{ apWords }}</span
           >{{ " · " }}</template
         ><b v-if="saying.bold">{{ saying.bold }}</b
         >{{ saying.rest }}</span
       >
       <span v-else class="say ell"
-        ><span v-if="ap" class="ap"><span class="n">≈</span>{{ AP_SHORT }}</span
+        ><span v-if="ap" class="ap"><span class="n">≈</span>{{ apWords }}</span
         >{{ recordTail }}</span
       >
       <span v-if="mode === 'record'" class="switch" :class="{ asleep }" role="group" aria-label="Breakdown">

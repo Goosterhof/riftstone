@@ -17,7 +17,7 @@
 //                | fraytypes | frayproportions | fraytypesunknown
 //                | frayverdictmix | frayverdictmixopen | fraytypesapprox
 //                | fraysupporttwosettled | frayshelf | frayshelfsix
-//                | frayshelfmix | fraywidetag
+//                | frayshelfmix | frayshelfapprox | fraywidetag
 //   trust:       frayunqualified | frayinconclusive | frayshort | frayover
 //                | fraynoledger | frayunmoved | fraygap | fraygapsettled
 //   feed & eye:  fraystale | fraystaleapprox | frayidle | frayasleep
@@ -75,6 +75,7 @@ export const FRAY_SCENES = [
   "frayshelf",
   "frayshelfsix",
   "frayshelfmix",
+  "frayshelfapprox",
   "fraywidetag",
   "frayunqualified",
   "frayinconclusive",
@@ -962,7 +963,7 @@ interface Scene {
   /** null: no fight on the stele. */
   fight: Recipe | null;
   /** The shelf under the stele, newest first (settled fights only). */
-  shelf?: "old" | "seven" | "eight" | "mix" | "none";
+  shelf?: "old" | "seven" | "eight" | "mix" | "mixapprox" | "none";
   view?: FrayViewHint;
   /** How long ago this run of the game started (s); default 45 min. Unused while it isn't running. */
   startedAgoS?: number;
@@ -1007,6 +1008,7 @@ const SCENES: Record<Exclude<FrayScene, "fraysettle">, Scene> = {
   frayshelf: { fight: REC(), view: { browse: 5 } },
   frayshelfsix: { fight: REC({ next: true, f: { t: 60 } }), shelf: "seven" },
   frayshelfmix: { fight: REC(), shelf: "mix", view: { browse: 5, sub: "types" } },
+  frayshelfapprox: { fight: REC(), shelf: "mixapprox", view: { browse: 5, sub: "types" } },
   fraywidetag: { fight: REC({ f: { n: 999, t: 3599 } }) },
   frayunqualified: { fight: LIVE({ f: { attribution: "unqualified" } }) },
   frayinconclusive: { fight: REC({ f: { attribution: "inconclusive" } }) },
@@ -1061,6 +1063,9 @@ function shelfOf(kind: Scene["shelf"], now: Date): FrayFight[] {
   let fights: F[] = SHELF_OLD;
   if (kind === "seven" || kind === "eight") fights = [seven, ...SHELF_OLD];
   if (kind === "mix") fights = SHELF_OLD.map((x) => ({ ...x, types: MIX_SHELF[x.n] ?? x.types }));
+  // frayshelfapprox: the same verdicts, credited unchecked, so a browsed legend says the most it can (PR #3)
+  if (kind === "mixapprox")
+    fights = SHELF_OLD.map((x) => ({ ...x, types: MIX_SHELF[x.n] ?? x.types, attribution: "unqualified" as const }));
   return fights.slice(0, 5).map((x) => toFight(x, now));
 }
 

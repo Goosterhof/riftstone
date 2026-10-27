@@ -3,7 +3,20 @@
 // at the foot (RF.19b). The spare height goes below the last row (P3.12).
 import { computed } from "vue";
 import type { FrayFight, FrayMember } from "@/types/fray";
-import { MIXSAY, everyKey, isWarm, keyLabel, nameOf, nf, pct, roleLabel, roleLine, share, verdictOf } from "../reading";
+import {
+  MIXSAY,
+  everyKey,
+  isWarm,
+  keyLabel,
+  nameOf,
+  nf,
+  pct,
+  rateText,
+  roleLabel,
+  roleLine,
+  share,
+  verdictOf,
+} from "../reading";
 import FrayMark from "./FrayMark.vue";
 import FraySupport from "./FraySupport.vue";
 import FrayTypeGrid from "./FrayTypeGrid.vue";
@@ -28,7 +41,7 @@ const isBiggest = (id: string): boolean => fight.biggest?.slot === member.slot &
         <span class="ln2">{{ roleLine(member) }}</span>
       </div>
       <span class="sd mono b6 osd"
-        >{{ nf(member.dps ?? 0) }}<span class="per faint">{{ " /s" }}</span></span
+        >{{ rateText(member.dps) }}<span class="per faint">{{ " /s" }}</span></span
       >
       <span class="sp mono b6 osp">{{ ` ${pct(share(member.damage, fight.hAll))}` }}</span>
       <button type="button" class="door close" data-act="close" @click.stop="emit('close')">✕ Close</button>

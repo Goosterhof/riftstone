@@ -13,6 +13,7 @@ import {
   freshBeat,
   leadingSkills,
   minutesAgoOf,
+  perSecond,
   remainder,
   share,
   startedAgoS,
@@ -20,7 +21,7 @@ import {
   trustLines,
   verdictOf,
 } from "@/fray/reading";
-import { modeOf, placesOf } from "@/fray/stage";
+import { PULL_STALE_S, freshened, modeOf, placesOf, sleepOf } from "@/fray/stage";
 import FrayApp from "@/fray/FrayApp.vue";
 
 const sum = (xs: number[]): number => xs.reduce((a, b) => a + b, 0);
@@ -415,5 +416,83 @@ describe("the window's sleeping and resting screens", () => {
     expect(w.find(".shead .body").text()).toBe(
       "The game is running and the eye hasn't spoken. If the game just updated, the eye may not fit this version yet.",
     );
+  });
+});
+
+// ---------- PR #3's review (the Heretic, at f0769ac): what a frame may not claim ----------
+
+describe("what the window may not claim", () => {
+  it("should call a live frame stale once pulls stop answering for the spine's own 3 s", async () => {
+    vi.useFakeTimers();
+    let pulls = 0;
+    const frame = frayMockFrame("fray");
+    setFraySource({
+      pull: () => (pulls++ === 0 ? Promise.resolve(frame) : Promise.reject(new Error("the spine is gone"))),
+      view: frayMockView("fray"),
+    });
+    const w = mount(FrayApp, { attachTo: document.body });
+    mounted.push(w);
+    await flushPromises();
+    expect(w.find(".legend .say.stl").exists()).toBe(false);
+    await vi.advanceTimersByTimeAsync(PULL_STALE_S * 1000 + 300);
+    await flushPromises();
+    expect(pulls).toBeGreaterThan(10);
+    expect(w.find(".legend .say.stl").text()).toContain("They are not live.");
+  });
+
+  it("should leave a frame alone while pulls answer, and never freshen a frame that is not live", () => {
+    const live = frayMockFrame("fray");
+    expect(freshened(live, 1_000, 1_000 + 2_900)).toBe(live);
+    expect(freshened(live, 1_000, 1_000 + 3_000)?.feed.state).toBe("stale");
+    const asleep = frayMockFrame("frayasleep");
+    expect(asleep.feed.state).not.toBe("live");
+    expect(freshened(asleep, 0, 60_000)).toBe(asleep);
+  });
+
+  it("should divide the party's head and its cards by the same duration, and print none for a fight of no length", async () => {
+    expect(perSecond(100, 0.5)).toBe(200);
+    expect(perSecond(100, 0)).toBeNull();
+    const base = frayMockFrame("fraysettled");
+    const fight = base.fight;
+    if (!fight) throw new Error("no fight");
+    const flat = {
+      ...fight,
+      durationS: 0,
+      members: fight.members.map((m) => (m ? { ...m, dps: null } : m)),
+    };
+    const w = await mountOn(() => ({ ...base, fight: flat, recent: [flat, ...base.recent.slice(1)] }), "fraysettled");
+    expect(w.find(".pdps").text()).toBe("—");
+    expect(w.findAll(".card .dps").map((d) => d.text())).toStrictEqual(["—", "—", "—", "—"]);
+    expect(w.text()).not.toMatch(/\b0\/s/);
+  });
+
+  it("should tell a finished recording from an eye that never started", async () => {
+    const shut = frayMockFrame("frayshut");
+    const done = { ...shut, feed: { ...shut.feed, eyeRecording: false, eyeReason: "stopped" } };
+    expect(sleepOf(done.feed)).toBe("done");
+    expect(sleepOf({ ...shut.feed, eyeRecording: false, eyeReason: "a hook found nothing" })).toBe("shut");
+    const w = await mountOn(() => done, "frayshut");
+    expect(w.text()).toContain("THE EYE HAS CLOSED");
+    expect(w.text()).not.toMatch(/didn't start|hooked nothing/);
+  });
+
+  it("should keep the keyboard on the door pressed while it steps along the shelf", async () => {
+    const w = await mountOn(() => frayMockFrame("frayshelf"), "frayshelf");
+    for (const door of ["older", "newer"] as const) {
+      const el = w.find<HTMLElement>(`button[data-act="${door}"]`).element;
+      el.focus();
+      el.click();
+      await flushPromises();
+      expect(document.activeElement?.getAttribute("data-act")).toBe(door);
+    }
+  });
+
+  it("should give a browsed unchecked fight's legend the doors' words", async () => {
+    const w = await mountOn(() => frayMockFrame("frayshelfapprox"), "frayshelfapprox");
+    expect(w.find('button[data-act="older"]').text()).toBe("◀");
+    expect(w.find('button[data-act="older"]').attributes("aria-label")).toBe("Older fight");
+    expect(w.find(".legend .say").text()).toBe("≈ unchecked · % of these hits' parts, not of the damage");
+    const plain = await mountOn(() => frayMockFrame("frayshelfmix"), "frayshelfmix");
+    expect(plain.find('button[data-act="older"]').text()).toBe("◀ Older");
   });
 });

@@ -45,6 +45,15 @@ const COPY: Record<FraySleep, Copy> = {
     doors: ["Open Preflight"],
     warn: false,
   },
+  done: {
+    size: "mid",
+    ins: "THE EYE HAS CLOSED",
+    kept: "The eye watches a set stretch of each run of the game, and this run's is over: what it saw stands below. Start the game again and it watches the next one.",
+    fresh:
+      "The eye watches a set stretch of each run of the game, and this run's is over. Start the game again and it watches the next one.",
+    doors: [],
+    warn: false,
+  },
   shut: {
     size: "mid",
     ins: "THE EYE IS SHUT",
