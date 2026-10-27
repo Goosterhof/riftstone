@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rift_fray::frame::{Feed, FeedState, Frame};
+use rift_fray::frame::{Feed, FeedState, Frame, SkillKind};
 use rift_fray::{newest_session, session_clock, Fray, Settings, Tail};
 use rift_muster::Codex;
 
@@ -136,7 +136,7 @@ impl FrayDesk {
             },
         };
         if let Some(Some(codex)) = &desk.codex {
-            name_vocations(&mut frame, codex);
+            name_from_codex(&mut frame, codex);
         }
         frame
     }
@@ -182,11 +182,26 @@ impl Desk {
     }
 }
 
-fn name_vocations(frame: &mut Frame, codex: &Codex) {
+/// Names the vocations and the custom skills from the game's own text. The eye's `sk` is the id
+/// THE MUSTER reads from the save (measured on the first real session: every skill a member used
+/// fell in its own vocation's block), so the same codex names both. Actions and shells keep their
+/// ids: the game's text has no names for them.
+fn name_from_codex(frame: &mut Frame, codex: &Codex) {
     let fights = frame.fight.iter_mut().chain(frame.recent.iter_mut());
-    for member in fights.flat_map(|f| f.members.iter_mut()).flatten() {
+    let in_fights = fights.flat_map(|f| f.members.iter_mut()).flatten();
+    for member in in_fights.chain(frame.party.iter_mut().flatten()) {
         if let Some(id) = member.vocation.id.and_then(|id| u32::try_from(id).ok()) {
             member.vocation.name = codex.vocation(id).map(str::to_owned);
+        }
+        for skill in &mut member.skills {
+            if skill.kind == SkillKind::Skill {
+                skill.name = skill
+                    .id
+                    .parse::<u32>()
+                    .ok()
+                    .and_then(|id| codex.skill(id))
+                    .map(str::to_owned);
+            }
         }
     }
 }
@@ -279,6 +294,56 @@ mod tests {
         assert!(
             closed.fight.is_some(),
             "the last fight stays on the stele after the game closes"
+        );
+    }
+
+    #[test]
+    fn should_name_skills_and_vocations_from_the_codex_in_and_out_of_the_fight() {
+        let dir = tempfile::tempdir().unwrap();
+        let action = r#"{"seq":3,"rg":1,"t":5.2,"gt":1.2,"k":"hit","dmg1":30.0,"atk":{"how":"owner","a":4096,"cid":1,"slot":0,"ah":4096},"vic":{"vid":1,"cid":9,"tdp0":120.0,"tdp1":150.0}}"#;
+        let unnamed = r#"{"seq":4,"rg":1,"t":5.4,"gt":1.4,"k":"hit","dmg1":10.0,"atk":{"how":"owner","a":4096,"cid":1,"slot":0,"sk":77},"vic":{"vid":1,"cid":9,"tdp0":150.0,"tdp1":160.0}}"#;
+        eye(dir.path(), &[ROSTER, HIT, action, unnamed]);
+        let game = GameView {
+            root: Some(dir.path().to_path_buf()),
+            running: true,
+            started_ms: None,
+        };
+        // Invented names only: the game's own text never enters the repo.
+        let codex: Codex = serde_json::from_value(serde_json::json!({
+            "items": {}, "vocations": {"5": "Brawler"}, "inclinations": {},
+            "specializations": {}, "augments": {}, "skills": {"3": "Gullwing Rush"},
+        }))
+        .unwrap();
+        let codex = Arc::new(codex);
+        let frame = FrayDesk::default().frame(&game, Instant::now(), || Some(codex));
+
+        let member = frame
+            .fight
+            .as_ref()
+            .and_then(|f| f.members[0].as_ref())
+            .unwrap();
+        assert_eq!(member.vocation.name.as_deref(), Some("Brawler"));
+        let names: Vec<_> = member
+            .skills
+            .iter()
+            .map(|k| (k.kind, k.id.as_str(), k.name.as_deref()))
+            .collect();
+        assert!(names.contains(&(SkillKind::Skill, "3", Some("Gullwing Rush"))));
+        assert!(
+            names.contains(&(SkillKind::Skill, "77", None)),
+            "a skill the codex lacks keeps its id"
+        );
+        assert!(
+            names
+                .iter()
+                .any(|(kind, _, name)| *kind == SkillKind::Action && name.is_none()),
+            "an action is never named from the skill text"
+        );
+        let outside = frame.party[0].as_ref().unwrap();
+        assert_eq!(
+            outside.vocation.name.as_deref(),
+            Some("Brawler"),
+            "the party outside a fight is named too"
         );
     }
 
