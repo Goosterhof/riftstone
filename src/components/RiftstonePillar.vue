@@ -217,7 +217,7 @@ defineExpose({ focusSearch: () => well.value?.focus() });
     <button
       type="button"
       class="navlink pillar__fray"
-      title="The party screen, in its own window: drag it to your second monitor"
+      title="The party screen: it fills a monitor of its own, or opens as a window when there is only one"
       @click="openFray"
     >
       <span class="navlink__words"
