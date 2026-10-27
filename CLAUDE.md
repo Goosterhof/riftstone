@@ -444,8 +444,9 @@ The new regressions are `tests/selectionLifetime.spec.ts` and `tests/libraryUsab
   as before and the window already names the file held.
 - THE FRAY on a monitor of its own has no title bar, so it has no close button. Close it from
   the taskbar, or click it and press Alt+F4; the pillar's door opens it again on the same
-  monitor. The fit and the no-focus rule rest on tao 0.37's Windows code as read, not on a
-  native run.
+  monitor. A plain window (one monitor at the press) stays plain when a second monitor is
+  plugged in until the door is pressed again. The fit and the no-focus rule rest on tao 0.37's
+  Windows code as read, not on a native run.
 - THE MUSTER tells characters apart by the Arisen's and the main pawn's names within one Steam
   account: the saves carry no playthrough id. Two playthroughs begun with the same two names read
   as one character, and the slot menu tells their saves apart by level and time.
