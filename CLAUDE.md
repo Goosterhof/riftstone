@@ -91,7 +91,8 @@ the eye is the lab's frozen party-screen probe (final-6, md5 `889b3ca5…`, kept
 repo, not here); a slimmer production eye follows once a real session has been read.
 `crates/rift-fray` credits each hit by the reviewed analyzer's rule and cuts fights;
 `src-tauri/src/fray.rs` follows the newest session and answers `fray_frame` (WINDOW-CONTRACT
-§ v0.6), naming vocations and custom skills from THE MUSTER's Codex: the eye's `sk` is the id
+§ v0.6). With a second monitor, `open_fray` gives THE FRAY one whole, borderless and sized to it
+(the War Tent's Second Screen), remembered by name; with one monitor it opens as a window. The desk names vocations and custom skills from THE MUSTER's Codex: the eye's `sk` is the id
 the save carries (measured on the first real session, every skill a member used fell in its own
 vocation's block, and the game's text named all of them). The eye's folder is read; the autorun
 folder is never listed.
@@ -441,6 +442,10 @@ The new regressions are `tests/selectionLifetime.spec.ts` and `tests/libraryUsab
   the PLAYER later puts in the mods folder under exactly a leftover's name would still inherit
   it. While `nexus.json` is held (unreadable at launch), nothing is saved, so the move goes ahead
   as before and the window already names the file held.
+- THE FRAY on a monitor of its own has no title bar, so it has no close button. Close it from
+  the taskbar, or click it and press Alt+F4; the pillar's door opens it again on the same
+  monitor. The fit and the no-focus rule rest on tao 0.37's Windows code as read, not on a
+  native run.
 - THE MUSTER tells characters apart by the Arisen's and the main pawn's names within one Steam
   account: the saves carry no playthrough id. Two playthroughs begun with the same two names read
   as one character, and the slot menu tells their saves apart by level and time.
