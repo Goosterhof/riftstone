@@ -15,7 +15,7 @@
 //! by mod id) joins the file group another package of the same mod is pinned to, at the
 //! player's yes. A join changes the link only: nothing moves.
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -134,27 +134,65 @@ fn id_for(name: &str, is_folder: bool, size: u64) -> PackageId {
 
 /// Move one package to the older-versions folder; its `nexus.json` record follows a new name.
 fn move_package(state: &AppState, package: &Package, folder: &Path) -> io::Result<PutAwayView> {
-    let landed_as = landing::move_aside(&package.path, folder)?;
-    if landed_as != package.file_name {
-        let is_folder = package.format == PackageFormat::Folder;
-        follow_record(
-            state,
-            &package.id,
-            &id_for(&landed_as, is_folder, package.size),
-        );
-    }
+    let is_folder = package.format == PackageFormat::Folder;
+    let landed_as = relocate(state, &package.path, folder, &package.id, |name| {
+        id_for(name, is_folder, package.size)
+    })?;
     Ok(PutAwayView {
         file_name: package.file_name.clone(),
         landed_as,
     })
 }
 
-/// The record of the package once known as `from` is now `to`'s (a move took another name).
-fn follow_record(state: &AppState, from: &PackageId, to: &PackageId) {
-    let moved = lock(&state.nexus).move_records(&BTreeMap::from([(from.clone(), to.clone())]));
-    if moved {
+/// Why a move that had to take another name did not happen (RS-A2): the window voices it as an
+/// `io` detail, after the file's name and the folder.
+const RECORD_UNSAVED: &str = "its Nexus record could not be saved under the new name first";
+
+/// Move the package at `path`, known as `from`, whole into `into`, its `nexus.json` record
+/// following the name it lands as (`id_of`). RS-A2: when that name is another, the record is
+/// written under it and SAVED before the move, so a save that fails refuses the move with
+/// nothing moved, and a crash after the move still finds the record under the new name at the
+/// next launch. The old name's record goes once the move landed; until a save takes it out,
+/// both names hold the same record, which is never wrong for this package.
+fn relocate(
+    state: &AppState,
+    path: &Path,
+    into: &Path,
+    from: &PackageId,
+    id_of: impl Fn(&str) -> PackageId,
+) -> io::Result<String> {
+    // The name whose record was written ahead of its move: both closures reach it, one at a time.
+    let copied: RefCell<Option<PackageId>> = RefCell::new(None);
+    let landed_as = landing::move_aside(
+        path,
+        into,
+        |name| {
+            let to = id_of(name);
+            if !lock(&state.nexus).copy_record(from, &to) {
+                return Ok(());
+            }
+            if let Err(err) = state.try_save_nexus() {
+                lock(&state.nexus).drop_record(&to);
+                // The save's own error names nexus.json's path: the log keeps it, the window
+                // gets the reason only (WINDOW-CONTRACT § v0.5, Errors).
+                log::warn!("a move was held back: {err}");
+                return Err(io::Error::other(RECORD_UNSAVED));
+            }
+            *copied.borrow_mut() = Some(to);
+            Ok(())
+        },
+        |_| {
+            if let Some(to) = copied.borrow_mut().take() {
+                lock(&state.nexus).drop_record(&to);
+                state.save_nexus();
+            }
+        },
+    )?;
+    if copied.into_inner().is_some() {
+        lock(&state.nexus).drop_record(from);
         state.save_nexus();
     }
+    Ok(landed_as)
 }
 
 /// The installs a put-away must not run past: none when the journal cannot be read.
@@ -481,18 +519,18 @@ pub fn bring_back_impl(
     let meta = fs::metadata(&path).map_err(|err| refused_by_os(&err))?;
     let mods = state.library_dir().to_path_buf();
     let made = !mods.is_dir();
+    let is_folder = meta.is_dir();
     let landed_as = {
         let _turn = state.turn();
-        landing::move_aside(&path, &mods).map_err(|err| refused_by_os(&err))?
-    };
-    if landed_as != there {
-        let is_folder = meta.is_dir();
-        follow_record(
+        relocate(
             state,
+            &path,
+            &mods,
             &id_for(&there, is_folder, meta.len()),
-            &id_for(&landed_as, is_folder, meta.len()),
-        );
-    }
+            |name| id_for(name, is_folder, meta.len()),
+        )
+        .map_err(|err| refused_by_os(&err))?
+    };
     if made || state.library_unwatched() {
         state.arm_watcher();
     }

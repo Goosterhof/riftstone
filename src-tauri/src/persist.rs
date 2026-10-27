@@ -395,6 +395,21 @@ impl SavedFile {
             log::warn!("{err}");
         }
     }
+
+    /// [`SavedFile::save`] for a caller that must not go on when the write fails (RS-A2: a
+    /// record written ahead of a move). A held file is not written, as in `save`, and that is
+    /// `Ok`: the window already names it held, and nothing this session can make it durable.
+    pub fn try_save<T: Serialize>(
+        &self,
+        pretty: bool,
+        latest: impl FnOnce() -> T,
+    ) -> Result<(), RiftError> {
+        let _turn = self.turn.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.held.is_some() {
+            return Ok(());
+        }
+        write_json(&self.path, &latest(), pretty)
+    }
 }
 
 /// Write `value` as JSON, atomically.

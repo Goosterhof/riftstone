@@ -758,7 +758,8 @@ mods folder (archives and folders, by name, case-blind). `exists` is false until
 put-away makes it. Each item carries its Nexus mod name and version from `nexus.json`, where its
 record stays under its package id while it is away, and whether a newer version of the same file
 is in the mods folder now (the family rule over the mods folder and that record). A move that
-has to take another name carries the record to the id that name gives, both ways.
+has to take another name carries the record to the id that name gives, both ways, and saves it
+there BEFORE the move (v0.6, RS-A2), so the next launch finds it whatever happens after.
 `bring_back(fileName)` takes a name the folder lists (any case; anything else is `entryNotFound`,
 never a path), moves it back into the mods folder by the same rules, never onto an existing name,
 and returns `landedAs`. A scan follows (`rift://library-changed`), and the version is in its
@@ -767,7 +768,10 @@ family again. `open_older_versions_folder()` shows the folder in Explorer, Rust-
 
 **Errors.** A move or a read of the folder that cannot be made is an `io` error whose detail is
 the OS's own words only (`Access is denied. (os error 5)`): the window voices it in the context
-`olderVersions`, naming the file and what was tried itself. `putAwayFailed` is a whole sentence
+`olderVersions`, naming the file and what was tried itself. One detail is the stone's own (v0.6,
+RS-A2): `its Nexus record could not be saved under the new name first`, when the record written
+ahead of a renaming move could not reach `nexus.json`; nothing moved, and the same press can be
+made again. `putAwayFailed` is a whole sentence
 that names the files and the reason; the window shows it as it is and adds where the version
 stays. No sentence names more of a path than a file's own name.
 
@@ -910,7 +914,7 @@ exact path). Types live in `src/types/fray.ts`, mirrored by `crates/rift-fray/sr
 
 | Command (invoke name) | Args (JS, camelCase) | Returns | Notes |
 |---|---|---|---|
-| `fray_frame` | — | `FrayFrame` | The window pulls it every 250 ms (no events: a push travels by webview eval, which WebView2 starves). Each pull reads the lines the eye wrote since the last one. `feed.state` is `live` while heartbeats arrive (one within 3 s, FQ.3's fallback), `stale` when the game runs and they stopped, `none` with no session, with the game closed, or after the eye's stop line (`eyeRecording: false`, `eyeReason: "stopped"`). The last fight and the shelf stay in the frame after the game closes. `party` carries the eye's last roster outside any fight (vitals, no damage; empty before the first roster), `fight.endedAtMs` the settle as epoch ms, and `feed.gameStartedMs` when the spine first saw this run of the game. Vocations are named from THE MUSTER's Codex; members, foes and skills travel as ids (`name: null`) until their names are joined. |
+| `fray_frame` | — | `FrayFrame` | The window pulls it every 250 ms (no events: a push travels by webview eval, which WebView2 starves). Each pull reads the lines the eye wrote since the last one. `feed.state` is `live` while heartbeats arrive (one within 3 s, FQ.3's fallback), `stale` when the game runs and they stopped, `none` with no session, with the game closed, or after the eye's stop line (`eyeRecording: false`, `eyeReason: "stopped"`). The last fight and the shelf stay in the frame after the game closes. `party` carries the eye's last roster outside any fight (vitals, no damage; empty before the first roster), `fight.endedAtMs` the settle as epoch ms, and `feed.gameStartedMs` when the spine first saw this run of the game. Vocations and custom skills (`kind: "skill"`) are named from THE MUSTER's Codex, in the fight, on the shelf and in `party`; a skill id the Codex lacks keeps `name: null`. Members, foes, actions and shells travel as ids (`name: null`). |
 | `open_fray` | — | `void` | Builds the `fray` window from `tauri.conf.json` (`create: false`, `focus: false`), or shows it when it is open. It never takes focus, so the game keeps the keyboard (FQ.8; native acceptance owed). The pillar's door below the rooms calls it. |
 
 ### Credit, fights and the two totals

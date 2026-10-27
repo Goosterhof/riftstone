@@ -416,6 +416,26 @@ impl NexusStore {
         moved
     }
 
+    /// The record of `from` copied to `to` as well, ahead of a move that takes `to`'s name
+    /// (RS-A2). Like [`NexusStore::move_records`], it never writes over a record `to` has.
+    /// False when there was nothing to copy.
+    pub fn copy_record(&mut self, from: &PackageId, to: &PackageId) -> bool {
+        if from == to || self.packages.contains_key(&to.0) {
+            return false;
+        }
+        let Some(record) = self.packages.get(&from.0).cloned() else {
+            return false;
+        };
+        self.packages.insert(to.0.clone(), record);
+        true
+    }
+
+    /// Forget the record under `id`: the half of a [`NexusStore::copy_record`] a move made true
+    /// or proved wrong.
+    pub fn drop_record(&mut self, id: &PackageId) {
+        self.packages.remove(&id.0);
+    }
+
     /// The labels a package carries now: those of the mod its link names, as
     /// the latest check heard them. `None` when it is unlinked, or no check
     /// has heard of its mod yet.

@@ -91,7 +91,10 @@ the eye is the lab's frozen party-screen probe (final-6, md5 `889b3ca5…`, kept
 repo, not here); a slimmer production eye follows once a real session has been read.
 `crates/rift-fray` credits each hit by the reviewed analyzer's rule and cuts fights;
 `src-tauri/src/fray.rs` follows the newest session and answers `fray_frame` (WINDOW-CONTRACT
-§ v0.6). The eye's folder is read; the autorun folder is never listed.
+§ v0.6), naming vocations and custom skills from THE MUSTER's Codex: the eye's `sk` is the id
+the save carries (measured on the first real session, every skill a member used fell in its own
+vocation's block, and the game's text named all of them). The eye's folder is read; the autorun
+folder is never listed.
 
 ## Workspace
 
@@ -428,11 +431,14 @@ The new regressions are `tests/selectionLifetime.spec.ts` and `tests/libraryUsab
   there (the install still stands and says why). Nor is anything put away when the mods folder is
   a link to another drive: the older-versions folder sits beside the link, and a move across
   drives is refused rather than turned into a copy.
-- A collision rename during put-away or bring-back moves the package before its changed
-  identity is saved to `nexus.json`. If that save fails, the move still reports success;
-  after restart a joined folder can lose its version association. Its bytes remain present.
-  A disposable failure-injection probe reproduced this; durable relocation/recovery remains
-  open. No data-loss claim or native Windows reproduction is implied.
+- A put-away or bring-back that has to take another name (` (2)` …) saves the record under that
+  name to `nexus.json` BEFORE the move (RS-A2, closed in v0.6): a save that fails refuses the
+  move with nothing moved. Until the save after the move lands, both names hold the same record,
+  which is never wrong for that package. Two failures in a row (the move fails, then the save
+  that takes the new name's record back) can leave that record under a name nothing holds, until
+  the next save; a different package that later lands under exactly that name would inherit it.
+  While `nexus.json` is held (unreadable at launch), nothing is saved, so the move goes ahead as
+  before and the window already names the file held.
 - THE MUSTER tells characters apart by the Arisen's and the main pawn's names within one Steam
   account: the saves carry no playthrough id. Two playthroughs begun with the same two names read
   as one character, and the slot menu tells their saves apart by level and time.

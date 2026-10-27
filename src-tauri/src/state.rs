@@ -621,6 +621,11 @@ impl AppState {
         self.nexus_file.save(true, || lock(&self.nexus).clone());
     }
 
+    /// [`AppState::save_nexus`], reporting a failed write instead of logging it.
+    pub fn try_save_nexus(&self) -> Result<(), RiftError> {
+        self.nexus_file.try_save(true, || lock(&self.nexus).clone())
+    }
+
     /// The player's files that could not be read at launch: each starts from
     /// its defaults and is not written this session.
     pub fn held_files(&self) -> Vec<HeldFile> {
