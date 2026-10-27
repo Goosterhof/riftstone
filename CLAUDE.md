@@ -368,12 +368,23 @@ README frames were refreshed from invented data and inspected. The window contra
 owns the command and interruption behavior. Native build and installed acceptance
 must be recorded separately from source checks.
 
-Linux validation of this branch: workspace **1,017 passed, 0 failed, 11 ignored**;
+Linux validation before the fullscreen integration: workspace **1,017 passed, 0 failed, 11 ignored**;
 window **589 passed**; clippy with warnings denied, Rust/Vue formatting, typecheck,
 production build, privacy self-test and full private-data sweep pass. Browser mock
 checks at 1320×860 and 1024×680 keep the backup door visible without horizontal
 overflow. The colleague's source review and older-shelf correction are complete;
 native Windows validation and installed acceptance remain pending at this entry.
+
+The integrated v0.6.2 candidate `a5c8285` contains the approved backup revision
+`5262298` and the released fullscreen merge `2e256c7`. Its Linux workspace passes
+**1,022 tests, 0 failed, 11 ignored**, and all **589 window tests**, strict clippy,
+lint, formatting, typecheck, production build and full privacy sweep pass. Native
+Windows Rust 1.98.0 MSVC tests at that exact candidate pass **1,007 tests, 0 failed,
+11 ignored** with `RUSTFLAGS=-D warnings`; native
+`cargo clippy --workspace --all-targets -j 4 -- -D warnings` also passes without
+warnings. The installer build uses that candidate; installed button presses and
+native display acceptance remain separate. Later journal/frame-only edits do not
+change executable source.
 
 ## Known Limitations
 
@@ -428,8 +439,10 @@ native Windows validation and installed acceptance remain pending at this entry.
   ruling 10, and again at 2f410ea with the player's word (959 passed, 0 failed); the installer
   was built and the probe asked about exactly the package the investor reported, a folder whose
   file names are all in the pinned download.
-  `cargo clippy` is not installed on the Windows bench and has never run
-  there. Still owed: `cargo clippy` natively, and every press on a Windows desktop: Play by each
+  On 2026-10-27 the matching Windows Clippy component was installed. The colleague's
+  first clean run at `5906e79` was peer-reported; the Heretic independently ran
+  `cargo clippy --workspace --all-targets -j 4 -- -D warnings` at `a5c8285`, exit 0
+  with no warnings. Still owed: every press on a Windows desktop: Play by each
   route; Open mods folder, also after deleting it while the stone runs; the nxm switch on and
   off, also over another program's key; a download with each account type, one cancelled, one
   into a FAT32 or exFAT folder; uninstall with the switch on; an upgrade over an installed v0.3
