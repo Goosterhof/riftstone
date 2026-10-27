@@ -88,7 +88,11 @@ impl Tail {
         &self.ses
     }
 
-    /// Every whole line written since the last poll, segments in order.
+    /// Every whole line written since the last poll, segments in order. A segment the OS will
+    /// not read stops the poll there, its offset and every later segment's untouched: the lines
+    /// already read from earlier segments come back (their offsets moved, so dropping them would
+    /// lose them for good), and the next poll meets the error again at that segment and returns
+    /// it, with nothing read past it.
     pub fn poll(&mut self) -> io::Result<Vec<Line>> {
         let prefix = format!("events-{}-", self.ses);
         for entry in fs::read_dir(&self.dir)? {
@@ -109,21 +113,21 @@ impl Tail {
         let segs: Vec<u32> = self.segments.keys().copied().collect();
         for seg in segs {
             let path = self.dir.join(format!("{prefix}{seg}.ndjson"));
-            let Some(state) = self.segments.get_mut(&seg) else {
+            let Some(offset) = self.segments.get(&seg).map(|state| state.offset) else {
                 continue;
             };
-            let mut file = match fs::File::open(&path) {
-                Ok(f) => f,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(e),
+            let buf = match read_from(&path, offset) {
+                Ok(Some(buf)) => buf,
+                Ok(None) => continue,
+                Err(err) if out.is_empty() => return Err(err),
+                Err(_) => return Ok(out),
             };
-            file.seek(SeekFrom::Start(state.offset))?;
-            let mut buf = Vec::new();
-            file.read_to_end(&mut buf)?;
             let Some(end) = buf.iter().rposition(|b| *b == b'\n') else {
                 continue;
             };
-            state.offset += end as u64 + 1;
+            if let Some(state) = self.segments.get_mut(&seg) {
+                state.offset += end as u64 + 1;
+            }
             for raw in buf[..end].split(|b| *b == b'\n') {
                 let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
                 if raw.is_empty() {
@@ -137,4 +141,17 @@ impl Tail {
         }
         Ok(out)
     }
+}
+
+/// A segment's bytes from `offset` on; `None` when the file is gone.
+fn read_from(path: &Path, offset: u64) -> io::Result<Option<Vec<u8>>> {
+    let mut file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    file.seek(SeekFrom::Start(offset))?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    Ok(Some(buf))
 }

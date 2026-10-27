@@ -559,8 +559,11 @@ impl Fray {
                 m.damage += dmg;
                 m.hits += 1;
                 if let Some(cmp) = hit.cmp {
+                    // The parts carry the hit's credit, not its roll: a capped hit's parts
+                    // shrink with it, so one overkill cannot outweigh every whole hit.
+                    let share = hit.dmg.filter(|d| *d > 0.0).map_or(1.0, |roll| dmg / roll);
                     for (sum, part) in m.cmp.iter_mut().zip(cmp) {
-                        *sum += part;
+                        *sum += part * share;
                     }
                     m.cmp_hits += 1;
                 }

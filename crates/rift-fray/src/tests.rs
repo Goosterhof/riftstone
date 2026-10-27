@@ -366,6 +366,29 @@ fn should_call_the_types_a_mix_when_the_parts_do_not_add_up() {
     assert_eq!(m.mix, Some([80, 0, 0, 0, 0, 60, 0]));
 }
 
+/// The Heretic's finding on PR #3: 100 whole slash and a 1000 magick roll capped at the 10 HP
+/// its foe had credit 110; the parts must say 100 slash and 10 magick, not the rolls rescaled.
+#[test]
+fn should_cap_a_hits_parts_with_its_credit() {
+    let mut eye = Eye::new();
+    eye.party().push(
+        1.0,
+        "hit",
+        json!({"dmg1": 100.0, "cmp": [100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "atk": {"how": "owner", "a": ODALRIC, "slot": 0, "sk": 1}, "vic": {"vid": 1, "hp0": 500.0}}),
+    );
+    eye.push(
+        1.5,
+        "hit",
+        json!({"dmg1": 1000.0, "cmp": [0.0, 0.0, 0.0, 0.0, 0.0, 1000.0, 0.0], "atk": {"how": "owner", "a": ODALRIC, "slot": 0, "sk": 2}, "vic": {"vid": 1, "hp0": 10.0}}),
+    );
+    let f = eye.fray().frame(feed()).fight.expect("a fight");
+    assert_eq!(f.types, Types::Additive);
+    let m = f.members[0].as_ref().expect("a card");
+    assert_eq!(m.damage, 110);
+    assert_eq!(m.parts, Some([100, 0, 0, 0, 0, 10, 0]));
+    assert_eq!(m.mix, Some([100, 0, 0, 0, 0, 10, 0]));
+}
+
 #[test]
 fn should_read_null_as_unknown_never_zero() {
     let line = parse_line(r#"{"v":0,"seq":5,"rg":1,"t":1.0,"gt":"nan","k":"hit","dmg1":null,"cmp":[1,2,3],"vic":{"vid":0},"atk":7}"#).expect("parses");
@@ -471,6 +494,36 @@ fn should_tail_whole_lines_only_and_pick_the_newest_session() {
     assert_eq!(second.iter().map(|l| l.seq).collect::<Vec<_>>(), vec![3, 4]);
     assert_eq!(tail.bad_lines, 1);
     assert!(tail.poll().expect("poll").is_empty());
+}
+
+/// The Heretic's finding on PR #3: a later segment the OS will not read must not cost the lines
+/// an earlier segment gave in the same poll.
+#[test]
+fn should_keep_the_lines_read_before_a_segment_fails() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let p = dir.path();
+    let line = |seq: u64| format!(r#"{{"v":0,"seq":{seq},"t":1.0,"gt":1.0,"k":"hb","slots":[]}}"#);
+    std::fs::write(
+        p.join(format!("events-{SES}-0.ndjson")),
+        format!("{}\n{}\n", line(1), line(2)),
+    )
+    .expect("write");
+    // A directory under the segment's name: it opens, and reading it fails.
+    let seg1 = p.join(format!("events-{SES}-1.ndjson"));
+    std::fs::create_dir(&seg1).expect("mkdir");
+    let mut tail = Tail::new(p, SES);
+
+    let first = tail.poll().expect("the lines before the failure come back");
+    assert_eq!(first.iter().map(|l| l.seq).collect::<Vec<_>>(), vec![1, 2]);
+    assert!(
+        tail.poll().is_err(),
+        "with nothing read, the failure is said"
+    );
+
+    std::fs::remove_dir(&seg1).expect("rmdir");
+    std::fs::write(&seg1, format!("{}\n", line(3))).expect("write");
+    let after = tail.poll().expect("poll");
+    assert_eq!(after.iter().map(|l| l.seq).collect::<Vec<_>>(), vec![3]);
 }
 
 #[test]
