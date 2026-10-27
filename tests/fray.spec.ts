@@ -440,6 +440,23 @@ describe("what the window may not claim", () => {
     expect(w.find(".legend .say.stl").text()).toContain("They are not live.");
   });
 
+  it("should call a live frame stale when a pull never returns at all", async () => {
+    vi.useFakeTimers();
+    let pulls = 0;
+    const frame = frayMockFrame("fray");
+    setFraySource({
+      pull: () => (pulls++ === 0 ? Promise.resolve(frame) : new Promise<FrayFrame>(() => undefined)),
+      view: frayMockView("fray"),
+    });
+    const w = mount(FrayApp, { attachTo: document.body });
+    mounted.push(w);
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(PULL_STALE_S * 1000 + 600);
+    await flushPromises();
+    expect(pulls).toBe(2);
+    expect(w.find(".legend .say.stl").text()).toContain("They are not live.");
+  });
+
   it("should leave a frame alone while pulls answer, and never freshen a frame that is not live", () => {
     const live = frayMockFrame("fray");
     expect(freshened(live, 1_000, 1_000 + 2_900)).toBe(live);

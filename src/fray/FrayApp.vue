@@ -112,6 +112,10 @@ function onPullFailed(): void {
   now.value = new Date();
 }
 
+/** The window's own clock: a pull that never returns calls neither hand above, and a frame
+ *  left standing must still go stale on time (PR #3, the Heretic's pending-pull case). */
+const CLOCK_MS = 500;
+
 const shelfIdx = (): number => shelf.value.findIndex((f) => f.id === stageFight.value?.id);
 function browseTo(n: number | undefined): void {
   if (n === undefined) return;
@@ -144,7 +148,9 @@ function onKey(e: KeyboardEvent): void {
 }
 
 let stop: (() => void) | null = null;
+let clock: ReturnType<typeof setInterval> | null = null;
 onMounted(async () => {
+  clock = setInterval(() => (now.value = new Date()), CLOCK_MS);
   window.addEventListener("keydown", onKey);
   const source = await fraySource();
   sub.value = source.view.sub ?? "skills";
@@ -155,6 +161,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKey);
   stop?.();
+  if (clock !== null) clearInterval(clock);
 });
 </script>
 
