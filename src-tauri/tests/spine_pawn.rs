@@ -449,21 +449,27 @@ mod desk {
         );
         let inventory = dirs.data.join("save-backup-destinations.json");
         fs::write(&inventory, b"{ not a list").unwrap();
-        assert_eq!(
-            reason(backup_roots(&state).unwrap_err()),
-            PawnReason::NoFence
+        let refused = backup_roots(&state).unwrap_err();
+        let detail = format!("{refused:?}");
+        assert!(detail.contains("save-backup-destinations.json"), "{detail}");
+        let private = dirs.data.to_string_lossy().into_owned();
+        assert!(
+            !detail.contains(&private),
+            "no private path in the sentence: {detail}"
         );
+        assert_eq!(reason(refused), PawnReason::NoFence);
         let desk = Desk::new(&dirs.data);
         assert!(desk
             .set_inputs(&state, vec!["C:\\Elsewhere".into()])
             .is_err());
         let second = bench.dir.path().join("Second Backups");
         fs::create_dir_all(&second).unwrap();
-        assert!(riftstone_lib::commands::save_backup::backup_saves_impl(
+        let refused = riftstone_lib::commands::save_backup::backup_saves_impl(
             &state,
-            second.to_str().unwrap()
+            second.to_str().unwrap(),
         )
-        .is_err());
+        .unwrap_err();
+        assert!(!format!("{refused:?}").contains(&private), "{refused:?}");
         assert_eq!(
             fs::read(&inventory).unwrap(),
             b"{ not a list",

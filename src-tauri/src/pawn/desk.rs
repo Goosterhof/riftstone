@@ -267,9 +267,12 @@ fn no_fence(detail: impl Into<String>) -> RiftError {
     RiftError::pawn(PawnReason::NoFence, detail)
 }
 
+/// The backup inventory's file name, in the stone's app data.
+const INVENTORY_FILE: &str = "save-backup-destinations.json";
+
 /// Where the stone keeps the save-backup destinations it has written to.
 fn backup_destinations_file(data_dir: &Path) -> PathBuf {
-    data_dir.join("save-backup-destinations.json")
+    data_dir.join(INVENTORY_FILE)
 }
 
 /// One writer of the backup inventory at a time, in this process.
@@ -284,14 +287,15 @@ pub fn backup_destinations(data_dir: &Path) -> Result<Vec<String>, RiftError> {
     let file = backup_destinations_file(data_dir);
     match std::fs::read(&file) {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        // The sentence names the file, never its path: the app data sits
+        // under the investor's home (WINDOW-CONTRACT § v0.7, Errors).
         Err(err) => Err(no_fence(format!(
-            "The list of save backup folders ({}) could not be read ({err}), so Tamsin's fence cannot be sure of them. Fix or restore that file.",
-            file.display()
+            "The list of save backup folders ({INVENTORY_FILE} in the stone's app data) could not be read ({}), so Tamsin's fence cannot be sure of them. Fix or restore that file.",
+            err.kind()
         ))),
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
             no_fence(format!(
-                "The list of save backup folders ({}) is damaged, so Tamsin's fence cannot be sure of them. Fix or restore that file; the stone leaves it as it is.",
-                file.display()
+                "The list of save backup folders ({INVENTORY_FILE} in the stone's app data) is damaged, so Tamsin's fence cannot be sure of them. Fix or restore that file; the stone leaves it as it is."
             ))
         }),
     }
@@ -309,9 +313,11 @@ pub fn remember_backup_destination(data_dir: &Path, destination: &Path) -> Resul
     if !known.contains(&text) {
         known.push(text);
         persist::write_json(&backup_destinations_file(data_dir), &known, true).map_err(|err| {
-            RiftError::refused(format!(
-                "The backup folder could not be recorded for Tamsin's fence ({err}), so no backup was made."
-            ))
+            // persist's own sentence may carry the path; this one does not.
+            log::warn!("the backup inventory could not be written: {err}");
+            RiftError::refused(
+                "The backup folder could not be recorded for Tamsin's fence, so no backup was made.",
+            )
         })?;
     }
     Ok(())
