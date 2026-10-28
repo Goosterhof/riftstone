@@ -2898,7 +2898,11 @@ what it holds.** Rules, each a test or a Sentinel step:
    the stone has written. A link *inside* a mounted input resolves in the namespace's own view:
    an NTFS junction appears to WSL as a link to `/mnt/c/…`, which is not mounted, so it dangles.
    The probe measures that (step 9). A source whose target changed since the last summon is
-   validated again; validation is never cached.
+   validated again; validation is never cached. **The check governs every mounted Windows
+   object, not only inputs**: the argv builder validates each mount source it emits. Only the
+   declared trusted mounts (the workshop, the live run's two mailbox folders and the pawn's
+   config dir) are excepted from the input bans, and each of those is checked to be exactly the
+   stone-made folder it names (the Heretic's follow-up, 2026-10-28).
 3. **Interop is closed twice.** `/init` is not mounted, and the stone's seccomp filter (the 15
    instructions above, built by `pawn::fence::fence_filter()` as bytes, never by a library at
    run time) refuses `AF_VSOCK`, `TIOCSTI`, non-x86_64 and x32 syscalls. `--die-with-parent`,
@@ -3043,7 +3047,10 @@ must be no stronger than the tool call it imitates. The stone also checks:
 - at most 4 requests in flight;
 - **idempotency.** The run's ledger keeps every `id` it acted on with its outcome. A request
   whose `id` is already in the ledger gets the recorded answer and is never acted on twice. The
-  relay retries a timed-out call with the same `id`.
+  relay retries a timed-out call with the same `id`. **An `id` is reserved before its work
+  starts**: a duplicate arriving while the first is still in flight joins it and receives the
+  same answer when that finishes, rather than starting a second mutation (the Heretic's
+  follow-up, 2026-10-28).
 It answers in the same shape the relay returns to Claude Code. A malformed request is answered
 `refused` with a sentence and is never acted on. Requests are never logged with their arguments.
 
@@ -3147,7 +3154,8 @@ She also uninstalled 1 of yours; it is listed below.* It never promises the worl
   accepts a sibling (a table test over invented trees, with junctions on the bench).
 - [GATE] The mailbox refuses every malformed, oversized, unknown-tool, extra-key, mis-named,
   linked, reparse-pointed, non-regular, wrong-run and stale-plan request (a table test). A
-  replayed `id` returns the ledger's answer without acting. `install` from a forged request is
+  replayed `id` returns the ledger's answer without acting, and a duplicate sent while the first
+  is still running joins it (one mutation, two identical answers). `install` from a forged request is
   exactly as strong as the tool's (the same RS-3 refusals).
 - [GATE] Runs: a request in a retired run's folder is never read; a mutation in flight at
   departure commits or rolls back, and is recorded; a held Play dies with its run.
