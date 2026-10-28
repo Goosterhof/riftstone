@@ -301,6 +301,9 @@ impl Summoning {
 
 #[cfg(test)]
 mod tests {
+    // The live tests drive a PTY with /bin/sh, so they and their stand-ins
+    // run on the Linux bench only; Windows builds the launch test alone.
+    #![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
     use super::*;
     use crate::pawn::mailbox::{Done, Errands, LedgerSink, PlannedInstall, RunLedger};
     use rift_deploy::Actor;
@@ -546,5 +549,122 @@ mod tests {
         assert_eq!(wsl.args.last(), bench.args.last(), "the same fence script");
         assert_eq!(bench.program, "/bin/sh");
         assert!(bench.args[1].starts_with("exec 'bwrap'"));
+    }
+
+    /// A terminal's output with its escape sequences taken out (CSI, OSC and
+    /// two-byte escapes), a cursor-forward read as a space: for reading a
+    /// bench run, not for rendering.
+    #[cfg(target_os = "linux")]
+    fn plain_text(shown: &str) -> String {
+        let mut out = String::new();
+        let mut chars = shown.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\u{1b}' => match chars.next() {
+                    Some('[') => {
+                        for c in chars.by_ref() {
+                            if ('@'..='~').contains(&c) {
+                                if c == 'C' {
+                                    out.push(' ');
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    Some(']') => {
+                        while let Some(c) = chars.next() {
+                            if c == '\u{7}' || (c == '\u{1b}' && chars.next_if_eq(&'\\').is_some())
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+                c if c.is_control() && c != '\n' => {}
+                c => out.push(c),
+            }
+        }
+        out
+    }
+
+    /// A bench aid, by hand: summon the real fence on this Linux bench (WSL)
+    /// with the real relay and Claude Code inside, for a few seconds, then
+    /// depart. `RIFT_BENCH_SUMMON_ROOT` is a dummy folder on a Windows drive
+    /// (`/mnt/c/…/pawn-bench`); the pawn's config dir is the real one the
+    /// stone uses. Prints what the terminal showed and whether any of the
+    /// fence's processes outlived the departure.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "a bench aid: summons the real fence and Claude Code"]
+    fn bench_summon_the_real_fence() {
+        use crate::pawn::fence::FencePlan;
+        use crate::pawn::host::{install_files, relay_files, survey, LocalSh};
+        use crate::pawn::persona::{persona, Voice};
+
+        let root = std::env::var("RIFT_BENCH_SUMMON_ROOT").expect("RIFT_BENCH_SUMMON_ROOT");
+        let survey = survey(&LocalSh, None).expect("the bench distro is ready");
+        let run_dir = format!("{root}/runs/{RUN}");
+        for folder in ["requests", "answers"] {
+            std::fs::create_dir_all(format!("{run_dir}/{folder}")).unwrap();
+        }
+        let workshop = format!("{root}/mods (workshop)");
+        std::fs::create_dir_all(&workshop).unwrap();
+        let plan = FencePlan {
+            home: survey.home.clone(),
+            user: survey.user.clone(),
+            workshop: workshop.clone(),
+            run_dir: run_dir.clone(),
+            run_id: RUN.into(),
+            inputs: Vec::new(),
+        };
+        install_files(
+            &LocalSh,
+            &relay_files(&plan, &persona(Voice::Sparing, &workshop)),
+            &[plan.claude_config()],
+        )
+        .unwrap();
+        let ears = Arc::new(Ears::default());
+        let broker = Arc::new(Broker::new(
+            RUN,
+            Arc::new(Quiet::default()),
+            Arc::new(Kept::default()),
+            crate::pawn::mailbox::now,
+        ));
+        let pawn = summon(
+            &Launch::on_bench(&plan).unwrap(),
+            (100, 30),
+            broker,
+            &RunFolders {
+                run_id: RUN.into(),
+                requests: format!("{run_dir}/requests").into(),
+                answers: format!("{run_dir}/answers").into(),
+            },
+            ears.clone(),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_secs(8));
+        let alive_before = pawn.is_here();
+        let fence_pids = |name: &str| -> String {
+            let out = std::process::Command::new("pgrep")
+                .args(["-f", name])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let before = fence_pids(&plan.relay());
+        let retired = pawn.depart();
+        std::thread::sleep(Duration::from_millis(500));
+        let after = fence_pids(&plan.relay());
+        let shown = ears.said();
+        let plain = plain_text(&shown);
+        println!(
+            "BENCH alive_before={alive_before} persisted={} ended={:?}",
+            retired.persisted,
+            *lock(&ears.ended)
+        );
+        println!("BENCH fence processes before departure: [{before}] after: [{after}]");
+        println!("BENCH bytes shown: {}", shown.len());
+        println!("BENCH text:\n{plain}");
     }
 }
