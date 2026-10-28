@@ -19,7 +19,7 @@
 //! the summon's; this module is given bytes and a file name.
 
 use std::collections::HashMap;
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use rift_deploy::Actor;
 use serde::{Deserialize, Serialize};
@@ -571,10 +571,10 @@ pub trait LedgerSink: Send + Sync {
 }
 
 /// One run's broker: the reservation of ids, the ledger and retirement.
-pub struct Broker<'a> {
+pub struct Broker {
     run_id: String,
-    errands: &'a dyn Errands,
-    sink: &'a dyn LedgerSink,
+    errands: Arc<dyn Errands>,
+    sink: Arc<dyn LedgerSink>,
     clock: fn() -> String,
     state: Mutex<BrokerState>,
     settled: Condvar,
@@ -585,11 +585,11 @@ pub fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-impl<'a> Broker<'a> {
+impl Broker {
     pub fn new(
         run_id: &str,
-        errands: &'a dyn Errands,
-        sink: &'a dyn LedgerSink,
+        errands: Arc<dyn Errands>,
+        sink: Arc<dyn LedgerSink>,
         clock: fn() -> String,
     ) -> Self {
         let ledger = RunLedger {
@@ -1424,9 +1424,9 @@ mod tests {
 
     #[test]
     fn a_refused_request_is_answered_and_a_nameless_one_is_not() {
-        let stone = Stone::default();
-        let sink = Sink::default();
-        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let stone = Arc::new(Stone::default());
+        let sink = Arc::new(Sink::default());
+        let broker = Broker::new(RUN, stone.clone(), sink.clone(), clock);
         let handled = broker.handle(&name(ID), b"[]").unwrap();
         assert_eq!(handled.answer.outcome, Outcome::Refused);
         assert!(broker.handle("evil.json", b"{}").is_none());
@@ -1440,9 +1440,9 @@ mod tests {
 
     #[test]
     fn install_needs_a_fresh_plan_and_records_the_pawn() {
-        let stone = Stone::default();
-        let sink = Sink::default();
-        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let stone = Arc::new(Stone::default());
+        let sink = Arc::new(Sink::default());
+        let broker = Broker::new(RUN, stone.clone(), sink.clone(), clock);
         let plan = broker
             .handle(
                 &name(ID),
@@ -1499,9 +1499,9 @@ mod tests {
 
     #[test]
     fn a_forged_install_meets_the_tools_own_refusal_word_for_word() {
-        let stone = Stone::default();
-        let sink = Sink::default();
-        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let stone = Arc::new(Stone::default());
+        let sink = Arc::new(Sink::default());
+        let broker = Broker::new(RUN, stone.clone(), sink.clone(), clock);
         let option = "00000000000000ac#vanilla-override";
         let token = planned_token(&stone, option);
         let handled = broker
@@ -1516,9 +1516,9 @@ mod tests {
 
     #[test]
     fn a_replayed_id_gets_the_ledgers_answer_without_acting() {
-        let stone = Stone::default();
-        let sink = Sink::default();
-        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let stone = Arc::new(Stone::default());
+        let sink = Arc::new(Sink::default());
+        let broker = Broker::new(RUN, stone.clone(), sink.clone(), clock);
         let option = "00000000000000ab#Stature";
         let token = planned_token(&stone, option);
         let first = broker
@@ -1541,11 +1541,11 @@ mod tests {
 
     #[test]
     fn a_duplicate_sent_while_the_first_runs_joins_it() {
-        let stone = Stone::default();
+        let stone = Arc::new(Stone::default());
         let barrier = Arc::new(std::sync::Barrier::new(2));
         *stone.gate.lock().unwrap() = Some(Arc::clone(&barrier));
-        let sink = Sink::default();
-        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let sink = Arc::new(Sink::default());
+        let broker = Broker::new(RUN, stone.clone(), sink.clone(), clock);
         let option = "00000000000000ab#Stature";
         let token = planned_token(&stone, option);
         let request = install_request(ID, option, &token);
@@ -1572,11 +1572,11 @@ mod tests {
 
     #[test]
     fn retiring_lets_a_running_mutation_finish_records_it_and_drops_the_held_play() {
-        let stone = Stone::default();
+        let stone = Arc::new(Stone::default());
         let barrier = Arc::new(std::sync::Barrier::new(2));
         *stone.gate.lock().unwrap() = Some(Arc::clone(&barrier));
-        let sink = Sink::default();
-        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let sink = Arc::new(Sink::default());
+        let broker = Broker::new(RUN, stone.clone(), sink.clone(), clock);
         let play_id = "55555555-2222-4333-8444-555555555555";
         let held = broker
             .handle(
@@ -1630,12 +1630,12 @@ mod tests {
     fn a_world_that_moves_between_the_check_and_the_commit_refuses_stale() {
         // The Heretic's WB1: the broker's token check is advice; the install
         // re-checks the plan it was handed where it commits.
-        let stone = Stone::default();
+        let stone = Arc::new(Stone::default());
         *stone.meanwhile.lock().unwrap() = Some(|stone: &Stone| {
             stone.seq.fetch_add(1, Ordering::SeqCst);
         });
-        let sink = Sink::default();
-        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let sink = Arc::new(Sink::default());
+        let broker = Broker::new(RUN, stone.clone(), sink.clone(), clock);
         let option = "00000000000000ab#Stature";
         let token = planned_token(&stone, option);
         let handled = broker
@@ -1653,9 +1653,9 @@ mod tests {
 
     #[test]
     fn the_intent_is_on_disk_before_the_mutation_starts() {
-        let stone = Stone::default();
-        let sink = Sink::default();
-        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let stone = Arc::new(Stone::default());
+        let sink = Arc::new(Sink::default());
+        let broker = Broker::new(RUN, stone.clone(), sink.clone(), clock);
         let option = "00000000000000ab#Stature";
         let token = planned_token(&stone, option);
         broker
@@ -1675,9 +1675,9 @@ mod tests {
     #[test]
     fn a_ledger_that_cannot_be_written_stops_every_mutation_before_it_starts() {
         // The Heretic's WB2, first half: a sink that refuses the intent.
-        let stone = Stone::default();
-        let sink = Sink::failing_from(0);
-        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let stone = Arc::new(Stone::default());
+        let sink = Arc::new(Sink::failing_from(0));
+        let broker = Broker::new(RUN, stone.clone(), sink.clone(), clock);
         let option = "00000000000000ab#Stature";
         let token = planned_token(&stone, option);
         let first = broker
@@ -1715,9 +1715,9 @@ mod tests {
     fn a_done_mutation_whose_outcome_cannot_be_written_answers_unknown() {
         // The Heretic's WB2, second half: the intent was written, the
         // mutation was made, the outcome could not be recorded.
-        let stone = Stone::default();
-        let sink = Sink::failing_from(1);
-        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let stone = Arc::new(Stone::default());
+        let sink = Arc::new(Sink::failing_from(1));
+        let broker = Broker::new(RUN, stone.clone(), sink.clone(), clock);
         let option = "00000000000000ab#Stature";
         let token = planned_token(&stone, option);
         let handled = broker
@@ -1754,13 +1754,13 @@ mod tests {
 
     #[test]
     fn an_uninstall_records_whose_install_it_removed() {
-        let stone = Stone::default();
+        let stone = Arc::new(Stone::default());
         *stone.removes.lock().unwrap() = Some(Removed {
             actor: Actor::Player,
             seq: 7,
         });
-        let sink = Sink::default();
-        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let sink = Arc::new(Sink::default());
+        let broker = Broker::new(RUN, stone.clone(), sink.clone(), clock);
         broker
             .handle(
                 &name(ID),
@@ -1783,7 +1783,7 @@ mod tests {
         );
     }
 
-    fn play(broker: &Broker<'_>, id: &str) -> Answer {
+    fn play(broker: &Broker, id: &str) -> Answer {
         broker
             .handle(
                 &name(id),
@@ -1793,7 +1793,7 @@ mod tests {
             .answer
     }
 
-    fn list(broker: &Broker<'_>, id: &str) -> Value {
+    fn list(broker: &Broker, id: &str) -> Value {
         broker
             .handle(
                 &name(id),
@@ -1812,9 +1812,9 @@ mod tests {
 
     #[test]
     fn one_play_is_held_per_run_and_its_answer_never_changes() {
-        let stone = Stone::default();
-        let sink = Sink::default();
-        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let stone = Arc::new(Stone::default());
+        let sink = Arc::new(Sink::default());
+        let broker = Broker::new(RUN, stone.clone(), sink.clone(), clock);
         let first = play(&broker, H1);
         assert_eq!(first.outcome, Outcome::Held);
         assert_eq!(first.data["heldRequestId"], H1);
@@ -1840,9 +1840,9 @@ mod tests {
 
     #[test]
     fn a_decision_is_read_by_list_installed_and_delivered_once_by_a_new_play() {
-        let stone = Stone::default();
-        let sink = Sink::default();
-        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let stone = Arc::new(Stone::default());
+        let sink = Arc::new(Sink::default());
+        let broker = Broker::new(RUN, stone.clone(), sink.clone(), clock);
         play(&broker, H1);
         assert_eq!(
             list(&broker, L1)["play"],
@@ -1883,9 +1883,9 @@ mod tests {
 
     #[test]
     fn only_a_game_that_started_is_played() {
-        let stone = Stone::default();
-        let sink = Sink::default();
-        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let stone = Arc::new(Stone::default());
+        let sink = Arc::new(Sink::default());
+        let broker = Broker::new(RUN, stone.clone(), sink.clone(), clock);
         play(&broker, H1);
         let refused = broker.answer_play(RUN, H1, true, || {
             Err("refused: close Dragon's Dogma 2 first.".into())
@@ -1923,9 +1923,9 @@ mod tests {
     #[test]
     fn a_stopped_ledger_stops_the_arisens_play_too() {
         // The Heretic's WA2: the run's ledger stop governs the host's press.
-        let stone = Stone::default();
-        let sink = Sink::default();
-        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let stone = Arc::new(Stone::default());
+        let sink = Arc::new(Sink::default());
+        let broker = Broker::new(RUN, stone.clone(), sink.clone(), clock);
         play(&broker, H1);
         *sink.1.lock().unwrap() = Some(0); // every write from now on fails
         let uninstall = body(serde_json::json!({ "id": ID, "tool": "uninstall",
@@ -1954,9 +1954,9 @@ mod tests {
     fn a_decision_that_could_not_be_written_says_so() {
         // The Heretic's WA3: the game started, the decision did not reach
         // the disk; the answer says both.
-        let stone = Stone::default();
-        let sink = Sink::default();
-        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let stone = Arc::new(Stone::default());
+        let sink = Arc::new(Sink::default());
+        let broker = Broker::new(RUN, stone.clone(), sink.clone(), clock);
         play(&broker, H1);
         *sink.1.lock().unwrap() = Some(0);
         let mut launched = false;
@@ -1977,9 +1977,9 @@ mod tests {
 
     #[test]
     fn a_press_for_another_run_or_request_is_stale_and_launches_nothing() {
-        let stone = Stone::default();
-        let sink = Sink::default();
-        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let stone = Arc::new(Stone::default());
+        let sink = Arc::new(Sink::default());
+        let broker = Broker::new(RUN, stone.clone(), sink.clone(), clock);
         let never = || -> Result<(), String> { panic!("nothing may launch") };
         assert_eq!(
             broker.answer_play(RUN, H1, true, never),

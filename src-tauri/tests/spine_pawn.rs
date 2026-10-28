@@ -60,9 +60,9 @@ fn actor_on_disk(bench: &Bench, dirs: &DataDirs, option_id: &str) -> Option<Valu
 #[test]
 fn tamsins_install_goes_through_the_journal_as_hers_and_lands_in_her_ledger() {
     let (bench, dirs, state) = opened();
-    let errands = StoneErrands::new(Arc::clone(&state));
-    let runs = RunsFile::new(dirs.data.join(RunsFile::NAME));
-    let broker = Broker::new(RUN, &errands, &runs, mailbox::now);
+    let errands = Arc::new(StoneErrands::new(Arc::clone(&state)));
+    let runs = Arc::new(RunsFile::new(dirs.data.join(RunsFile::NAME)));
+    let broker = Broker::new(RUN, errands.clone(), runs.clone(), mailbox::now);
     let lantern = option_named(&state, "Lantern Glow Recolor");
 
     let (name, bytes) = request(
@@ -100,7 +100,7 @@ fn tamsins_install_goes_through_the_journal_as_hers_and_lands_in_her_ledger() {
 #[test]
 fn a_players_install_between_her_plan_and_her_install_makes_the_plan_stale() {
     let (_bench, _dirs, state) = opened();
-    let errands = StoneErrands::new(Arc::clone(&state));
+    let errands = Arc::new(StoneErrands::new(Arc::clone(&state)));
     let ermine = option_named(&state, "Ermine Cape");
     let planned = errands.plan_install(&ermine).unwrap();
     deploy::install_impl(&state, &option_named(&state, "Lantern Glow Recolor")).unwrap();
@@ -116,7 +116,7 @@ fn her_plan_is_checked_inside_the_turn_that_commits() {
     // The Heretic's WB1, on the real lock: the library changes while the
     // install waits for its turn; the install still refuses.
     let (_bench, _dirs, state) = opened();
-    let errands = StoneErrands::new(Arc::clone(&state));
+    let errands = Arc::new(StoneErrands::new(Arc::clone(&state)));
     let ermine = option_named(&state, "Ermine Cape");
     let planned = errands.plan_install(&ermine).unwrap();
     let turn = state.turn();
@@ -138,9 +138,9 @@ fn her_plan_is_checked_inside_the_turn_that_commits() {
 #[test]
 fn her_uninstall_records_whose_install_it_removed() {
     let (_bench, dirs, state) = opened();
-    let errands = StoneErrands::new(Arc::clone(&state));
-    let runs = RunsFile::new(dirs.data.join(RunsFile::NAME));
-    let broker = Broker::new(RUN, &errands, &runs, mailbox::now);
+    let errands = Arc::new(StoneErrands::new(Arc::clone(&state)));
+    let runs = Arc::new(RunsFile::new(dirs.data.join(RunsFile::NAME)));
+    let broker = Broker::new(RUN, errands.clone(), runs.clone(), mailbox::now);
     let lantern = option_named(&state, "Lantern Glow Recolor");
     deploy::install_impl(&state, &lantern).unwrap();
     let (name, bytes) = request(ID, "uninstall", serde_json::json!({ "installId": lantern }));
@@ -155,13 +155,13 @@ fn her_uninstall_records_whose_install_it_removed() {
 #[test]
 fn a_ledger_file_that_cannot_be_read_stops_her_before_anything_moves() {
     let (_bench, dirs, state) = opened();
-    let errands = StoneErrands::new(Arc::clone(&state));
+    let errands = Arc::new(StoneErrands::new(Arc::clone(&state)));
     // A folder where the file should be: it cannot be read, and is never
     // written over.
     let path = dirs.data.join(RunsFile::NAME);
     fs::create_dir_all(&path).unwrap();
-    let runs = RunsFile::new(path.clone());
-    let broker = Broker::new(RUN, &errands, &runs, mailbox::now);
+    let runs = Arc::new(RunsFile::new(path.clone()));
+    let broker = Broker::new(RUN, errands.clone(), runs.clone(), mailbox::now);
     let lantern = option_named(&state, "Lantern Glow Recolor");
     let token = plan_token(&errands.plan_install(&lantern).unwrap(), RUN);
     let (name, bytes) = request(
@@ -178,7 +178,7 @@ fn a_ledger_file_that_cannot_be_read_stops_her_before_anything_moves() {
 #[test]
 fn she_reads_the_tail_of_the_reframework_log_and_nothing_else() {
     let (bench, _dirs, state) = opened();
-    let errands = StoneErrands::new(Arc::clone(&state));
+    let errands = Arc::new(StoneErrands::new(Arc::clone(&state)));
     let log = bench.game.join("re2_framework_log.txt");
     fs::write(&log, "one\r\ntwo\r\nthree\r\n").unwrap();
     let answer = errands.read_reframework_log(2).unwrap();

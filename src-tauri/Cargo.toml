@@ -49,6 +49,10 @@ sha2.workspace = true
 # Linux bench) — never in a file, never in the webview (RS-6).
 keyring.workspace = true
 
+# THE WORKSHOP's terminal (v0.7, `pawn` only): Tamsin's PTY, as the
+# Mezzanine's (portable-pty wraps wsl.exe on Windows, /bin/sh on the bench).
+portable-pty = { version = "0.9", optional = true }
+
 # The nxm handler (v0.3) reads HKCR and writes HKCU\Software\Classes\nxm,
 # only when the player turns it on. Windows-only: the Linux bench never
 # compiles it (`protocol::system_registry` hands it an unsupported registry
@@ -84,6 +88,7 @@ custom-protocol = ["tauri/custom-protocol"]
 # On Windows the mailbox reads requests relative to a pinned folder handle
 # (NtCreateFile with RootDirectory): those windows-sys features come only with it.
 pawn = [
+  "dep:portable-pty",
   "windows-sys/Wdk_Foundation",
   "windows-sys/Wdk_Storage_FileSystem",
   "windows-sys/Win32_Security",
