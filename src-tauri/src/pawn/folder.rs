@@ -307,7 +307,8 @@ mod sys {
 
     use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
     use windows_sys::Wdk::Storage::FileSystem::{
-        NtCreateFile, FILE_CREATE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
+        FileRenameInformation, NtCreateFile, NtSetInformationFile, FILE_CREATE,
+        FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION,
         FILE_SYNCHRONOUS_IO_NONALERT,
     };
     use windows_sys::Win32::Foundation::{
@@ -315,13 +316,12 @@ mod sys {
     };
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FileAttributeTagInfo, FileDispositionInfo, FileFullDirectoryInfo,
-        FileFullDirectoryRestartInfo, FileRenameInfo, FlushFileBuffers,
-        GetFileInformationByHandleEx, GetFileType, ReadFile, SetFileInformationByHandle, WriteFile,
-        DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-        FILE_ATTRIBUTE_TAG_INFO, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_FULL_DIR_INFO, FILE_LIST_DIRECTORY, FILE_RENAME_INFO,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_TYPE_DISK,
-        OPEN_EXISTING, SYNCHRONIZE,
+        FileFullDirectoryRestartInfo, FlushFileBuffers, GetFileInformationByHandleEx, GetFileType,
+        ReadFile, SetFileInformationByHandle, WriteFile, DELETE, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
+        FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_FULL_DIR_INFO, FILE_LIST_DIRECTORY, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_TYPE_DISK, OPEN_EXISTING, SYNCHRONIZE,
     };
     use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
@@ -336,6 +336,13 @@ mod sys {
 
     fn wide(text: &str) -> Vec<u16> {
         text.encode_utf16().collect()
+    }
+
+    /// The last error, named by the step that met it (its kind kept, so an
+    /// existing name still reads as `AlreadyExists`).
+    fn step(what: &str) -> io::Error {
+        let err = io::Error::last_os_error();
+        io::Error::new(err.kind(), format!("could not {what}: {err}"))
     }
 
     fn status_error(status: i32) -> io::Error {
@@ -582,24 +589,27 @@ mod sys {
                         )
                     };
                     if ok == 0 {
-                        return Err(io::Error::last_os_error());
+                        return Err(step("write the answer"));
                     }
                     done += wrote as usize;
                 }
                 // SAFETY: a live handle.
                 if unsafe { FlushFileBuffers(raw) } == 0 {
-                    return Err(io::Error::last_os_error());
+                    return Err(step("flush the answer"));
                 }
-                // FILE_RENAME_INFO with the target's name inline, relative to
-                // the pinned folder, replacing nothing.
+                // The native rename: FILE_RENAME_INFORMATION with the pinned
+                // folder as RootDirectory and the bare name, replacing
+                // nothing. (The Win32 FileRenameInfo refused a root with
+                // error 87, and without one resolved the bare name against
+                // the process's working folder: measured natively.)
                 let target = wide(name);
-                let header = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
-                let size = header + target.len() * 2 + 2;
-                let mut buffer = vec![0u64; size.div_ceil(8)];
-                let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+                let header = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
+                let size = header + target.len() * 2;
+                let mut buffer = vec![0u64; size.div_ceil(8).max(4)];
+                let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
                 // SAFETY: the buffer holds the header and the name; aligned to 8.
                 unsafe {
-                    (*info).Anonymous.Flags = 0;
+                    (*info).Anonymous.ReplaceIfExists = false;
                     (*info).RootDirectory = self.raw();
                     (*info).FileNameLength = (target.len() * 2) as u32;
                     std::ptr::copy_nonoverlapping(
@@ -608,12 +618,24 @@ mod sys {
                         target.len(),
                     );
                 }
-                // SAFETY: a live handle opened with DELETE; `size` bytes.
-                if unsafe {
-                    SetFileInformationByHandle(raw, FileRenameInfo, info.cast(), size as u32)
-                } == 0
-                {
-                    return Err(io::Error::last_os_error());
+                let mut io_status = IO_STATUS_BLOCK::default();
+                // SAFETY: a live handle opened with DELETE; `size` bytes of a
+                // FILE_RENAME_INFORMATION.
+                let status = unsafe {
+                    NtSetInformationFile(
+                        raw,
+                        &mut io_status,
+                        info.cast(),
+                        size as u32,
+                        FileRenameInformation,
+                    )
+                };
+                if status < 0 {
+                    let err = status_error(status);
+                    return Err(io::Error::new(
+                        err.kind(),
+                        format!("could not rename the answer into place: {err}"),
+                    ));
                 }
                 Ok(())
             })();
