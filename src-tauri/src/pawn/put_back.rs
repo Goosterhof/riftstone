@@ -291,6 +291,8 @@ mod tests {
             started_at: "2026-10-28T12:00:00Z".into(),
             ended_at: None,
             ops,
+            held: None,
+            decisions: Vec::new(),
         }
     }
 

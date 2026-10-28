@@ -159,10 +159,11 @@ impl Errands for StoneErrands {
         })
     }
 
-    fn hold_play(&self, _run_id: &str) -> Result<(), String> {
-        // The held Play's desk (BUILD-SPEC § v0.7, The held Play's decision)
-        // is the next slice; until it stands, nothing is held.
-        Err("The stone cannot hold a Play for Tamsin yet; ask the Arisen to press Play.".into())
+    fn hold_play(&self, _run_id: &str, _held_request_id: &str) -> Result<(), String> {
+        // The broker keeps the held request in the run's ledger; the window
+        // learns of it through the room's pawn-state event, which the summon
+        // slice wires (WINDOW-CONTRACT § v0.7).
+        Ok(())
     }
 
     fn drop_held_play(&self, _run_id: &str) {}

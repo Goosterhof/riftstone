@@ -379,8 +379,9 @@ pub trait Errands: Send + Sync {
     /// `plan_uninstall` + `uninstall` through the journal. The answer says
     /// whose install it removed ([`Done::removed`]).
     fn uninstall(&self, install_id: &str, actor: &Actor) -> Result<Done, String>;
-    /// Show the held Play in the window, for `run_id`.
-    fn hold_play(&self, run_id: &str) -> Result<(), String>;
+    /// Show the held Play in the window: run `run_id`'s request
+    /// `held_request_id` waits for the Arisen.
+    fn hold_play(&self, run_id: &str, held_request_id: &str) -> Result<(), String>;
     /// Drop `run_id`'s held Play, if one is held (the run retired).
     fn drop_held_play(&self, run_id: &str);
     fn read_reframework_log(&self, tail_lines: u64) -> Result<Value, String>;
@@ -470,6 +471,51 @@ pub struct RunLedger {
     pub started_at: String,
     pub ended_at: Option<String>,
     pub ops: Vec<LedgerOp>,
+    /// The Play request waiting for the Arisen, if one is (at most one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<HeldPlay>,
+    /// The Arisen's answers to held Plays, in order (BUILD-SPEC § v0.7, The
+    /// held Play's decision): never written into the held call's answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<PlayDecision>,
+}
+
+/// The Play request waiting for the Arisen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldPlay {
+    pub held_request_id: String,
+    pub since: String,
+}
+
+/// What the Arisen did with a held Play. `played` only once the game started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Decision {
+    Played,
+    Declined,
+}
+
+/// One decision, and whether a later `play` call has carried it to Tamsin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayDecision {
+    pub held_request_id: String,
+    pub decision: Decision,
+    pub at: String,
+    pub delivered: bool,
+}
+
+/// Why the Arisen's press on a held Play did nothing (WINDOW-CONTRACT § v0.7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlayRefusal {
+    /// No Play is waiting.
+    NothingHeld,
+    /// The press names a run or a request that is not the one waiting now.
+    StaleHeld,
+    /// Play was pressed and the launch refused or failed: the stone's own
+    /// sentence. The request stays waiting.
+    Launch(String),
 }
 
 /// One answered call, for the `rift://pawn-hands` event.
@@ -538,6 +584,8 @@ impl<'a> Broker<'a> {
             started_at: clock(),
             ended_at: None,
             ops: Vec::new(),
+            held: None,
+            decisions: Vec::new(),
         };
         Self {
             run_id: run_id.to_string(),
@@ -633,6 +681,23 @@ impl<'a> Broker<'a> {
                 None => break,
             }
         }
+        if request.tool == Tool::Play {
+            // Play calls are taken one at a time, under the broker's lock: a
+            // decision is delivered in the same ledger write as the answer
+            // that carries it.
+            let answer = self.play(&mut state, &request.id);
+            state
+                .slots
+                .insert(request.id.clone(), Slot::Recorded(answer.clone()));
+            drop(state);
+            self.settled.notify_all();
+            return Some(Handled {
+                answer,
+                tool: Some(request.tool.name().into()),
+                repeated: false,
+                install_id: None,
+            });
+        }
         let mutates = request.tool.mutates();
         if mutates {
             // The intent is on disk before the mutation starts: a crash or a
@@ -721,10 +786,19 @@ impl<'a> Broker<'a> {
                 read(self.errands.get_option(option_id), "read an option"),
                 None,
             ),
-            Tool::ListInstalled => (
-                read(self.errands.list_installed(), "listed the installs"),
-                None,
-            ),
+            Tool::ListInstalled => {
+                let mut answer = read(self.errands.list_installed(), "listed the installs");
+                if answer.outcome == Outcome::Done {
+                    // Every list carries the Play, read and never consumed.
+                    let mut map = match std::mem::take(&mut answer.data) {
+                        Value::Object(map) => map,
+                        other => serde_json::Map::from_iter([("installed".to_string(), other)]),
+                    };
+                    map.insert("play".into(), self.play_view());
+                    answer.data = Value::Object(map);
+                }
+                (answer, None)
+            }
             Tool::PlanInstall { option_id } => {
                 let answer = match self.errands.plan_install(option_id) {
                     Ok(planned) => Answer {
@@ -767,18 +841,11 @@ impl<'a> Broker<'a> {
                 let op = self.op(request, &answer, None, removed);
                 (answer, Some(op))
             }
-            Tool::Play => {
-                let answer = match self.errands.hold_play(&self.run_id) {
-                    Ok(()) => Answer {
-                        id: id.to_string(),
-                        outcome: Outcome::Held,
-                        text: "held: waiting for the Arisen".into(),
-                        data: Value::Null,
-                    },
-                    Err(sentence) => Answer::refused(id, sentence),
-                };
-                (answer, None)
-            }
+            // Answered under the broker's lock in `handle`.
+            Tool::Play => (
+                Answer::refused(id, "The stone answers Play under its own lock."),
+                None,
+            ),
             Tool::ReadReframeworkLog { tail_lines } => (
                 read(
                     self.errands.read_reframework_log(*tail_lines),
@@ -833,6 +900,151 @@ impl<'a> Broker<'a> {
         }
     }
 
+    /// The Play as `list_installed` shows it, read and never consumed:
+    /// `{ waiting, lastDecision }`.
+    fn play_view(&self) -> Value {
+        let state = self.lock();
+        let last = state.ledger.decisions.last().map(|d| {
+            serde_json::json!({
+                "heldRequestId": d.held_request_id,
+                "decision": d.decision,
+                "at": d.at,
+            })
+        });
+        serde_json::json!({
+            "waiting": state.ledger.held.as_ref().map(|h| h.held_request_id.clone()),
+            "lastDecision": last,
+        })
+    }
+
+    /// A new `play` call (BUILD-SPEC § v0.7, The held Play's decision): an
+    /// undelivered decision is delivered and nothing new is held; a request
+    /// already waiting is named and nothing new is held; else this call is
+    /// held. Each changes the ledger in one write with the answer.
+    fn play(&self, state: &mut BrokerState, id: &str) -> Answer {
+        if state.ledger_down {
+            return Answer::refused(id, LEDGER_DOWN);
+        }
+        if let Some(index) = state.ledger.decisions.iter().position(|d| !d.delivered) {
+            let decision = state.ledger.decisions[index].clone();
+            let text = match decision.decision {
+                Decision::Played => {
+                    format!("played at {}: the Arisen started the game", decision.at)
+                }
+                Decision::Declined => "declined: the Arisen said not now".to_string(),
+            };
+            let answer = Answer {
+                id: id.to_string(),
+                outcome: Outcome::Done,
+                text,
+                data: serde_json::json!({
+                    "heldRequestId": decision.held_request_id,
+                    "decision": decision.decision,
+                    "at": decision.at,
+                }),
+            };
+            state.ledger.decisions[index].delivered = true;
+            state.ledger.ops.push(self.play_op(id, &answer));
+            if self.sink.record(&state.ledger).is_err() {
+                state.ledger.decisions[index].delivered = false;
+                state.ledger.ops.pop();
+                state.ledger_down = true;
+                return Answer::refused(id, LEDGER_DOWN);
+            }
+            return answer;
+        }
+        if let Some(held) = &state.ledger.held {
+            return Answer {
+                id: id.to_string(),
+                outcome: Outcome::Held,
+                text: "held: a Play is already waiting for the Arisen".into(),
+                data: serde_json::json!({ "heldRequestId": held.held_request_id }),
+            };
+        }
+        let answer = Answer {
+            id: id.to_string(),
+            outcome: Outcome::Held,
+            text: "held: waiting for the Arisen".into(),
+            data: serde_json::json!({ "heldRequestId": id }),
+        };
+        state.ledger.held = Some(HeldPlay {
+            held_request_id: id.to_string(),
+            since: (self.clock)(),
+        });
+        state.ledger.ops.push(self.play_op(id, &answer));
+        if self.sink.record(&state.ledger).is_err() {
+            state.ledger.held = None;
+            state.ledger.ops.pop();
+            state.ledger_down = true;
+            return Answer::refused(id, LEDGER_DOWN);
+        }
+        if let Err(sentence) = self.errands.hold_play(&self.run_id, id) {
+            state.ledger.held = None;
+            state.ledger.ops.pop();
+            let _ = self.sink.record(&state.ledger);
+            return Answer::refused(id, sentence);
+        }
+        answer
+    }
+
+    fn play_op(&self, id: &str, answer: &Answer) -> LedgerOp {
+        LedgerOp {
+            id: id.to_string(),
+            tool: "play".into(),
+            install_id: None,
+            option_id: None,
+            outcome: answer.outcome,
+            at: (self.clock)(),
+            answer: answer.clone(),
+            removed: None,
+        }
+    }
+
+    /// The Arisen's press on a held Play (`answer_pawn_play`). It acts only
+    /// when `run_id` and `held_request_id` are this live run and its waiting
+    /// request, checked under the broker's lock, which is held through
+    /// `launch` so nothing can change between the check and the game
+    /// starting. `played` is recorded only when `launch` started the game; a
+    /// launch that refused or failed records nothing and the request stays
+    /// waiting.
+    pub fn answer_play(
+        &self,
+        run_id: &str,
+        held_request_id: &str,
+        accept: bool,
+        launch: impl FnOnce() -> Result<(), String>,
+    ) -> Result<Decision, PlayRefusal> {
+        let mut state = self.lock();
+        if run_id != self.run_id || state.retiring {
+            return Err(PlayRefusal::StaleHeld);
+        }
+        match &state.ledger.held {
+            None => return Err(PlayRefusal::NothingHeld),
+            Some(held) if held.held_request_id != held_request_id => {
+                return Err(PlayRefusal::StaleHeld)
+            }
+            Some(_) => {}
+        }
+        let decision = if accept {
+            launch().map_err(PlayRefusal::Launch)?;
+            Decision::Played
+        } else {
+            Decision::Declined
+        };
+        state.ledger.held = None;
+        state.ledger.decisions.push(PlayDecision {
+            held_request_id: held_request_id.to_string(),
+            decision,
+            at: (self.clock)(),
+            delivered: false,
+        });
+        if let Err(err) = self.sink.record(&state.ledger) {
+            log::warn!("the pawn's run ledger could not record the Arisen's answer: {err}");
+            state.ledger_down = true;
+        }
+        Ok(decision)
+    }
+
     /// Retire the run (BUILD-SPEC § v0.7, runs): take no new calls, wait for
     /// every call already started to be recorded, drop a held Play, and close
     /// the ledger. `persisted` is false when any write of this run's ledger
@@ -847,6 +1059,8 @@ impl<'a> Broker<'a> {
                 .wait(state)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
+        // A held Play dies with its run, unanswered; its decisions stay.
+        state.ledger.held = None;
         self.errands.drop_held_play(&self.run_id);
         state.ledger.ended_at = Some((self.clock)());
         if let Err(err) = self.sink.record(&state.ledger) {
@@ -1010,8 +1224,11 @@ mod tests {
                 removed: self.removes.lock().unwrap().clone(),
             })
         }
-        fn hold_play(&self, run_id: &str) -> Result<(), String> {
-            self.held.lock().unwrap().push(run_id.into());
+        fn hold_play(&self, run_id: &str, held_request_id: &str) -> Result<(), String> {
+            self.held
+                .lock()
+                .unwrap()
+                .push(format!("{run_id}/{held_request_id}"));
             Ok(())
         }
         fn drop_held_play(&self, run_id: &str) {
@@ -1345,7 +1562,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(held.answer.outcome, Outcome::Held);
-        assert_eq!(stone.held.lock().unwrap().as_slice(), [RUN]);
+        assert_eq!(
+            stone.held.lock().unwrap().as_slice(),
+            [format!("{RUN}/{play_id}")]
+        );
 
         let option = "00000000000000ab#Stature";
         let token = planned_token(&stone, option);
@@ -1370,8 +1590,14 @@ mod tests {
         assert!(retired.persisted);
         let ledger = retired.ledger;
         assert_eq!(stone.installs.load(Ordering::SeqCst), 1);
-        assert_eq!(ledger.ops.len(), 1, "the mutation in flight was recorded");
-        assert_eq!(ledger.ops[0].outcome, Outcome::Done);
+        let installs: Vec<&LedgerOp> = ledger
+            .ops
+            .iter()
+            .filter(|op| op.tool == "install")
+            .collect();
+        assert_eq!(installs.len(), 1, "the mutation in flight was recorded");
+        assert_eq!(installs[0].outcome, Outcome::Done);
+        assert_eq!(ledger.held, None, "the held Play died with its run");
         assert_eq!(ledger.ended_at.as_deref(), Some("2026-10-28T12:00:00Z"));
         assert_eq!(stone.dropped.lock().unwrap().as_slice(), [RUN]);
         assert_eq!(sink.0.lock().unwrap().last().unwrap(), &ledger);
@@ -1534,6 +1760,180 @@ mod tests {
         );
     }
 
+    fn play(broker: &Broker<'_>, id: &str) -> Answer {
+        broker
+            .handle(
+                &name(id),
+                &body(serde_json::json!({ "id": id, "tool": "play", "args": {} })),
+            )
+            .unwrap()
+            .answer
+    }
+
+    fn list(broker: &Broker<'_>, id: &str) -> Value {
+        broker
+            .handle(
+                &name(id),
+                &body(serde_json::json!({ "id": id, "tool": "list_installed", "args": {} })),
+            )
+            .unwrap()
+            .answer
+            .data
+    }
+
+    const H1: &str = "a1111111-2222-4333-8444-555555555555";
+    const H2: &str = "a2222222-2222-4333-8444-555555555555";
+    const H3: &str = "a3333333-2222-4333-8444-555555555555";
+    const L1: &str = "b1111111-2222-4333-8444-555555555555";
+    const L2: &str = "b2222222-2222-4333-8444-555555555555";
+
+    #[test]
+    fn one_play_is_held_per_run_and_its_answer_never_changes() {
+        let stone = Stone::default();
+        let sink = Sink::default();
+        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let first = play(&broker, H1);
+        assert_eq!(first.outcome, Outcome::Held);
+        assert_eq!(first.data["heldRequestId"], H1);
+        // A new id while one waits holds nothing new and names the one waiting.
+        let second = play(&broker, H2);
+        assert_eq!(second.outcome, Outcome::Held);
+        assert_eq!(second.data["heldRequestId"], H1);
+        assert_eq!(stone.held.lock().unwrap().len(), 1, "one hold");
+        // The Arisen declines; a retry of the held id still gets `held`.
+        assert_eq!(
+            broker.answer_play(RUN, H1, false, || unreachable!()),
+            Ok(Decision::Declined)
+        );
+        assert_eq!(
+            play(&broker, H1),
+            first,
+            "the held answer is the ledger's forever"
+        );
+    }
+
+    #[test]
+    fn a_decision_is_read_by_list_installed_and_delivered_once_by_a_new_play() {
+        let stone = Stone::default();
+        let sink = Sink::default();
+        let broker = Broker::new(RUN, &stone, &sink, clock);
+        play(&broker, H1);
+        assert_eq!(
+            list(&broker, L1)["play"],
+            serde_json::json!({ "waiting": H1, "lastDecision": null })
+        );
+        broker
+            .answer_play(RUN, H1, false, || unreachable!())
+            .unwrap();
+        let read = serde_json::json!({ "waiting": null, "lastDecision":
+            { "heldRequestId": H1, "decision": "declined", "at": "2026-10-28T12:00:00Z" } });
+        assert_eq!(list(&broker, L2)["play"], read, "read, never consumed");
+        assert_eq!(list(&broker, L2)["play"], read);
+
+        let delivered = play(&broker, H2);
+        assert_eq!(delivered.outcome, Outcome::Done);
+        assert_eq!(delivered.text, "declined: the Arisen said not now");
+        assert_eq!(
+            stone.held.lock().unwrap().len(),
+            1,
+            "delivery holds nothing new"
+        );
+        // Delivered in the same write as the answer that carries it.
+        let written = sink.0.lock().unwrap().last().unwrap().clone();
+        assert!(written.decisions[0].delivered);
+        assert_eq!(written.ops.last().unwrap().id, H2);
+        assert_eq!(written.ops.last().unwrap().answer, delivered);
+
+        // Asking again is a further new call: it holds.
+        let again = play(&broker, H3);
+        assert_eq!(again.outcome, Outcome::Held);
+        assert_eq!(again.data["heldRequestId"], H3);
+        assert_eq!(
+            play(&broker, H2),
+            delivered,
+            "a retry of the delivering id repeats it"
+        );
+    }
+
+    #[test]
+    fn only_a_game_that_started_is_played() {
+        let stone = Stone::default();
+        let sink = Sink::default();
+        let broker = Broker::new(RUN, &stone, &sink, clock);
+        play(&broker, H1);
+        let refused = broker.answer_play(RUN, H1, true, || {
+            Err("refused: close Dragon's Dogma 2 first.".into())
+        });
+        assert_eq!(
+            refused,
+            Err(PlayRefusal::Launch(
+                "refused: close Dragon's Dogma 2 first.".into()
+            ))
+        );
+        assert!(broker.ledger().decisions.is_empty(), "nothing recorded");
+        assert_eq!(
+            broker.ledger().held.unwrap().held_request_id,
+            H1,
+            "still waiting"
+        );
+        let mut launched = false;
+        assert_eq!(
+            broker.answer_play(RUN, H1, true, || {
+                launched = true;
+                Ok(())
+            }),
+            Ok(Decision::Played)
+        );
+        assert!(launched);
+        assert_eq!(
+            play(&broker, H2).text,
+            "played at 2026-10-28T12:00:00Z: the Arisen started the game"
+        );
+    }
+
+    #[test]
+    fn a_press_for_another_run_or_request_is_stale_and_launches_nothing() {
+        let stone = Stone::default();
+        let sink = Sink::default();
+        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let never = || -> Result<(), String> { panic!("nothing may launch") };
+        assert_eq!(
+            broker.answer_play(RUN, H1, true, never),
+            Err(PlayRefusal::NothingHeld)
+        );
+        play(&broker, H1);
+        assert_eq!(
+            broker.answer_play(ID, H1, true, never),
+            Err(PlayRefusal::StaleHeld),
+            "another run"
+        );
+        assert_eq!(
+            broker.answer_play(RUN, H2, true, never),
+            Err(PlayRefusal::StaleHeld),
+            "another request"
+        );
+        // The same run's earlier request, after it was answered and a new one held.
+        broker.answer_play(RUN, H1, false, never).unwrap();
+        play(&broker, H2); // delivers the decline
+        play(&broker, H3); // holds anew
+        assert_eq!(
+            broker.answer_play(RUN, H1, true, never),
+            Err(PlayRefusal::StaleHeld),
+            "an earlier request"
+        );
+        broker.retire();
+        assert_eq!(
+            broker.answer_play(RUN, H3, true, never),
+            Err(PlayRefusal::StaleHeld),
+            "a retired run"
+        );
+        assert!(broker
+            .ledger()
+            .decisions
+            .iter()
+            .all(|d| d.decision == Decision::Declined));
+    }
+
     #[test]
     fn the_ledger_file_keeps_twenty_runs_and_replaces_a_growing_one() {
         let mut kept = Vec::new();
@@ -1545,6 +1945,8 @@ mod tests {
                     started_at: clock(),
                     ended_at: None,
                     ops: Vec::new(),
+                    held: None,
+                    decisions: Vec::new(),
                 },
             );
         }
