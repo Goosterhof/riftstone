@@ -398,7 +398,31 @@ fn bench_summon_natively_through_wsl() {
     let sink: Arc<dyn EventSink> = events.clone();
     let summoned = desk.summon(&state, sink, 100, 30).expect("summoned");
     println!("BENCH summoned: {summoned:?}");
-    std::thread::sleep(std::time::Duration::from_secs(10));
+    // ConPTY asks its host for the cursor position (`ESC[6n`) and holds
+    // every later byte until it is answered; in the room, xterm.js answers
+    // through pawn_write. The bench answers as xterm.js would.
+    let asked = std::time::Instant::now();
+    while std::time::Instant::now().duration_since(asked) < std::time::Duration::from_secs(5) {
+        let queried = events.named(PAWN_OUTPUT).iter().any(|event| {
+            let data = event["data"].as_str().unwrap_or_default();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .unwrap_or_default();
+            bytes.windows(4).any(|w| w == b"\x1b[6n")
+        });
+        if queried {
+            desk.write("\u{1b}[1;1R")
+                .expect("answered the cursor query");
+            println!("BENCH answered ConPTY's cursor query");
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let wait: u64 = std::env::var("RIFT_BENCH_NATIVE_WAIT")
+        .ok()
+        .and_then(|w| w.parse().ok())
+        .unwrap_or(10);
+    std::thread::sleep(std::time::Duration::from_secs(wait));
     let here = desk.pawn_state();
     let mut shown = Vec::new();
     for event in events.named(PAWN_OUTPUT) {
@@ -427,7 +451,7 @@ fn bench_summon_natively_through_wsl() {
         .chars()
         .filter(|c| !c.is_control() || *c == '\n')
         .collect();
-    println!("BENCH state after 10 s: {} {:?}", here.state, here.host);
+    println!("BENCH state after the wait: {} {:?}", here.state, here.host);
     println!(
         "BENCH output events: {}, bytes: {}",
         events.named(PAWN_OUTPUT).len(),
@@ -437,6 +461,10 @@ fn bench_summon_natively_through_wsl() {
         "BENCH words seen: welcome={} started={}",
         text.contains("Welcome"),
         text.contains("started")
+    );
+    println!(
+        "BENCH raw head: {:?}",
+        String::from_utf8_lossy(&shown[..shown.len().min(600)])
     );
     println!(
         "BENCH departed: {} in {:?}; state events: {}",
