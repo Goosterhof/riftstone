@@ -329,7 +329,10 @@ mod desk {
         let refused = desk.summon(&state, events, 80, 24).unwrap_err();
         assert_eq!(reason(refused), PawnReason::NoFence);
         assert_eq!(desk.pawn_state().state, "absent");
-        assert_eq!(reason(desk.write("x").unwrap_err()), PawnReason::NotHere);
+        assert_eq!(
+            reason(desk.write("r", "x").unwrap_err()),
+            PawnReason::NotHere
+        );
         assert_eq!(
             reason(
                 desk.depart(&riftstone_lib::events::RecordedEvents::default())
@@ -546,8 +549,11 @@ fn bench_summon_natively_through_wsl() {
             bytes.windows(4).any(|w| w == b"\x1b[6n")
         });
         if queried {
-            desk.write("\u{1b}[1;1R")
-                .expect("answered the cursor query");
+            desk.write(
+                summoned.run_id.as_deref().unwrap_or_default(),
+                "\u{1b}[1;1R",
+            )
+            .expect("answered the cursor query");
             println!("BENCH answered ConPTY's cursor query");
             break;
         }

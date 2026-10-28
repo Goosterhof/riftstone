@@ -66,6 +66,9 @@ const ERROR_KINDS: ReadonlySet<string> = new Set([
   "journal",
   "nexus",
   "save",
+  // v0.7: only the investor's build produces these (WINDOW-CONTRACT § v0.7, Errors).
+  "pawn",
+  "bring",
   "io",
 ]);
 

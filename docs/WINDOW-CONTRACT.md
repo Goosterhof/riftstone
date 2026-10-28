@@ -1021,7 +1021,7 @@ Types live in `src/types/workshop.ts`. Design: #00015 §20.
 |---|---|---|---|
 | `get_workshop` | — | `WorkshopView` | The folder (made or not yet), the built artifacts with the stone's digests, the pawn's state, the fence and the voice. The fence is judged against the ground now, which costs one `wsl.exe` survey; the window calls it on entering the room and on `rift://workshop-changed`. |
 | `summon_pawn` | `cols: number, rows: number` | `void` | Makes the workshop folder, the mailbox and Tamsin's config dir on first use, writes the relay, settings and persona for the current voice, and starts the PTY. Refuses `pawn` `alreadyHere`, `breached` or `noFence` (the missing piece named: the WSL distro, `bwrap`, `socat`, or `claude` in that distro). Output arrives as `rift://pawn-output`. |
-| `pawn_write` | `data: string` | `void` | Keystrokes and pastes, UTF-8, to the PTY. Refuses `notHere`. |
+| `pawn_write` | `runId: string, data: string` | `void` | Keystrokes and pastes, UTF-8, to the PTY of the summoning `runId`. Refuses `notHere` when no pawn is here or `runId` is not the live summoning, so a key typed for one run never reaches the next. |
 | `pawn_resize` | `cols: number, rows: number` | `void` | Called on fit; ignored when no pawn is here. |
 | `depart_pawn` | — | `void` | Ends the session: SIGTERM to the fence, then a kill after 3 s. A held Play is dropped. The pawn's installs stay (see `plan_put_back`). |
 | `answer_pawn_play` | `runId: string, heldRequestId: string, accept: boolean` | `{ decision: "played" \| "declined", persisted: boolean }` | The held Play request the window was shown, by its run and id. `true` runs `plan_launch` and `launch_game` exactly as the Play slab does, with the same warnings and refusals. `played` is recorded only once `launch_game` has started the launch: `DD2.exe` started, or Steam accepted the request. Whether the game then came up is the game watcher's to say, never this decision's (the Heretic's WD6). `persisted: false` says the decision stands but did not reach the run's ledger on disk; the window says so (WD5). A refusal, a failure or a cancel at a warning records nothing, and the request stays waiting with the refusal shown. `false` records `declined`. The decision reaches Tamsin through her next `list_installed` or a new `play` call (BUILD-SPEC § v0.7, *The held Play's decision*), and the held call's own answer stays `held`. Refuses `nothingHeld`, and `staleHeld` when the run and id are not the live run's waiting request, both when the press arrives and right before the game starts. |
@@ -1050,8 +1050,8 @@ is `pawn` `inputRefused`, naming the root it overlaps, never a path under `userd
 
 | Event | Payload | When |
 |---|---|---|
-| `rift://pawn-output` | `{ seq: number, data: string }` (base64 bytes) | Each read of the PTY. `seq` rises by one; the window drops nothing and writes in order. |
-| `rift://pawn-state` | `PawnStateView` | Summoning, here (first bytes), departed (clean, exit 0), torn (non-zero exit or PTY closed). |
+| `rift://pawn-output` | `{ runId: string, seq: number, data: string }` (base64 bytes) | Each read of the PTY. `seq` starts at 0 for each summoning and rises by one; the window drops nothing of the run on show and writes it in order. The run is announced (`summoning`) before its PTY can say a word; a run's bytes that still arrive before its state wait for it, and an earlier run's late bytes are dropped. |
+| `rift://pawn-state` | `PawnStateView` | Summoning, here (first bytes), departed (clean, exit 0), torn (non-zero exit or PTY closed), and after every `rift://pawn-hands` row, since a call can hold a Play or drop one. The window reads `held` from this state alone; only this event moves the run on show. |
 | `rift://pawn-hands` | `PawnHand` | Every tool call the stone answered, refused calls included. |
 | `rift://workshop-changed` | `{}` | The workshop's `dist\` changed (debounced 500 ms). The window refetches `get_workshop`; a digest in flight shows as `hashing`. |
 
@@ -1087,8 +1087,10 @@ the investor's own and may be shown.
   ledger could not be written), summary,
   installId: string | null, refusal: string | null }`. `summary` is the row's text
   (`installed Stature 0.2.0 · 7 files`). `refusal` is the stone's own sentence, verbatim.
-- `FenceView`: `{ chip: "contained" | "unprobed" | "breached", ground: { distro, claudeVersion,
-  kernel, digest } | null, provedAt: string | null, steps: FenceStep[], changed: string | null }`.
+- `FenceView`: `{ chip: "contained" | "unprobed" | "breached", control: boolean | null, ground: {
+  distro, claudeVersion, kernel, digest } | null, provedAt: string | null, steps: FenceStep[],
+  changed: string | null }`. `control` is whether the record's control landed (null without a
+  record); the window shows it first, before any refusal.
   `changed` is the sentence for a record that does not make the chip `contained`: one proved on
   another ground (`proved on claude 2.1.312; this is 2.1.320`), one that could not show a row
   (`the last probe could not show step 3`), one from an earlier probe, or a host the stone could
@@ -1096,18 +1098,46 @@ the investor's own and may be shown.
   `FenceStep` is `{ step, expected: "land" | "notLand" | "fail" | "succeed", observed, ok,
   verdict: "held" | "breached" | "inconclusive" }`. `steps` lists rows 1–12, then the broker
   checks `B1` and `B2`. `ok` is `verdict === "held"`.
-- `BringThroughPlan`: `{ artifact, bytes, sha256, landsAs: string, receipt: ReceiptView | null,
-  conflict: "none" | "alreadyHad" | "nameTaken" }`.
+- `BringThroughPlan`: `{ artifact, bytes, sha256, landsAs: string, receipt: ReceiptView,
+  conflict: "none" | "alreadyHad" | "nameTaken" }`. A build without a readable, matching receipt
+  has no plan (`bring` `noReceipt` / `receiptMismatch`), so the plan always carries one.
 - `BringThroughResult`: `{ outcome: "landed" | "alreadyHad" }`. The landed zip is named as a
   package by the scan the press requests; the window reads it from `rift://library-changed`.
-- `PutBackPlan`: `{ runId, remove: UninstallPlanView[], review: { installId, optionId, name,
-  at, undo: "available" | "reinstallFromRift", known: "yours" | "anotherSummoning" | "uncertain"
-  }[], sentence }`. `known` is what the ledger can say: done and the player's, done and another
+- `PutBackPlan`: `{ runId, remove: UninstallPlanView[], review: { installId, name, at, undo:
+  "available" | "reinstallFromRift", known: "yours" | "anotherSummoning" | "uncertain" }[],
+  sentence }`. The journal keys an install by its option, so a `remove` item's `optionId` is the
+  install id `put_back` takes. `known` is what the ledger can say: done and the player's, done and another
   summoning's, or `uncertain` (an outcome or owner that was not recorded; the Heretic's WB5).
   `sentence` is the press's own promise and counts each kind in its own words, e.g. *Removes the 3
   installs Tamsin made in this summoning. She also uninstalled 1 of yours. The stone cannot tell
   whether 1 more was uninstalled, or whose it was. They are listed below.*
 - `Voice`: `"full" | "sparing" | "plain"` (default `sparing`).
+
+### The room as built (#00015 §20, rendered at 1320 and 1024)
+
+- The window side lives in `src/workshop/`, imported only by `src/composables/useRooms.ts` under
+  `VITE_RIFT_PAWN === "1"`. The public window holds the registry and nothing else.
+- The nav row's state (R20.1) takes the hint's line, `Tamsin is here` (rift) or `Tamsin asks to
+  play` (warn), instead of a `· HERE` / `· ASKS` suffix after the name. The suffix wrapped the
+  row onto two lines at the 248 px pillar.
+- The terminal at 14 px measured 73 columns at 1320 and 74 at 1024 in headless Chromium, under
+  Q20.3's prediction of about 80. The bench stays 320 until WebView2 is read on the installed
+  build, which Q20.3 names as the settling read.
+- The fence fold shows the control first, then rows 1–12 and B1/B2 by their verdict: `✓` held,
+  `✕` breached (ember), `?` could not show (faint).
+- The terminal takes input from `summoning` on, because xterm's `disableStdin` drops every
+  reply, including its answer to ConPTY's first cursor query, and ConPTY holds all later output
+  behind that answer. What the terminal says before the run is `here` (the only state in which
+  the stone accepts `pawn_write`) is held, sent in order once the run is here, and dropped if
+  the run never arrives. Each send names its run and is checked again before it goes, so a drain
+  under way stops when another run is on show.
+- A Play press answers the request that was waiting at the click: if another took its place
+  while §16.2's plan was read, nothing is answered and the room says so. The decision reads
+  `The stone started the launch.`; whether the game runs is the watcher's line, apart.
+- A bring-through reports `landed` as soon as the stone does. The rescan it requests runs on,
+  and its result arrives as `rift://library-changed`.
+- No per-row Undo and no log viewer in the hands: the contract carries neither. Put back is
+  the undo. `Resume the last conversation` (Q20.8) is not offered, since it is unmeasured.
 
 ### What the window may not do
 

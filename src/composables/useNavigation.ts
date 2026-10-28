@@ -3,7 +3,8 @@
 
 import { ref } from "vue";
 
-export type Page = "rift" | "world" | "nexus" | "preflight" | "muster";
+/** "workshop" exists only in the investor's build (v0.7, RS-10; see useRooms). */
+export type Page = "rift" | "world" | "nexus" | "preflight" | "muster" | "workshop";
 export type RiftMode = "results" | "package" | "lookbook";
 
 export interface LightboxImage {

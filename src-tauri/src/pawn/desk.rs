@@ -109,8 +109,11 @@ pub struct PawnHand {
     pub refusal: Option<String>,
 }
 
+/// `rift://pawn-output`: one read of the PTY, numbered from 0 within its run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct OutputEvent {
+    run_id: String,
     seq: u64,
     data: String,
 }
@@ -137,6 +140,8 @@ struct Prepared {
 #[serde(rename_all = "camelCase")]
 pub struct FenceView {
     pub chip: &'static str,
+    /// Whether the record's control landed; `None` without a record.
+    pub control: Option<bool>,
     pub ground: Option<Ground>,
     pub proved_at: Option<String>,
     pub steps: Vec<FenceStepView>,
@@ -670,6 +675,24 @@ impl Desk {
             events,
             run_id: run_id.clone(),
         });
+        // The run is announced before its PTY can say a word, so the window
+        // never sees output for a run it has not been told of (the Heretic's
+        // WR6). A summon that fails then says what the pawn is instead.
+        let calling = PawnStateView {
+            run_id: Some(run_id.clone()),
+            state: "summoning",
+            since: Some(now()),
+            exit_code: None,
+            host: Some(HostView {
+                distro: survey.host.distro.clone(),
+                claude_version: survey.host.claude_version.clone(),
+            }),
+            held: None,
+        };
+        ears.events.emit_value(
+            PAWN_STATE,
+            serde_json::to_value(&calling).unwrap_or_default(),
+        );
         let summoning = summon(
             &launch,
             (cols, rows),
@@ -681,7 +704,12 @@ impl Desk {
             },
             ears.clone(),
         )
-        .map_err(no_fence)?;
+        .map_err(|err| {
+            let view = self.pawn_state();
+            ears.events
+                .emit_value(PAWN_STATE, serde_json::to_value(&view).unwrap_or_default());
+            no_fence(err)
+        })?;
         lock(&self.state).live = Some(Live {
             summoning: Arc::new(summoning),
             host: survey.host,
@@ -923,9 +951,18 @@ impl Desk {
             .ok_or_else(|| RiftError::pawn(PawnReason::NotHere, "Tamsin is not here."))
     }
 
-    pub fn write(&self, data: &str) -> Result<(), RiftError> {
-        self.here()?
-            .write(data.as_bytes())
+    /// Keystrokes for the summoning the window was showing. A run that is
+    /// not the live one gets nothing: its keys never reach a later pawn (the
+    /// Heretic's WR8).
+    pub fn write(&self, run_id: &str, data: &str) -> Result<(), RiftError> {
+        let pawn = self.here()?;
+        if pawn.run_id() != run_id {
+            return Err(RiftError::pawn(
+                PawnReason::NotHere,
+                "That summoning is over, so its keystrokes were not sent.",
+            ));
+        }
+        pawn.write(data.as_bytes())
             .map_err(|err| RiftError::io("could not reach Tamsin's terminal", err))
     }
 
@@ -1137,6 +1174,7 @@ fn view_of(
     };
     FenceView {
         chip,
+        control: record.as_ref().map(|r| r.control),
         ground: record.as_ref().map(|r| r.ground.clone()),
         proved_at: record.as_ref().map(|r| r.proved_at.clone()),
         steps: record
@@ -1538,6 +1576,7 @@ struct Ears {
 impl Watcher for Ears {
     fn output(&self, seq: u64, bytes: &[u8]) {
         let event = OutputEvent {
+            run_id: self.run_id.clone(),
             seq,
             data: base64::engine::general_purpose::STANDARD.encode(bytes),
         };
@@ -1547,11 +1586,17 @@ impl Watcher for Ears {
         );
     }
 
+    /// The row, then the pawn's state: a call can hold a Play or drop one,
+    /// and the window's controls read `held` from the state alone (the
+    /// Heretic's WR2).
     fn hand(&self, handled: &Handled) {
         if let Some(desk) = self.desk.upgrade() {
             let hand = desk.hand(&self.run_id, handled);
             self.events
                 .emit_value(PAWN_HANDS, serde_json::to_value(&hand).unwrap_or_default());
+            let state = desk.pawn_state();
+            self.events
+                .emit_value(PAWN_STATE, serde_json::to_value(&state).unwrap_or_default());
         }
     }
 
@@ -1715,6 +1760,38 @@ mod tests {
         if unsafe { libc::geteuid() } != 0 {
             assert_eq!(blind, None, "PermissionDenied is not absence");
         }
+    }
+
+    #[test]
+    fn every_hand_is_followed_by_the_pawns_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let desk = Desk::new(dir.path());
+        let events = Arc::new(crate::events::RecordedEvents::default());
+        let ears = Ears {
+            desk: Arc::downgrade(&desk),
+            events: events.clone(),
+            run_id: "r".into(),
+        };
+        ears.hand(&Handled {
+            answer: crate::pawn::mailbox::Answer {
+                id: "i".into(),
+                outcome: Outcome::Held,
+                text: "held: waiting for the Arisen".into(),
+                data: serde_json::Value::Null,
+            },
+            tool: Some("play".into()),
+            repeated: false,
+            install_id: None,
+        });
+        let names: Vec<String> = events.all().into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, [PAWN_HANDS, PAWN_STATE]);
+        events.clear();
+        ears.output(0, b"\x1b[6n");
+        assert_eq!(
+            events.named(PAWN_OUTPUT),
+            [serde_json::json!({ "runId": "r", "seq": 0, "data": "G1s2bg==" })],
+            "each chunk names its run"
+        );
     }
 
     #[test]
