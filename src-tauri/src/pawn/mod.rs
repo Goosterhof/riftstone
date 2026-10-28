@@ -4,5 +4,8 @@
 //!
 //! - [`fence`]: the fence's argv, filter, settings and ground, and the mount
 //!   validators (RS-9). Pure.
+//! - [`mailbox`]: what the stone does with a request: validation, the tool
+//!   table, the run's idempotent ledger and its retirement.
 
 pub mod fence;
+pub mod mailbox;

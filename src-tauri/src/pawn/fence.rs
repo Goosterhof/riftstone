@@ -246,7 +246,7 @@ fn forbidden_component(parts: &[&str]) -> bool {
     })
 }
 
-fn is_uuid(text: &str) -> bool {
+pub fn is_uuid(text: &str) -> bool {
     let bytes = text.as_bytes();
     bytes.len() == 36
         && bytes.iter().enumerate().all(|(i, b)| match i {
