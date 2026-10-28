@@ -613,8 +613,9 @@ pub struct ProtectedRoot {
 
 /// A Windows path, normalised for comparison: the `\\?\` prefix dropped,
 /// `/` read as `\`, the drive letter upper-case, no trailing separator. A
-/// path that is not on a drive, or carries `.`, `..` or an empty component,
-/// is `None`.
+/// path that is not rooted on a drive (`C:\…`; a drive-relative `C:Other` is
+/// relative to that drive's current folder, the Heretic's WF1), or carries
+/// `.`, `..` or an empty component, is `None`.
 pub fn normalize_windows(path: &str) -> Option<Vec<String>> {
     let path = path.replace('/', "\\");
     let path = path
@@ -622,14 +623,14 @@ pub fn normalize_windows(path: &str) -> Option<Vec<String>> {
         .or_else(|| path.strip_prefix(r"\??\"))
         .unwrap_or(&path);
     let bytes = path.as_bytes();
-    if bytes.len() < 2 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' {
+    if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'\\' {
         return None;
     }
     if path.chars().any(char::is_control) {
         return None;
     }
     let mut parts = vec![format!("{}:", (bytes[0] as char).to_ascii_uppercase())];
-    let rest = path[2..].trim_start_matches('\\').trim_end_matches('\\');
+    let rest = path[3..].trim_end_matches('\\');
     if !rest.is_empty() {
         for part in rest.split('\\') {
             if part.is_empty() || part == "." || part == ".." {
@@ -1450,6 +1451,42 @@ mod tests {
         assert_eq!(windows_to_wsl(r"\\?\D:\x\").as_deref(), Some("/mnt/d/x"));
         assert_eq!(windows_to_wsl(r"\\server\share"), None);
         assert_eq!(windows_to_wsl(r"C:\a\..\b"), None);
+        assert_eq!(windows_to_wsl(r"C:\"), Some("/mnt/c".into()));
+    }
+
+    #[test]
+    fn a_drive_relative_path_is_never_read_as_rooted() {
+        // The Heretic's WF1: `C:Other\Invented` is relative to drive C's
+        // current folder, not `C:\Other\Invented`.
+        let roots = roots();
+        for relative in [
+            r"C:Other\Invented",
+            r"\\?\C:Other\Invented",
+            "C:Other/Invented",
+            "C:",
+            r"C:\\Other\Invented",
+        ] {
+            assert_eq!(normalize_windows(relative), None, "{relative}");
+            assert_eq!(windows_to_wsl(relative), None, "{relative}");
+            assert_eq!(
+                check_mount_source(relative, &MountKind::Input, &roots),
+                Err(MountRefusal::NotPlain),
+                "{relative}"
+            );
+            let trusted = MountKind::Trusted {
+                name: "The workshop",
+                expected: r"C:\Other\Invented",
+            };
+            assert_eq!(
+                check_mount_source(relative, &trusted, &roots),
+                Err(MountRefusal::NotPlain),
+                "{relative}"
+            );
+        }
+        assert_eq!(
+            check_mount_source(r"C:\Other\Invented", &MountKind::Input, &roots),
+            Ok(())
+        );
     }
 }
 
