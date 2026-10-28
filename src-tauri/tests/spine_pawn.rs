@@ -238,3 +238,131 @@ fn no_scan_publishes_between_her_check_and_her_commit() {
         "and was published after"
     );
 }
+
+mod desk {
+    use super::*;
+    use rift_core::{PawnReason, RiftError};
+    use riftstone_lib::events::EventSink;
+    use riftstone_lib::pawn::commands::{get_workshop_impl, plan_put_back_impl};
+    use riftstone_lib::pawn::desk::{workshop_dir, Desk};
+    use riftstone_lib::pawn::persona::Voice;
+    use sha2::{Digest, Sha256};
+
+    fn reason(err: RiftError) -> PawnReason {
+        match err {
+            RiftError::Pawn { reason, .. } => reason,
+            other => panic!("not a pawn refusal: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_workshop_view_reads_the_folder_its_builds_and_the_pawn() {
+        let (_bench, dirs, state) = opened();
+        let desk = Desk::new(&dirs.data);
+        let view = get_workshop_impl(&state, &desk).unwrap();
+        assert!(!view.folder.made, "not made until the first summon");
+        assert!(view.artifacts.is_empty());
+        assert_eq!(view.pawn.state, "absent");
+        assert_eq!(view.fence.chip, "unprobed");
+        assert_eq!(view.voice, Voice::Sparing);
+
+        // A build with its receipt, then one with none.
+        let workshop = workshop_dir(state.library_dir()).unwrap();
+        fs::create_dir_all(workshop.join("dist")).unwrap();
+        let bytes = b"invented build";
+        let sha: String = Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        fs::write(workshop.join("dist/Stature-0.2.0.zip"), bytes).unwrap();
+        fs::write(
+            workshop.join("dist/Stature-0.2.0.receipt.json"),
+            serde_json::to_vec(&serde_json::json!({ "artifact": "Stature-0.2.0.zip",
+                "sha256": sha, "builtAt": "2026-10-28T12:00:00Z" }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(workshop.join("dist/Bare.zip"), b"bare").unwrap();
+        let view = get_workshop_impl(&state, &desk).unwrap();
+        assert!(view.folder.made);
+        let names: Vec<&str> = view.artifacts.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["Bare.zip", "Stature-0.2.0.zip"]);
+        assert_eq!(view.artifacts[0].receipt_problem, Some("missing"));
+        assert_eq!(view.artifacts[1].sha256.as_deref(), Some(sha.as_str()));
+        assert!(!view.artifacts[1].in_library);
+
+        // Brought through, it is in the library.
+        let plan = riftstone_lib::pawn::bring::plan_bring_through(
+            &workshop,
+            state.library_dir(),
+            "Stature-0.2.0.zip",
+        )
+        .unwrap();
+        riftstone_lib::pawn::bring::bring_through(
+            &workshop,
+            state.library_dir(),
+            "Stature-0.2.0.zip",
+            &plan.sha256,
+            "t1",
+        )
+        .unwrap();
+        let view = get_workshop_impl(&state, &desk).unwrap();
+        assert!(view.artifacts[1].in_library);
+    }
+
+    #[test]
+    fn a_summon_the_fence_cannot_hold_is_refused_and_nothing_runs() {
+        // On this bench the mods folder is a temp folder, not a Windows
+        // drive, so the fence refuses its plan (and on a bench without
+        // bubblewrap or socat the survey refuses first): noFence either way.
+        let (_bench, dirs, state) = opened();
+        let desk = Desk::new(&dirs.data);
+        let events: Arc<dyn EventSink> = Arc::new(riftstone_lib::events::RecordedEvents::default());
+        let refused = desk.summon(&state, events, 80, 24).unwrap_err();
+        assert_eq!(reason(refused), PawnReason::NoFence);
+        assert_eq!(desk.pawn_state().state, "absent");
+        assert_eq!(reason(desk.write("x").unwrap_err()), PawnReason::NotHere);
+        assert_eq!(
+            reason(
+                desk.depart(&riftstone_lib::events::RecordedEvents::default())
+                    .unwrap_err()
+            ),
+            PawnReason::NotHere
+        );
+        assert_eq!(
+            reason(desk.answer_play(&state, RUN, ID, true).unwrap_err()),
+            PawnReason::StaleHeld
+        );
+    }
+
+    #[test]
+    fn put_back_names_only_a_run_in_her_ledger() {
+        let (_bench, dirs, state) = opened();
+        let desk = Desk::new(&dirs.data);
+        assert_eq!(
+            reason(plan_put_back_impl(&state, &desk, RUN).unwrap_err()),
+            PawnReason::NotThisRun
+        );
+        assert_eq!(
+            reason(
+                riftstone_lib::pawn::commands::put_back_impl(&state, RUN, &["aa#Glow".into()])
+                    .unwrap_err()
+            ),
+            PawnReason::NotThisRun
+        );
+    }
+
+    #[test]
+    fn an_input_over_a_protected_root_is_refused_by_name() {
+        let (_bench, dirs, state) = opened();
+        let desk = Desk::new(&dirs.data);
+        let refused = desk
+            .set_inputs(
+                &state,
+                vec![state.library_dir().to_string_lossy().into_owned()],
+            )
+            .unwrap_err();
+        assert_eq!(reason(refused), PawnReason::InputRefused);
+        assert!(desk.settings().inputs.is_empty(), "nothing saved");
+    }
+}

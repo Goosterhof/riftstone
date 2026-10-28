@@ -143,6 +143,9 @@ pub fn run() {
             );
             app.manage(Arc::clone(&spine));
             app.manage(Arc::new(fray::FrayDesk::default()));
+            // THE WORKSHOP's desk (v0.7): only a build with the pawn (RS-10).
+            #[cfg(feature = "pawn")]
+            app.manage(pawn::desk::Desk::new(&spine.config.dirs.data));
             // A cold start for a Mod Manager Download link: held at the door
             // until the key is validated and the window listens (startup
             // step 9).
@@ -172,10 +175,12 @@ pub fn run() {
         .expect("the Riftstone failed to open its window");
 }
 
-/// Every command of docs/WINDOW-CONTRACT.md under its invoke name. The app
-/// and the IPC tests (Tauri's mock runtime) register exactly this list.
-pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
-    builder.invoke_handler(tauri::generate_handler![
+/// Every command of docs/WINDOW-CONTRACT.md under its invoke name, and any
+/// given after them. One list for every build: the pawn's build adds THE
+/// WORKSHOP's (RS-10).
+macro_rules! riftstone_handler {
+    ($($extra:tt)*) => {
+        tauri::generate_handler![
         commands::overview::get_overview,
         commands::overview::rescan,
         commands::library::search,
@@ -236,5 +241,33 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         commands::versions::decline_version_question,
         commands::fray::fray_frame,
         commands::fray::open_fray,
-    ])
+            $($extra)*
+        ]
+    };
+}
+
+/// Every command of docs/WINDOW-CONTRACT.md under its invoke name. The app
+/// and the IPC tests (Tauri's mock runtime) register exactly this list; a
+/// build with the `pawn` feature also registers § v0.7's (RS-10).
+pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
+    #[cfg(not(feature = "pawn"))]
+    return builder.invoke_handler(riftstone_handler!());
+    #[cfg(feature = "pawn")]
+    builder.invoke_handler(riftstone_handler!(
+        pawn::commands::get_workshop,
+        pawn::commands::summon_pawn,
+        pawn::commands::pawn_write,
+        pawn::commands::pawn_resize,
+        pawn::commands::depart_pawn,
+        pawn::commands::answer_pawn_play,
+        pawn::commands::get_fence,
+        pawn::commands::run_fence_probe,
+        pawn::commands::plan_bring_through,
+        pawn::commands::bring_through,
+        pawn::commands::plan_put_back,
+        pawn::commands::put_back,
+        pawn::commands::open_workshop_folder,
+        pawn::commands::set_pawn_voice,
+        pawn::commands::set_pawn_inputs,
+    ))
 }
