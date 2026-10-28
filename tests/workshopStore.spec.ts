@@ -58,12 +58,12 @@ describe("the pawn's bytes", () => {
     expect(text(seen)).toContain("Arisen");
     const before = seen.length;
     const n = mock.controls.nextOutputSeq();
-    mock.controls.emitRawOutput({ seq: n, data: b64("a") });
-    mock.controls.emitRawOutput({ seq: n + 2, data: b64("c") });
+    mock.controls.emitRawOutput({ runId: "run-mock-1", seq: n, data: b64("a") });
+    mock.controls.emitRawOutput({ runId: "run-mock-1", seq: n + 2, data: b64("c") });
     expect(text(seen.slice(before))).toBe("a");
-    mock.controls.emitRawOutput({ seq: n + 1, data: b64("b") });
+    mock.controls.emitRawOutput({ runId: "run-mock-1", seq: n + 1, data: b64("b") });
     // A replayed seq is written once.
-    mock.controls.emitRawOutput({ seq: n + 1, data: b64("b") });
+    mock.controls.emitRawOutput({ runId: "run-mock-1", seq: n + 1, data: b64("b") });
     expect(text(seen.slice(before))).toBe("abc");
   });
 
@@ -187,7 +187,7 @@ describe("the Heretic's review of the room (PR #11)", () => {
     await w.summon(80, 24);
     const seen: Uint8Array[] = [];
     w.attach((b) => seen.push(b));
-    mock.controls.emitRawOutput({ seq: 0, data: b64("\x1b[6n") });
+    mock.controls.emitRawOutput({ runId: "run-mock-1", seq: 0, data: b64("\x1b[6n") });
     expect(text(seen)).toBe("\x1b[6n");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(text(seen)).toContain("Arisen");
@@ -236,5 +236,27 @@ describe("the Heretic's review of the room (PR #11)", () => {
     });
     expect(w.runId.value).toBe("run-mock-2");
     expect(w.hands.value.map((h) => h.summary)).toStrictEqual(["this run"]);
+  });
+
+  /** The Heretic's WR6: the spine may publish a run's output before its state. */
+  it("should show a run's output whether it arrives before or after the run's state, once each and in order", async () => {
+    const w = await bench();
+    const seen: Uint8Array[] = [];
+    w.attach((b) => seen.push(b));
+    const state = (run: string, s: "summoning" | "here") =>
+      mock.controls.emitRawState({ runId: run, state: s, since: null, exitCode: null, host: null, held: null });
+    // Output before state.
+    mock.controls.emitRawOutput({ runId: "run-a", seq: 0, data: b64("FIRST") });
+    expect(text(seen)).toBe("");
+    state("run-a", "here");
+    mock.controls.emitRawOutput({ runId: "run-a", seq: 1, data: b64("SECOND") });
+    expect(text(seen)).toBe("FIRSTSECOND");
+    expect(w.firstBytes.value).toBe(true);
+    // State before output, for the next run; the last run's late bytes are dropped.
+    state("run-b", "summoning");
+    mock.controls.emitRawOutput({ runId: "run-a", seq: 2, data: b64("LATE") });
+    mock.controls.emitRawOutput({ runId: "run-b", seq: 0, data: b64("THIRD") });
+    expect(text(seen)).toBe("FIRSTSECONDTHIRD");
+    expect(w.runId.value).toBe("run-b");
   });
 });

@@ -1050,7 +1050,7 @@ is `pawn` `inputRefused`, naming the root it overlaps, never a path under `userd
 
 | Event | Payload | When |
 |---|---|---|
-| `rift://pawn-output` | `{ seq: number, data: string }` (base64 bytes) | Each read of the PTY. `seq` starts at 0 for each summoning and rises by one; the window drops nothing and writes in order. |
+| `rift://pawn-output` | `{ runId: string, seq: number, data: string }` (base64 bytes) | Each read of the PTY. `seq` starts at 0 for each summoning and rises by one; the window drops nothing of the run on show and writes it in order. The run is announced (`summoning`) before its PTY can say a word; a run's bytes that still arrive before its state wait for it, and an earlier run's late bytes are dropped. |
 | `rift://pawn-state` | `PawnStateView` | Summoning, here (first bytes), departed (clean, exit 0), torn (non-zero exit or PTY closed), and after every `rift://pawn-hands` row, since a call can hold a Play or drop one. The window reads `held` from this state alone; only this event moves the run on show. |
 | `rift://pawn-hands` | `PawnHand` | Every tool call the stone answered, refused calls included. |
 | `rift://workshop-changed` | `{}` | The workshop's `dist\` changed (debounced 500 ms). The window refetches `get_workshop`; a digest in flight shows as `hashing`. |

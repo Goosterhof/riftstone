@@ -78,6 +78,8 @@ export interface MockWorkshopControls {
   nextOutputSeq(): number;
   /** One `rift://pawn-hands` row exactly as given (a late row from another run). */
   emitRawHand(hand: PawnHand): void;
+  /** One `rift://pawn-state` exactly as given (an ordering the spine allows). */
+  emitRawState(state: PawnStateView): void;
   emitHand(hand: Omit<PawnHand, "runId" | "seq" | "at"> & { at?: string }): PawnHand;
   hold(): string;
   /** A rebuild: the artifact's bytes, and so its digest, change on disk. */
@@ -286,7 +288,11 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
     calls,
     emitOutput(text) {
       outSeq += 1;
-      emit(WORKSHOP_EVENTS.pawnOutput, { seq: outSeq, data: base64(text) } satisfies PawnOutput);
+      emit(WORKSHOP_EVENTS.pawnOutput, {
+        runId: pawn.runId ?? "run-mock",
+        seq: outSeq,
+        data: base64(text),
+      } satisfies PawnOutput);
     },
     emitRawOutput(out) {
       outSeq = Math.max(outSeq, out.seq);
@@ -295,6 +301,10 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
     nextOutputSeq: () => outSeq + 1,
     emitRawHand(hand) {
       emit(WORKSHOP_EVENTS.pawnHands, hand);
+    },
+    emitRawState(state) {
+      pawn = state;
+      emit(WORKSHOP_EVENTS.pawnState, state);
     },
     emitHand(hand) {
       handSeq += 1;

@@ -60,10 +60,19 @@ function pressOwner(): PlayTarget | null {
 let sink: OutputSink | null = null;
 /** Bytes that arrived before the terminal listened, in order. */
 let waiting: Uint8Array[] = [];
-/** The spine's pump numbers a run's chunks from 0 (summon.rs). */
-let nextSeq = 0;
-/** Out-of-order chunks, by seq, until the gap fills. */
-const early = new Map<number, Uint8Array>();
+/** One run's chunks: the spine's pump numbers them from 0 (summon.rs). A run
+ *  that is not on show yet keeps its in-order bytes until the pawn's state
+ *  puts it there (the Heretic's WR6: output may come before that state). */
+interface RunOutput {
+  nextSeq: number;
+  /** Out-of-order chunks, by seq, until the gap fills. */
+  early: Map<number, Uint8Array>;
+  /** In order, not yet shown. */
+  held: Uint8Array[];
+}
+const outputs = new Map<string, RunOutput>();
+/** Runs another took the place of: their late bytes are dropped. */
+const retired = new Set<string>();
 let subscribed: Promise<void> | null = null;
 
 const pawn = computed<PawnStateView | null>(() => view.value?.pawn ?? null);
@@ -85,27 +94,51 @@ function deliver(bytes: Uint8Array): void {
   else waiting.push(bytes);
 }
 
-/** `rift://pawn-output`: the window drops nothing and writes in order. */
+function outputOf(run: string): RunOutput {
+  let found = outputs.get(run);
+  if (!found) {
+    found = { nextSeq: 0, early: new Map(), held: [] };
+    outputs.set(run, found);
+  }
+  return found;
+}
+
+/** `rift://pawn-output`: the window drops nothing of the run on show and
+ *  writes it in order; a run not on show yet waits for its state. */
 function onOutput(out: PawnOutput): void {
-  if (out.seq < nextSeq) return;
-  early.set(out.seq, decode(out.data));
-  for (let next = early.get(nextSeq); next; next = early.get(nextSeq)) {
-    early.delete(nextSeq);
-    nextSeq += 1;
-    deliver(next);
+  if (retired.has(out.runId)) return;
+  const run = outputOf(out.runId);
+  if (out.seq < run.nextSeq) return;
+  run.early.set(out.seq, decode(out.data));
+  for (let next = run.early.get(run.nextSeq); next; next = run.early.get(run.nextSeq)) {
+    run.early.delete(run.nextSeq);
+    run.nextSeq += 1;
+    if (out.runId === runId.value) deliver(next);
+    else run.held.push(next);
   }
 }
 
 function newRun(id: string | null): void {
+  const previous = runId.value;
+  if (previous && previous !== id) {
+    retired.add(previous);
+    outputs.delete(previous);
+  }
+  // The terminal resets on this change (synchronously), before the new
+  // run's bytes that arrived early are handed over below.
   runId.value = id;
   firstBytes.value = false;
-  nextSeq = 0;
-  early.clear();
   waiting = [];
   playWarnings.value = null;
   playRefusal.value = null;
   playAnswered.value = null;
   playFor = null;
+  const early = id ? outputs.get(id) : undefined;
+  if (early) {
+    const shown = early.held;
+    early.held = [];
+    for (const bytes of shown) deliver(bytes);
+  }
 }
 
 function onState(next: PawnStateView): void {
@@ -127,7 +160,7 @@ function onHand(hand: PawnHand): void {
 async function load(): Promise<void> {
   const backend = await workshop();
   const next = await backend.getWorkshop();
-  if (runId.value === null && next.pawn.runId) runId.value = next.pawn.runId;
+  if (runId.value === null && next.pawn.runId) newRun(next.pawn.runId);
   view.value = next;
 }
 
@@ -342,7 +375,10 @@ async function putBack(plan: PutBackPlan): Promise<boolean> {
 export function resetWorkshop(): void {
   view.value = null;
   handsByRun.value = {};
+  outputs.clear();
+  retired.clear();
   newRun(null);
+  retired.clear();
   probing.value = false;
   failure.value = null;
   answering.value = false;

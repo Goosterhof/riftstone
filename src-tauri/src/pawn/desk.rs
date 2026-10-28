@@ -109,8 +109,11 @@ pub struct PawnHand {
     pub refusal: Option<String>,
 }
 
+/// `rift://pawn-output`: one read of the PTY, numbered from 0 within its run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct OutputEvent {
+    run_id: String,
     seq: u64,
     data: String,
 }
@@ -672,6 +675,24 @@ impl Desk {
             events,
             run_id: run_id.clone(),
         });
+        // The run is announced before its PTY can say a word, so the window
+        // never sees output for a run it has not been told of (the Heretic's
+        // WR6). A summon that fails then says what the pawn is instead.
+        let calling = PawnStateView {
+            run_id: Some(run_id.clone()),
+            state: "summoning",
+            since: Some(now()),
+            exit_code: None,
+            host: Some(HostView {
+                distro: survey.host.distro.clone(),
+                claude_version: survey.host.claude_version.clone(),
+            }),
+            held: None,
+        };
+        ears.events.emit_value(
+            PAWN_STATE,
+            serde_json::to_value(&calling).unwrap_or_default(),
+        );
         let summoning = summon(
             &launch,
             (cols, rows),
@@ -683,7 +704,12 @@ impl Desk {
             },
             ears.clone(),
         )
-        .map_err(no_fence)?;
+        .map_err(|err| {
+            let view = self.pawn_state();
+            ears.events
+                .emit_value(PAWN_STATE, serde_json::to_value(&view).unwrap_or_default());
+            no_fence(err)
+        })?;
         lock(&self.state).live = Some(Live {
             summoning: Arc::new(summoning),
             host: survey.host,
@@ -1541,6 +1567,7 @@ struct Ears {
 impl Watcher for Ears {
     fn output(&self, seq: u64, bytes: &[u8]) {
         let event = OutputEvent {
+            run_id: self.run_id.clone(),
             seq,
             data: base64::engine::general_purpose::STANDARD.encode(bytes),
         };
@@ -1749,6 +1776,13 @@ mod tests {
         });
         let names: Vec<String> = events.all().into_iter().map(|(name, _)| name).collect();
         assert_eq!(names, [PAWN_HANDS, PAWN_STATE]);
+        events.clear();
+        ears.output(0, b"\x1b[6n");
+        assert_eq!(
+            events.named(PAWN_OUTPUT),
+            [serde_json::json!({ "runId": "r", "seq": 0, "data": "G1s2bg==" })],
+            "each chunk names its run"
+        );
     }
 
     #[test]

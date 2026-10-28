@@ -168,8 +168,9 @@ export const WORKSHOP_EVENTS = {
 
 export type WorkshopEvent = (typeof WORKSHOP_EVENTS)[keyof typeof WORKSHOP_EVENTS];
 
-/** `rift://pawn-output`: base64 bytes; `seq` rises by one. */
+/** `rift://pawn-output`: base64 bytes of one run; `seq` starts at 0 and rises by one. */
 export interface PawnOutput {
+  runId: string;
   seq: number;
   data: string;
 }
