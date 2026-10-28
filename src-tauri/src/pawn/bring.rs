@@ -15,12 +15,13 @@
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::landing;
+use crate::pawn::folder::MailFolder;
 
 /// The receipt's own size cap.
 pub const MAX_RECEIPT_BYTES: u64 = 64 * 1024;
@@ -112,9 +113,13 @@ fn hex(bytes: impl AsRef<[u8]>) -> String {
     bytes.as_ref().iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// SHA-256 and length of a file, streamed.
+/// SHA-256 and length of a file in the mods folder (the player's own), streamed.
 pub fn digest_file(path: &Path) -> io::Result<(String, u64)> {
-    let mut file = File::open(path)?;
+    digest(&mut File::open(path)?)
+}
+
+/// SHA-256 and length of what a reader holds, streamed.
+fn digest(file: &mut impl Read) -> io::Result<(String, u64)> {
     let mut hash = Sha256::new();
     let mut buffer = vec![0u8; 256 * 1024];
     let mut bytes = 0u64;
@@ -129,9 +134,23 @@ pub fn digest_file(path: &Path) -> io::Result<(String, u64)> {
     Ok((hex(hash.finalize()), bytes))
 }
 
-/// The artifact's path in `<workshop>\dist\`: a plain `.zip` name, a regular
-/// file, not a link.
-fn artifact_path(workshop: &Path, artifact: &str) -> Result<PathBuf, BringRefusal> {
+/// The workshop's `dist\`, pinned by handle: a `dist` that is a link or
+/// reparse point is refused, so nothing outside the workshop is ever read as
+/// a build (the Heretic's WB3). The workshop itself is the stone's own
+/// folder and the fence's mount point, which Tamsin cannot replace.
+fn dist(workshop: &Path) -> Result<MailFolder, BringRefusal> {
+    MailFolder::open(&workshop.join("dist")).map_err(|_| {
+        refuse(
+            BringReason::NotInDist,
+            "The workshop's dist folder is missing or is not a plain folder.",
+        )
+    })
+}
+
+/// The artifact in `dist\`, opened by the pinned handle: a plain `.zip`
+/// name, a regular file, not a link. Every read of it goes through this one
+/// open file.
+fn open_artifact(dist: &MailFolder, artifact: &str) -> Result<File, BringRefusal> {
     let plain = !artifact.is_empty()
         && !artifact.contains(['/', '\\', ':'])
         && artifact != "."
@@ -148,11 +167,7 @@ fn artifact_path(workshop: &Path, artifact: &str) -> Result<PathBuf, BringRefusa
     if !plain {
         return Err(not_in_dist());
     }
-    let path = workshop.join("dist").join(artifact);
-    match fs::symlink_metadata(&path) {
-        Ok(meta) if meta.file_type().is_file() => Ok(path),
-        _ => Err(not_in_dist()),
-    }
+    dist.open_file(artifact).map_err(|_| not_in_dist())
 }
 
 fn receipt_name(artifact: &str) -> String {
@@ -160,10 +175,9 @@ fn receipt_name(artifact: &str) -> String {
     format!("{stem}.receipt.json")
 }
 
-/// Read the receipt beside the artifact: missing, unreadable or too large is
-/// `noReceipt`.
-pub fn read_receipt(workshop: &Path, artifact: &str) -> Result<Receipt, BringRefusal> {
-    let path = workshop.join("dist").join(receipt_name(artifact));
+/// Read the receipt beside the artifact, by the pinned handle, stopping at
+/// 64 KiB + 1 byte: missing, linked, unreadable or too large is `noReceipt`.
+fn read_receipt(dist: &MailFolder, artifact: &str) -> Result<Receipt, BringRefusal> {
     let missing = || {
         refuse(
             BringReason::NoReceipt,
@@ -173,11 +187,16 @@ pub fn read_receipt(workshop: &Path, artifact: &str) -> Result<Receipt, BringRef
             ),
         )
     };
-    let meta = fs::symlink_metadata(&path).map_err(|_| missing())?;
-    if !meta.file_type().is_file() || meta.len() > MAX_RECEIPT_BYTES {
+    let file = dist
+        .open_file(&receipt_name(artifact))
+        .map_err(|_| missing())?;
+    let mut bytes = Vec::new();
+    file.take(MAX_RECEIPT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| missing())?;
+    if bytes.len() as u64 > MAX_RECEIPT_BYTES {
         return Err(missing());
     }
-    let bytes = fs::read(&path).map_err(|_| missing())?;
     let receipt: Receipt = serde_json::from_slice(&bytes).map_err(|_| missing())?;
     if receipt.artifact != artifact {
         return Err(refuse(
@@ -219,9 +238,10 @@ pub fn plan_bring_through(
     mods: &Path,
     artifact: &str,
 ) -> Result<BringPlan, BringRefusal> {
-    let path = artifact_path(workshop, artifact)?;
-    let receipt = read_receipt(workshop, artifact)?;
-    let (sha256, bytes) = digest_file(&path).map_err(io_refusal)?;
+    let dist = dist(workshop)?;
+    let mut file = open_artifact(&dist, artifact)?;
+    let receipt = read_receipt(&dist, artifact)?;
+    let (sha256, bytes) = digest(&mut file).map_err(io_refusal)?;
     if receipt.sha256 != sha256 {
         return Err(refuse(
             BringReason::ReceiptMismatch,
@@ -253,7 +273,8 @@ pub fn bring_through(
     sha256: &str,
     part_id: &str,
 ) -> Result<BringOutcome, BringRefusal> {
-    let source = artifact_path(workshop, artifact)?;
+    let dist = dist(workshop)?;
+    let mut source = open_artifact(&dist, artifact)?;
     let taken = || {
         refuse(
             BringReason::NameTaken,
@@ -271,7 +292,7 @@ pub fn bring_through(
             .write(true)
             .create_new(true)
             .open(&part)?;
-        io::copy(&mut File::open(&source)?, &mut target)?;
+        io::copy(&mut source, &mut target)?;
         target.flush()?;
         target.sync_all()
     })();
@@ -317,6 +338,7 @@ pub fn bring_through(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     struct Bench {
         _root: tempfile::TempDir,
@@ -523,6 +545,70 @@ mod tests {
             assert_eq!(refusal.reason, BringReason::NotInDist, "{bad}");
         }
         assert!(mods_names(&bench).is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_linked_dist_folder_is_refused_and_outside_bytes_never_land() {
+        // The Heretic's WB3: dist\ itself a link to a folder outside the
+        // workshop, holding a build and a receipt that match each other.
+        let bench = bench();
+        let outside = tempfile::tempdir().unwrap();
+        let elsewhere = Bench {
+            _root: tempfile::tempdir().unwrap(),
+            workshop: outside.path().to_path_buf(),
+            mods: bench.mods.clone(),
+        };
+        fs::create_dir_all(outside.path().join("dist")).unwrap();
+        build(&elsewhere, "Outside.zip", b"outside bytes");
+        fs::remove_dir(bench.workshop.join("dist")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("dist"), bench.workshop.join("dist"))
+            .unwrap();
+        let refusal = plan_bring_through(&bench.workshop, &bench.mods, "Outside.zip").unwrap_err();
+        assert_eq!(refusal.reason, BringReason::NotInDist);
+        let refusal = bring_through(
+            &bench.workshop,
+            &bench.mods,
+            "Outside.zip",
+            &sha(b"outside bytes"),
+            "b9",
+        )
+        .unwrap_err();
+        assert_eq!(refusal.reason, BringReason::NotInDist);
+        assert!(mods_names(&bench).is_empty(), "nothing landed");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_linked_receipt_is_no_receipt() {
+        let bench = bench();
+        build(&bench, "Stature-0.2.0.zip", b"stature build");
+        let outside = tempfile::tempdir().unwrap();
+        let real = bench.workshop.join("dist/Stature-0.2.0.receipt.json");
+        fs::rename(&real, outside.path().join("r.json")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("r.json"), &real).unwrap();
+        let refusal =
+            plan_bring_through(&bench.workshop, &bench.mods, "Stature-0.2.0.zip").unwrap_err();
+        assert_eq!(refusal.reason, BringReason::NoReceipt);
+    }
+
+    #[test]
+    fn a_receipt_past_64_kib_is_refused_by_the_read_itself() {
+        let bench = bench();
+        build(&bench, "Stature-0.2.0.zip", b"stature build");
+        let path = bench.workshop.join("dist/Stature-0.2.0.receipt.json");
+        let mut padded = fs::read(&path).unwrap();
+        padded.resize(MAX_RECEIPT_BYTES as usize + 1, b' ');
+        fs::write(&path, &padded).unwrap();
+        let refusal =
+            plan_bring_through(&bench.workshop, &bench.mods, "Stature-0.2.0.zip").unwrap_err();
+        assert_eq!(refusal.reason, BringReason::NoReceipt);
+        padded.truncate(MAX_RECEIPT_BYTES as usize);
+        fs::write(&path, &padded).unwrap();
+        assert!(
+            plan_bring_through(&bench.workshop, &bench.mods, "Stature-0.2.0.zip").is_ok(),
+            "64 KiB exactly reads"
+        );
     }
 
     #[cfg(target_os = "linux")]

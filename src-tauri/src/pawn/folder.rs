@@ -1,5 +1,6 @@
 //! The mailbox's folders, by handle (BUILD-SPEC § v0.7, the broker's file
-//! handling is a boundary of its own).
+//! handling is a boundary of its own), and the workshop's `dist\`, which
+//! bring-through reads the same way.
 //!
 //! Tamsin can create, replace and link objects in her run's `requests\`, so
 //! the stone never follows a path she wrote:
@@ -77,6 +78,13 @@ impl MailFolder {
     /// The names in the folder, in no order.
     pub fn names(&self) -> io::Result<Vec<String>> {
         self.inner.names()
+    }
+
+    /// Open one regular file in the folder for reading, never following a
+    /// link or reparse point, and remove nothing: bring-through reads the
+    /// workshop's `dist\` this way (the Heretic's WB3).
+    pub fn open_file(&self, name: &str) -> Result<std::fs::File, FolderRefusal> {
+        self.inner.open_file(name)
     }
 
     /// Read one request and remove it: unread when it is a link, not a
@@ -175,6 +183,35 @@ mod sys {
             // SAFETY: a name relative to the pinned folder; a link entry is
             // removed, never its target.
             unsafe { libc::unlinkat(self.fd.as_raw_fd(), name.as_ptr(), 0) };
+        }
+
+        pub fn open_file(&self, name: &str) -> Result<File, FolderRefusal> {
+            let cname = c(name)?;
+            // SAFETY: as in take; nothing is removed.
+            let fd = unsafe {
+                libc::openat(
+                    self.fd.as_raw_fd(),
+                    cname.as_ptr(),
+                    libc::O_RDONLY
+                        | libc::O_NOFOLLOW
+                        | libc::O_NONBLOCK
+                        | libc::O_NOCTTY
+                        | libc::O_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                let err = io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::ELOOP) {
+                    return Err(FolderRefusal::Linked);
+                }
+                return Err(FolderRefusal::Io(err));
+            }
+            // SAFETY: a descriptor just opened.
+            let file = unsafe { File::from_raw_fd(fd) };
+            if !file.metadata()?.file_type().is_file() {
+                return Err(FolderRefusal::NotRegular);
+            }
+            Ok(file)
         }
 
         pub fn take(&self, name: &str, cap: u64) -> Result<Vec<u8>, FolderRefusal> {
@@ -540,6 +577,19 @@ mod sys {
                 bytes.extend_from_slice(&chunk[..got as usize]);
             }
             Ok(bytes)
+        }
+
+        pub fn open_file(&self, name: &str) -> Result<std::fs::File, FolderRefusal> {
+            let file = self.open_child(name, GENERIC_READ, FILE_OPEN, FILE_NON_DIRECTORY_FILE)?;
+            let raw = file.as_raw_handle() as HANDLE;
+            if attribute_tag(raw)? & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return Err(FolderRefusal::Linked);
+            }
+            // SAFETY: a live handle.
+            if unsafe { GetFileType(raw) } != FILE_TYPE_DISK {
+                return Err(FolderRefusal::NotRegular);
+            }
+            Ok(std::fs::File::from(file))
         }
 
         pub fn take(&self, name: &str, cap: u64) -> Result<Vec<u8>, FolderRefusal> {
