@@ -1050,8 +1050,8 @@ is `pawn` `inputRefused`, naming the root it overlaps, never a path under `userd
 
 | Event | Payload | When |
 |---|---|---|
-| `rift://pawn-output` | `{ seq: number, data: string }` (base64 bytes) | Each read of the PTY. `seq` rises by one; the window drops nothing and writes in order. |
-| `rift://pawn-state` | `PawnStateView` | Summoning, here (first bytes), departed (clean, exit 0), torn (non-zero exit or PTY closed). |
+| `rift://pawn-output` | `{ seq: number, data: string }` (base64 bytes) | Each read of the PTY. `seq` starts at 0 for each summoning and rises by one; the window drops nothing and writes in order. |
+| `rift://pawn-state` | `PawnStateView` | Summoning, here (first bytes), departed (clean, exit 0), torn (non-zero exit or PTY closed), and after every `rift://pawn-hands` row, since a call can hold a Play or drop one. The window reads `held` from this state alone; only this event moves the run on show. |
 | `rift://pawn-hands` | `PawnHand` | Every tool call the stone answered, refused calls included. |
 | `rift://workshop-changed` | `{}` | The workshop's `dist\` changed (debounced 500 ms). The window refetches `get_workshop`; a digest in flight shows as `hashing`. |
 
@@ -1125,6 +1125,9 @@ the investor's own and may be shown.
   build, which Q20.3 names as the settling read.
 - The fence fold shows the control first, then rows 1–12 and B1/B2 by their verdict: `✓` held,
   `✕` breached (ember), `?` could not show (faint).
+- A Play press answers the request that was waiting at the click: if another took its place
+  while §16.2's plan was read, nothing is answered and the room says so. The decision reads
+  `The stone started the launch.`; whether the game runs is the watcher's line, apart.
 - A bring-through reports `landed` as soon as the stone does. The rescan it requests runs on,
   and its result arrives as `rift://library-changed`.
 - No per-row Undo and no log viewer in the hands: the contract carries neither. Put back is

@@ -17,6 +17,10 @@ const b64 = (s: string): string => btoa(s);
 
 let mock: MockWorkshop;
 
+function ignore(): void {
+  // Replaced before it is called.
+}
+
 async function bench(scenario: WorkshopScenario = "contained"): Promise<ReturnType<typeof useWorkshop>> {
   mock = createMockWorkshop({ scenario, beat: 0, script: false });
   setWorkshopBackend(mock);
@@ -173,5 +177,64 @@ describe("the workshop's refusals", () => {
     await w.summon(80, 24);
     expect(w.failure.value?.detail.reason).toBe("breached");
     expect(w.pawn.value?.state).toBe("absent");
+  });
+});
+
+describe("the Heretic's review of the room (PR #11)", () => {
+  it("should write the run's first chunk, which the spine numbers 0", async () => {
+    const w = await bench();
+    // Summoned, before the mock's greeting lands: the spine's chunk 0 first.
+    await w.summon(80, 24);
+    const seen: Uint8Array[] = [];
+    w.attach((b) => seen.push(b));
+    mock.controls.emitRawOutput({ seq: 0, data: b64("\x1b[6n") });
+    expect(text(seen)).toBe("\x1b[6n");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(text(seen)).toContain("Arisen");
+  });
+
+  it("should answer only the request the press was made on, when another took its place while the plan was read", async () => {
+    const w = await bench();
+    await summoned(w);
+    const first = mock.controls.hold();
+    let release: (plan: LaunchPlanView) => void = ignore;
+    setRiftBackend({
+      planLaunch: () =>
+        new Promise<LaunchPlanView>((resolve) => {
+          release = resolve;
+        }),
+    } as unknown as RiftBackend);
+    const pressed = w.pressPlay();
+    await flushPromises();
+    // The first request is answered elsewhere, and the pawn asks again.
+    await mock.answerPawnPlay("run-mock-1", first, false);
+    const second = mock.controls.hold();
+    expect(w.held.value?.heldRequestId).toBe(second);
+    release({ launch: "steam", warnings: [], refused: null } as unknown as LaunchPlanView);
+    await pressed;
+    const answers = mock.controls.calls.filter((c) => c.cmd === "answer_pawn_play");
+    expect(answers.map((c) => c.args)).toStrictEqual([["run-mock-1", first, false]]);
+    expect(w.playRefusal.value).toMatch(/no longer the one waiting/);
+    expect(w.held.value?.heldRequestId).toBe(second);
+  });
+
+  it("should keep the run on show when a late row from an earlier run arrives", async () => {
+    const w = await bench();
+    await summoned(w);
+    await w.depart();
+    await summoned(w);
+    mock.controls.emitHand({ tool: "install", outcome: "done", summary: "this run", installId: "o2", refusal: null });
+    mock.controls.emitRawHand({
+      runId: "run-mock-1",
+      seq: 99,
+      at: "2026-10-28T21:00:00Z",
+      tool: "install",
+      outcome: "done",
+      summary: "late",
+      installId: "o1",
+      refusal: null,
+    });
+    expect(w.runId.value).toBe("run-mock-2");
+    expect(w.hands.value.map((h) => h.summary)).toStrictEqual(["this run"]);
   });
 });

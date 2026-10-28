@@ -1532,11 +1532,17 @@ impl Watcher for Ears {
         );
     }
 
+    /// The row, then the pawn's state: a call can hold a Play or drop one,
+    /// and the window's controls read `held` from the state alone (the
+    /// Heretic's WR2).
     fn hand(&self, handled: &Handled) {
         if let Some(desk) = self.desk.upgrade() {
             let hand = desk.hand(&self.run_id, handled);
             self.events
                 .emit_value(PAWN_HANDS, serde_json::to_value(&hand).unwrap_or_default());
+            let state = desk.pawn_state();
+            self.events
+                .emit_value(PAWN_STATE, serde_json::to_value(&state).unwrap_or_default());
         }
     }
 
@@ -1681,6 +1687,31 @@ mod tests {
             &crate::pawn::host::LocalSh,
         );
         assert_eq!(checks[0].verdict(), probe::Verdict::Inconclusive);
+    }
+
+    #[test]
+    fn every_hand_is_followed_by_the_pawns_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let desk = Desk::new(dir.path());
+        let events = Arc::new(crate::events::RecordedEvents::default());
+        let ears = Ears {
+            desk: Arc::downgrade(&desk),
+            events: events.clone(),
+            run_id: "r".into(),
+        };
+        ears.hand(&Handled {
+            answer: crate::pawn::mailbox::Answer {
+                id: "i".into(),
+                outcome: Outcome::Held,
+                text: "held: waiting for the Arisen".into(),
+                data: serde_json::Value::Null,
+            },
+            tool: Some("play".into()),
+            repeated: false,
+            install_id: None,
+        });
+        let names: Vec<String> = events.all().into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, [PAWN_HANDS, PAWN_STATE]);
     }
 
     #[test]

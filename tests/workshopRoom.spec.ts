@@ -167,7 +167,7 @@ describe("the pawn's hands", () => {
     await settle();
     await button(w, "Play").trigger("click");
     await settle();
-    expect(w.get(".hand__decision").text()).toBe("The stone started the game.");
+    expect(w.get(".hand__decision").text()).toBe("The stone started the launch.");
     expect(w.get(".hand__watcher").text()).toBe("The stone has not seen the game start yet.");
   });
 
@@ -268,15 +268,17 @@ describe("the fence's record", () => {
     await settle();
     const rows = w.findAll(".fence__step");
     expect(rows).toHaveLength(15);
-    expect(rows[0]?.text()).toContain("control: write in the workshop");
-    expect(rows[0]?.text()).toContain("✓");
+    const control = rows[0];
     const three = rows[3];
-    expect(three?.text()).toContain("list Steam's userdata");
-    expect(three?.find(".fence__mark").text()).toBe("?");
-    expect(three?.find(".fence__mark").attributes("aria-label")).toBe("could not show");
-    expect(three?.classes()).toContain("is-open");
-    expect(three?.classes()).not.toContain("is-broken");
-    expect(rows[14]?.text()).toContain("broker: a bad name, 64 KiB + 1");
+    const last = rows[14];
+    expect(control.text()).toContain("control: write in the workshop");
+    expect(control.text()).toContain("✓");
+    expect(three.text()).toContain("list Steam's userdata");
+    expect(three.find(".fence__mark").text()).toBe("?");
+    expect(three.find(".fence__mark").attributes("aria-label")).toBe("could not show");
+    expect(three.classes()).toContain("is-open");
+    expect(three.classes()).not.toContain("is-broken");
+    expect(last.text()).toContain("broker: a bad name, 64 KiB + 1");
     expect(w.text()).toContain("the last probe could not show step 3");
   });
 });

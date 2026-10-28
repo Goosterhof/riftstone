@@ -24,10 +24,15 @@ import { workshop } from "./backend";
 export type OutputSink = (bytes: Uint8Array) => void;
 
 const view = ref<WorkshopView | null>(null);
-/** This summoning's hands, newest first. */
-const hands = ref<PawnHand[]>([]);
-/** The run the hands and the bytes belong to. */
+/** The run on show: its hands and its bytes. Only the pawn's state moves it. */
 const runId = ref<string | null>(null);
+/** Every run's hands as they arrived, so a late row from another run never
+ *  displaces the one on show (the Heretic's note on PR #11). */
+const handsByRun = ref<Record<string, PawnHand[]>>({});
+/** The run on show's hands, newest first. */
+const hands = computed<PawnHand[]>(() =>
+  [...(runId.value ? (handsByRun.value[runId.value] ?? []) : [])].sort((a, b) => b.seq - a.seq),
+);
 /** The PTY's first bytes of this run have arrived: THE PARTING may run (R20.17). */
 const firstBytes = ref(false);
 const probing = ref(false);
@@ -40,10 +45,23 @@ const playRefusal = ref<string | null>(null);
 const playAnswered = ref<{ decision: "played" | "declined"; persisted: boolean } | null>(null);
 const answering = ref(false);
 
+/** The request a Play press was made on, frozen at the click (the Heretic's WR3):
+ *  a plan that comes back after the waiting request changed answers nothing. */
+interface PlayTarget {
+  runId: string;
+  heldRequestId: string;
+}
+let playFor: PlayTarget | null = null;
+
+function pressOwner(): PlayTarget | null {
+  return playFor;
+}
+
 let sink: OutputSink | null = null;
 /** Bytes that arrived before the terminal listened, in order. */
 let waiting: Uint8Array[] = [];
-let nextSeq = 1;
+/** The spine's pump numbers a run's chunks from 0 (summon.rs). */
+let nextSeq = 0;
 /** Out-of-order chunks, by seq, until the gap fills. */
 const early = new Map<number, Uint8Array>();
 let subscribed: Promise<void> | null = null;
@@ -80,14 +98,14 @@ function onOutput(out: PawnOutput): void {
 
 function newRun(id: string | null): void {
   runId.value = id;
-  hands.value = [];
   firstBytes.value = false;
-  nextSeq = 1;
+  nextSeq = 0;
   early.clear();
   waiting = [];
   playWarnings.value = null;
   playRefusal.value = null;
   playAnswered.value = null;
+  playFor = null;
 }
 
 function onState(next: PawnStateView): void {
@@ -95,14 +113,15 @@ function onState(next: PawnStateView): void {
   if (!next.held) {
     playWarnings.value = null;
     playRefusal.value = null;
+    playFor = null;
   }
   if (view.value) view.value = { ...view.value, pawn: next };
 }
 
 function onHand(hand: PawnHand): void {
-  if (hand.runId !== runId.value) newRun(hand.runId);
-  if (hands.value.some((h) => h.seq === hand.seq)) return;
-  hands.value = [hand, ...hands.value].sort((a, b) => b.seq - a.seq);
+  const rows = handsByRun.value[hand.runId] ?? [];
+  if (rows.some((h) => h.seq === hand.seq)) return;
+  handsByRun.value = { ...handsByRun.value, [hand.runId]: [...rows, hand] };
 }
 
 async function load(): Promise<void> {
@@ -189,17 +208,41 @@ async function openFolder(): Promise<void> {
   await load();
 }
 
-async function answer(accept: boolean): Promise<void> {
+/** The request waiting now, as the stone last said it. */
+function waitingNow(): PlayTarget | null {
   const run = runId.value;
-  const waitingOn = held.value;
-  if (!run || !waitingOn || answering.value) return;
+  const waiting = held.value;
+  return run && waiting ? { runId: run, heldRequestId: waiting.heldRequestId } : null;
+}
+
+/** Is `target` still the request waiting now? */
+function stillWaiting(target: PlayTarget): boolean {
+  const now = waitingNow();
+  return now !== null && now.runId === target.runId && now.heldRequestId === target.heldRequestId;
+}
+
+const MOVED_ON = "That request is no longer the one waiting, so the press answered nothing.";
+
+async function answer(target: PlayTarget, accept: boolean): Promise<void> {
+  if (answering.value) return;
+  if (!stillWaiting(target)) {
+    playFor = null;
+    playWarnings.value = null;
+    playRefusal.value = MOVED_ON;
+    return;
+  }
   answering.value = true;
   try {
-    const result = await attempt(async () => (await workshop()).answerPawnPlay(run, waitingOn.heldRequestId, accept));
+    const result = await attempt(async () =>
+      (await workshop()).answerPawnPlay(target.runId, target.heldRequestId, accept),
+    );
     if (result) {
       playAnswered.value = result;
       playWarnings.value = null;
       playRefusal.value = null;
+      playFor = null;
+      // The stone's own word on what is waiting now.
+      await load();
     } else if (failure.value) {
       // A refusal or a failure records nothing: the request stays waiting with it shown.
       playRefusal.value = failure.value.message;
@@ -209,12 +252,23 @@ async function answer(accept: boolean): Promise<void> {
   }
 }
 
-/** `Play` on the held request: §16.2's plan first. A refusal is shown and the
- *  request stays waiting; warnings wait for `Play anyway` (confirmPlay). */
+/** `Play` on the held request: §16.2's plan first. The request is the one on
+ *  screen at the click. A refusal is shown and it stays waiting; warnings wait
+ *  for `Play anyway` (confirmPlay), on that same request. */
 async function pressPlay(): Promise<void> {
-  if (!held.value) return;
+  const target = waitingNow();
+  if (!target) return;
+  playFor = target;
   playRefusal.value = null;
   const plan = await useLaunch().refreshPlan();
+  // A later press owns the answer now (read fresh: the await may have moved it).
+  const owner = pressOwner();
+  if (owner !== null && owner !== target) return;
+  if (!stillWaiting(target)) {
+    playFor = null;
+    playRefusal.value = MOVED_ON;
+    return;
+  }
   if (!plan) {
     playRefusal.value = "The stone could not read what Play would do. Try again.";
     return;
@@ -227,20 +281,22 @@ async function pressPlay(): Promise<void> {
     playWarnings.value = plan.warnings;
     return;
   }
-  await answer(true);
+  await answer(target, true);
 }
 
 async function confirmPlay(): Promise<void> {
-  await answer(true);
+  if (playFor) await answer(playFor, true);
 }
 
 function cancelWarnings(): void {
   // A cancel at a warning records nothing; the request stays waiting.
   playWarnings.value = null;
+  playFor = null;
 }
 
 async function declinePlay(): Promise<void> {
-  await answer(false);
+  const target = waitingNow();
+  if (target) await answer(target, false);
 }
 
 async function planBring(artifact: string): Promise<BringThroughPlan | null> {
@@ -285,6 +341,7 @@ async function putBack(plan: PutBackPlan): Promise<boolean> {
 /** For specs: forget everything, as a fresh window would. */
 export function resetWorkshop(): void {
   view.value = null;
+  handsByRun.value = {};
   newRun(null);
   probing.value = false;
   failure.value = null;

@@ -76,6 +76,8 @@ export interface MockWorkshopControls {
   emitRawOutput(out: PawnOutput): void;
   /** The seq the next emitOutput will carry. */
   nextOutputSeq(): number;
+  /** One `rift://pawn-hands` row exactly as given (a late row from another run). */
+  emitRawHand(hand: PawnHand): void;
   emitHand(hand: Omit<PawnHand, "runId" | "seq" | "at"> & { at?: string }): PawnHand;
   hold(): string;
   /** A rebuild: the artifact's bytes, and so its digest, change on disk. */
@@ -248,7 +250,8 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
   let fence = fenceFor(chip, scenario);
   let voice: Voice = "sparing";
   let inputs: string[] = [];
-  let outSeq = 0;
+  /** The last chunk's seq; the spine's pump numbers each run's chunks from 0. */
+  let outSeq = -1;
   let handSeq = 0;
   let runCount = 0;
   // The journal keys an install by its option id, so the two are one id here.
@@ -290,6 +293,9 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
       emit(WORKSHOP_EVENTS.pawnOutput, out);
     },
     nextOutputSeq: () => outSeq + 1,
+    emitRawHand(hand) {
+      emit(WORKSHOP_EVENTS.pawnHands, hand);
+    },
     emitHand(hand) {
       handSeq += 1;
       const row: PawnHand = { runId: pawn.runId ?? "run-mock", seq: handSeq, at: hand.at ?? now(), ...hand };
@@ -407,6 +413,7 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
       }
       folderMade = true;
       runCount += 1;
+      outSeq = -1;
       pawnInstalls.length = 0;
       setPawn({
         runId: `run-mock-${runCount}`,
@@ -453,7 +460,7 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
       controls.emitHand({
         tool: "play",
         outcome: accept ? "done" : "declined",
-        summary: accept ? "the stone started the game" : "asked to start the game · not now",
+        summary: accept ? "the stone started the launch" : "asked to start the game · not now",
         installId: null,
         refusal: null,
       });

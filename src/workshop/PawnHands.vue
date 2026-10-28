@@ -90,7 +90,7 @@ function face(hand: PawnHand) {
         <p class="hand__decision">
           {{
             w.playAnswered.value.decision === "played"
-              ? "The stone started the game."
+              ? "The stone started the launch."
               : `Not now: ${PAWN_NAME} was told.`
           }}
         </p>
