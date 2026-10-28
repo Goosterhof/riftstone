@@ -162,7 +162,18 @@ pub struct Context {
     pub userdata_names: Vec<String>,
 }
 
+/// The line that says why: Python's last line (its error, under the
+/// traceback), else the first non-empty one.
 fn first_line(output: &str) -> String {
+    if output.contains("Traceback") {
+        if let Some(last) = output.lines().rev().find(|line| !line.trim().is_empty()) {
+            return last.chars().take(160).collect();
+        }
+    }
+    first_line_only(output)
+}
+
+fn first_line_only(output: &str) -> String {
     output
         .lines()
         .find(|line| !line.trim().is_empty())
@@ -201,6 +212,8 @@ pub fn judge(step: &Step, seen: &Seen, ctx: &Context) -> StepRecord {
                 !seen.exit_ok && !named,
                 if named {
                     "LISTED the saves' Steam folder".into()
+                } else if seen.output.trim().is_empty() {
+                    "refused (the stone knows no Steam folder here)".into()
                 } else {
                     format!("refused: {}", first_line(&seen.output))
                 },

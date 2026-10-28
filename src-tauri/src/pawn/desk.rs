@@ -17,10 +17,14 @@ use sha2::{Digest, Sha256};
 
 use crate::events::EventSink;
 use crate::pawn::errands::{RunsFile, StoneErrands};
-use crate::pawn::fence::{check_mount_source, FencePlan, Host, MountKind, ProtectedRoot};
+use crate::pawn::fence::{
+    bwrap_argv, check_mount_source, ground, sh_quote, FenceCommand, FencePlan, Ground, Host,
+    MountKind, ProtectedRoot,
+};
 use crate::pawn::host::{install_files, relay_files, survey, Shell};
 use crate::pawn::mailbox::{now, Broker, Handled, Outcome, PlayRefusal};
-use crate::pawn::persona::{persona, Voice, WORKSHOP_STARTER};
+use crate::pawn::persona::{persona, Voice, RELAY, WORKSHOP_STARTER};
+use crate::pawn::probe::{self, FenceRecord};
 use crate::pawn::summon::{summon, Launch, RunFolders, Summoning, Watcher};
 use crate::persist;
 use crate::state::AppState;
@@ -117,6 +121,37 @@ struct Live {
     since: String,
 }
 
+/// What `prepare` made ready for a summon or a probe.
+struct Prepared {
+    shell: Box<dyn Shell>,
+    survey: crate::pawn::host::Survey,
+    plan: FencePlan,
+    workshop: PathBuf,
+    run_dir: PathBuf,
+    run_id: String,
+    ground: Ground,
+}
+
+/// `FenceView` (WINDOW-CONTRACT § v0.7, Types).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FenceView {
+    pub chip: &'static str,
+    pub ground: Option<Ground>,
+    pub proved_at: Option<String>,
+    pub steps: Vec<FenceStepView>,
+    pub changed: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FenceStepView {
+    pub step: String,
+    pub expected: probe::Expect,
+    pub observed: String,
+    pub ok: bool,
+}
+
 #[derive(Default)]
 struct DeskState {
     live: Option<Live>,
@@ -126,7 +161,10 @@ struct DeskState {
 /// The Workshop's desk: one per stone.
 pub struct Desk {
     settings_path: PathBuf,
+    record_path: PathBuf,
     runs_dir: PathBuf,
+    /// The ground the last summon or probe was prepared on.
+    ground: Mutex<Option<Ground>>,
     runs_file: Arc<RunsFile>,
     settings: Mutex<PawnSettings>,
     state: Mutex<DeskState>,
@@ -387,6 +425,8 @@ impl Desk {
         let settings = persist::read_json(&settings_path).unwrap_or_default();
         Arc::new_cyclic(|me| Desk {
             runs_dir: data_dir.join("pawn").join("runs"),
+            record_path: data_dir.join("pawn-fence.json"),
+            ground: Mutex::new(None),
             runs_file: Arc::new(RunsFile::new(data_dir.join(RunsFile::NAME))),
             settings_path,
             settings: Mutex::new(settings),
@@ -423,6 +463,50 @@ impl Desk {
         let mut settings = self.settings();
         settings.inputs = inputs;
         self.save_settings(settings)
+    }
+
+    /// The last probe's record, `pawn-fence.json`.
+    pub fn record(&self) -> Option<FenceRecord> {
+        persist::read_json(&self.record_path)
+    }
+
+    /// The chip, judged against the ground the last summon or probe was
+    /// prepared on. Before either since the stone started, a holding record
+    /// cannot be judged and reads `unprobed`; a breach reads `breached`.
+    pub fn fence_view(&self) -> FenceView {
+        let record = self.record();
+        let current = lock(&self.ground).clone();
+        let (chip, changed) = match (&record, &current) {
+            (Some(record), _) if record.breached() => ("breached", None),
+            (Some(_), None) => (
+                "unprobed",
+                Some("not checked against this host since the stone started".to_string()),
+            ),
+            (record, Some(current)) => {
+                let (chip, changed) = probe::chip(record.as_ref(), current);
+                (chip, changed)
+            }
+            (None, None) => ("unprobed", None),
+        };
+        FenceView {
+            chip,
+            ground: record.as_ref().map(|r| r.ground.clone()),
+            proved_at: record.as_ref().map(|r| r.proved_at.clone()),
+            steps: record
+                .map(|r| {
+                    r.steps
+                        .into_iter()
+                        .map(|step| FenceStepView {
+                            step: step.step,
+                            expected: step.expected,
+                            observed: step.observed,
+                            ok: step.ok,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            changed,
+        }
     }
 
     pub fn runs(&self) -> Arc<RunsFile> {
@@ -465,27 +549,16 @@ impl Desk {
             .map(|live| Arc::clone(&live.summoning))
     }
 
-    /// `summon_pawn`: survey the host, make the workshop and the run,
-    /// validate every mount, write the relay folder, and start the pawn.
-    pub fn summon(
-        &self,
-        state: &Arc<AppState>,
-        events: Arc<dyn EventSink>,
-        cols: u16,
-        rows: u16,
-    ) -> Result<PawnStateView, RiftError> {
-        if self.live().is_some_and(|pawn| pawn.is_here()) {
-            return Err(RiftError::pawn(
-                PawnReason::AlreadyHere,
-                "Tamsin is already here.",
-            ));
-        }
+    /// Everything a summon and a probe share: survey the host, make the
+    /// workshop and a run's mailbox, validate every mounted Windows folder by
+    /// its final path, and write the relay folder.
+    fn prepare(&self, state: &AppState) -> Result<Prepared, RiftError> {
         let settings = self.settings();
         let shell = shell(settings.distro.clone());
         let survey = survey(shell.as_ref(), settings.distro.as_deref())
             .map_err(|missing| no_fence(missing.sentence()))?;
 
-        // The workshop, made on first summon, with its starter and dist.
+        // The workshop, made on first use, with its starter and dist.
         let mods = state.library_dir().to_path_buf();
         let workshop = workshop_dir(&mods)
             .ok_or_else(|| no_fence("The mods folder has no folder around it for a workshop."))?;
@@ -541,6 +614,47 @@ impl Desk {
             &[plan.claude_config()],
         )
         .map_err(no_fence)?;
+        let ground =
+            ground(&plan, &survey.host, RELAY.as_bytes()).map_err(|refusal| no_fence(refusal.0))?;
+        *lock(&self.ground) = Some(ground.clone());
+        Ok(Prepared {
+            shell,
+            survey,
+            plan,
+            workshop,
+            run_dir,
+            run_id,
+            ground,
+        })
+    }
+
+    /// `summon_pawn`: prepare, refuse a breached fence, and start the pawn.
+    pub fn summon(
+        &self,
+        state: &Arc<AppState>,
+        events: Arc<dyn EventSink>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<PawnStateView, RiftError> {
+        if self.live().is_some_and(|pawn| pawn.is_here()) {
+            return Err(RiftError::pawn(
+                PawnReason::AlreadyHere,
+                "Tamsin is already here.",
+            ));
+        }
+        if self.record().is_some_and(|record| record.breached()) {
+            return Err(RiftError::pawn(
+                PawnReason::Breached,
+                "The fence's last probe let something through, so Tamsin stays away until a probe holds.",
+            ));
+        }
+        let Prepared {
+            survey,
+            plan,
+            run_dir,
+            run_id,
+            ..
+        } = self.prepare(state)?;
         let launch = launch(&survey.host.distro, &plan).map_err(|refusal| no_fence(refusal.0))?;
 
         let errands = Arc::new(StoneErrands::new(Arc::clone(state)));
@@ -571,6 +685,166 @@ impl Desk {
         ears.events
             .emit_value(PAWN_STATE, serde_json::to_value(&view).unwrap_or_default());
         Ok(view)
+    }
+
+    /// `run_fence_probe` (BUILD-SPEC § v0.7, the probe): each step in the
+    /// identical fence, read from outside; anything that landed where it
+    /// must not is removed (the stone's own probe file, never anything
+    /// else); the record is written, and the chip returned.
+    pub fn run_probe(&self, state: &AppState) -> Result<FenceView, RiftError> {
+        if self.live().is_some_and(|pawn| pawn.is_here()) {
+            return Err(RiftError::pawn(
+                PawnReason::PawnHere,
+                "The fence cannot be probed while Tamsin is here. Let her depart first.",
+            ));
+        }
+        let prepared = self.prepare(state)?;
+        let nonce = new_run_id();
+        let secret = new_run_id();
+        let pawn_base = self
+            .runs_dir
+            .parent()
+            .unwrap_or(&self.runs_dir)
+            .to_path_buf();
+        let io = |what: &str, err: std::io::Error| RiftError::io(what.to_string(), err);
+
+        // The canary, and the probe-only input with a link to its folder.
+        let canary_dir = pawn_base.join("probe-canary");
+        std::fs::create_dir_all(&canary_dir).map_err(|e| io("could not make the canary", e))?;
+        let canary = canary_dir.join("probe-canary.txt");
+        std::fs::write(&canary, &nonce).map_err(|e| io("could not write the canary", e))?;
+        let probe_input = pawn_base.join("probe-input");
+        std::fs::create_dir_all(&probe_input)
+            .map_err(|e| io("could not make the probe input", e))?;
+        make_link(&probe_input.join("link"), &canary_dir)
+            .map_err(|e| io("could not make the probe's link", e))?;
+        let probe_dir = prepared.workshop.join("probe");
+        std::fs::create_dir_all(&probe_dir)
+            .map_err(|e| io("could not make the probe folder", e))?;
+        plant_cmd(&probe_dir.join("planted.exe"));
+
+        let fence_of = |path: &Path| -> String {
+            final_path(path)
+                .ok()
+                .and_then(|resolved| fence_path(&resolved))
+                .unwrap_or_else(|| path.to_string_lossy().into_owned())
+        };
+        let mods = state.library_dir().to_path_buf();
+        let game = state.world().game.map(|game| game.root);
+        let userdata = steam_userdata(game.as_deref());
+        let windows_of = |path: &Path| -> String {
+            final_path(path)
+                .unwrap_or_else(|_| path.to_string_lossy().into_owned())
+                .trim_start_matches(r"\\?\")
+                .to_string()
+        };
+        let targets = probe::Targets {
+            nonce: nonce.clone(),
+            mods: fence_of(&mods),
+            game: game.as_deref().map(fence_of),
+            userdata: userdata.as_deref().map(fence_of),
+            canary: fence_of(&canary),
+            home: prepared.survey.home.clone(),
+            claude_bin: prepared.plan.claude_bin(),
+            mods_windows: windows_of(&mods),
+            cmd_exe: "/mnt/c/Windows/System32/cmd.exe".into(),
+        };
+        let ctx = probe::Context {
+            nonce: nonce.clone(),
+            claude_version: prepared.survey.host.claude_version.clone(),
+            secret: secret.clone(),
+            userdata_names: userdata
+                .as_deref()
+                .and_then(|dir| std::fs::read_dir(dir).ok())
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .filter(|name| name.len() > 3)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        let probe_input_fence = fence_of(&probe_input);
+        let answers = prepared.run_dir.join("answers");
+        let control_file = probe_dir.join("control.txt");
+        let pe_file = mods.join(format!("probe-pe-{nonce}.txt"));
+        let home_claude = format!("{}/.claude/riftstone-probe-{nonce}", prepared.survey.home);
+
+        let mut control = false;
+        let mut records = Vec::new();
+        for step in probe::steps(&targets) {
+            let argv = bwrap_argv(
+                &prepared.plan,
+                &FenceCommand::Probe {
+                    script: step.script.clone(),
+                    probe_input: Some(probe_input_fence.clone()),
+                },
+            )
+            .map_err(|refusal| no_fence(refusal.0))?;
+            let (exit_ok, output) =
+                run_step(&prepared.survey.host.distro, &prepared.plan, &argv, &secret);
+            // What landed on the real disk, read outside the fence; a file
+            // that landed where it must not is the stone's own, removed now.
+            let landed_at = |path: &Path| -> Option<bool> {
+                let landed = path.exists();
+                if landed {
+                    let _ = std::fs::remove_file(path);
+                }
+                Some(landed)
+            };
+            let landed = match step.id {
+                "C" => Some(std::fs::read_to_string(&control_file).is_ok_and(|text| text == nonce)),
+                "1" => landed_at(&mods.join(format!("probe-{nonce}.txt"))),
+                "2" => game.as_ref().map_or(Some(false), |game| {
+                    landed_at(&game.join(format!("probe-{nonce}.txt")))
+                }),
+                "5" => {
+                    let asked = prepared
+                        .shell
+                        .run(
+                            &format!(
+                                "test -e {0} && rm -f {0} && echo landed",
+                                sh_quote(&home_claude)
+                            ),
+                            b"",
+                        )
+                        .map(|out| out.stdout.contains("landed"))
+                        .unwrap_or(false);
+                    Some(asked)
+                }
+                "6" | "7" => landed_at(&pe_file),
+                "11" => Some(
+                    answers.join("x.json").symlink_metadata().is_ok()
+                        || answers.join("y.json").exists(),
+                ),
+                _ => None,
+            };
+            let record = probe::judge(
+                &step,
+                &probe::Seen {
+                    exit_ok,
+                    output,
+                    landed,
+                },
+                &ctx,
+            );
+            if step.id == "C" {
+                control = record.ok;
+            } else {
+                records.push(record);
+            }
+        }
+        let _ = std::fs::remove_file(&control_file);
+        let _ = std::fs::remove_file(probe_dir.join("planted.exe"));
+        let record = FenceRecord {
+            ground: prepared.ground,
+            proved_at: now(),
+            control,
+            steps: records,
+        };
+        persist::write_json(&self.record_path, &record, true)?;
+        Ok(self.fence_view())
     }
 
     fn here(&self) -> Result<Arc<Summoning>, RiftError> {
@@ -770,6 +1044,131 @@ fn same_folder(
             "{name} is not the folder the stone made for it, so the fence will not mount it."
         )))
     }
+}
+
+/// Run one probe step in the fence and collect what it said, with a 30 s
+/// bound. The stone's secret is set on its own side and in `WSLENV`, so step
+/// 10 sees whether anything carries it across.
+fn run_step(distro: &str, plan: &FencePlan, argv: &[String], secret: &str) -> (bool, String) {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let Ok(args) = crate::pawn::fence::wsl_args(distro, plan, argv) else {
+        return (false, "the step's command could not be built".into());
+    };
+    #[cfg(windows)]
+    let mut command = {
+        use std::os::windows::process::CommandExt;
+        let mut command = Command::new("wsl.exe");
+        command
+            .args(&args)
+            .env("RIFTSTONE_PROBE_SECRET", secret)
+            .env("WSLENV", "RIFTSTONE_PROBE_SECRET")
+            .creation_flags(0x0800_0000);
+        command
+    };
+    #[cfg(not(windows))]
+    let mut command = {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", &args[args.len() - 1]])
+            .env("RIFTSTONE_PROBE_SECRET", secret);
+        command
+    };
+    let Ok(mut child) = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    else {
+        return (false, "the step could not start".into());
+    };
+    let pipe = |mut reader: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = reader.read_to_string(&mut text);
+            text
+        })
+    };
+    let out = child.stdout.take().map(|o| pipe(Box::new(o)));
+    let err = child.stderr.take().map(|e| pipe(Box::new(e)));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            _ => {
+                let _ = child.kill();
+                break None;
+            }
+        }
+    };
+    let mut output = String::new();
+    for reader in [out, err].into_iter().flatten() {
+        output.push_str(&reader.join().unwrap_or_default());
+    }
+    (status.is_some_and(|s| s.success()), output)
+}
+
+/// A link from `link` to `target`: an NTFS junction on Windows, a symlink on
+/// the bench. One left by an earlier probe is replaced.
+fn make_link(link: &Path, target: &Path) -> std::io::Result<()> {
+    if link.symlink_metadata().is_ok() {
+        let _ = std::fs::remove_dir(link);
+        let _ = std::fs::remove_file(link);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let made = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .creation_flags(0x0800_0000)
+            .output()?;
+        if !made.status.success() {
+            return Err(std::io::Error::other("mklink /J failed"));
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+}
+
+/// A copy of Windows' own `cmd.exe` in the workshop's probe folder (step 6).
+fn plant_cmd(at: &Path) {
+    #[cfg(windows)]
+    {
+        let system = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+        let _ = std::fs::copy(system.join("System32").join("cmd.exe"), at);
+    }
+    #[cfg(not(windows))]
+    let _ = at;
+}
+
+/// Steam's `userdata`, beside the library that holds the game, or in the
+/// default install.
+fn steam_userdata(game: Option<&Path>) -> Option<PathBuf> {
+    let from_game = game.and_then(|root| {
+        root.ancestors()
+            .find(|dir| {
+                dir.file_name()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("steamapps"))
+            })
+            .and_then(Path::parent)
+            .map(|steam| steam.join("userdata"))
+    });
+    let default = std::env::var_os("ProgramFiles(x86)")
+        .map(|p| PathBuf::from(p).join("Steam").join("userdata"));
+    [from_game, default]
+        .into_iter()
+        .flatten()
+        .find(|dir| dir.is_dir())
 }
 
 /// An input's final path, refused when it overlaps a protected root.

@@ -177,8 +177,14 @@ impl FencePlan {
 pub enum FenceCommand {
     /// Tamsin: Claude Code, restricted, with the relay as its only MCP server.
     Pawn,
-    /// One probe step: `/bin/sh -c <script>` in the identical fence.
-    Probe { script: String },
+    /// One probe step: `/bin/sh -c <script>` in the identical fence, plus,
+    /// when given, the probe-only input at `/inputs/probe`. It must be
+    /// exactly `<the pawn's base>/probe-input` (beside `runs`); the probe's
+    /// junction inside it must dangle (step 9).
+    Probe {
+        script: String,
+        probe_input: Option<String>,
+    },
 }
 
 /// Why a plan cannot be fenced. The sentence never carries a path under
@@ -414,6 +420,28 @@ pub fn bwrap_argv(plan: &FencePlan, command: &FenceCommand) -> Result<Vec<String
             &["--ro-bind", input, &format!("{INPUTS_MOUNT}/{i}")],
         );
     }
+    if let FenceCommand::Probe {
+        probe_input: Some(probe_input),
+        ..
+    } = command
+    {
+        let run = components(&plan.run_dir).unwrap_or_default();
+        let base = &run[..run.len().saturating_sub(2)];
+        let given = components(probe_input).unwrap_or_default();
+        let exact = given.len() == base.len() + 1
+            && within(&given, base)
+            && given.last().is_some_and(|last| *last == "probe-input");
+        if !exact {
+            return Err(refuse(
+                "the probe's input",
+                "it is not the stone's own probe-input folder",
+            ));
+        }
+        push(
+            &mut argv,
+            &["--ro-bind", probe_input, &format!("{INPUTS_MOUNT}/probe")],
+        );
+    }
     push(
         &mut argv,
         &[
@@ -457,7 +485,7 @@ pub fn bwrap_argv(plan: &FencePlan, command: &FenceCommand) -> Result<Vec<String
                 argv.extend((0..plan.inputs.len()).map(|i| format!("{INPUTS_MOUNT}/{i}")));
             }
         }
-        FenceCommand::Probe { script } => {
+        FenceCommand::Probe { script, .. } => {
             push(&mut argv, &["/bin/sh", "-c", script]);
         }
     }
@@ -1010,12 +1038,57 @@ mod tests {
             &p,
             &FenceCommand::Probe {
                 script: "echo x > probe/control.txt".into(),
+                probe_input: None,
             },
         )
         .unwrap();
         let fence =
             |argv: &[String]| argv[..=argv.iter().position(|w| w == "--").unwrap()].to_vec();
         assert_eq!(fence(&pawn), fence(&probe));
+        // With the probe-only input, the fence is the pawn's plus exactly
+        // that one read-only mount.
+        let base = p.run_dir.rsplitn(3, '/').nth(2).unwrap().to_string();
+        let with_input = bwrap_argv(
+            &p,
+            &FenceCommand::Probe {
+                script: "true".into(),
+                probe_input: Some(format!("{base}/probe-input")),
+            },
+        )
+        .unwrap();
+        let mut expected = fence(&pawn);
+        let at = expected.iter().position(|w| w == "--bind").unwrap();
+        let at = expected[at..]
+            .iter()
+            .position(|w| *w == p.workshop)
+            .map(|i| i + at - 1)
+            .unwrap();
+        expected.splice(
+            at..at,
+            [
+                "--ro-bind".to_string(),
+                format!("{base}/probe-input"),
+                "/inputs/probe".to_string(),
+            ],
+        );
+        assert_eq!(fence(&with_input), expected);
+        for elsewhere in [
+            format!("{base}/probe-input/deeper"),
+            format!("{base}/other"),
+            "/mnt/c/Users/A/AppData/Local/probe-input".to_string(),
+        ] {
+            assert!(
+                bwrap_argv(
+                    &p,
+                    &FenceCommand::Probe {
+                        script: "true".into(),
+                        probe_input: Some(elsewhere.clone()),
+                    }
+                )
+                .is_err(),
+                "{elsewhere}"
+            );
+        }
         assert_eq!(
             probe[probe.len() - 3..],
             ["/bin/sh", "-c", "echo x > probe/control.txt"]
@@ -1518,6 +1591,7 @@ mod bench {
         let command = match raw["script"].as_str() {
             Some(script) => FenceCommand::Probe {
                 script: script.into(),
+                probe_input: None,
             },
             None => FenceCommand::Pawn,
         };
