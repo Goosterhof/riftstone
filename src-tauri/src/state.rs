@@ -51,7 +51,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{
     Arc, Condvar, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
     TryLockError,
@@ -268,6 +268,9 @@ pub struct AppState {
     /// Why the mods folder was not there and could not be made at launch.
     mods_unmade: Option<String>,
     shelf: RwLock<Arc<Shelf>>,
+    /// Rises each time the shelf is replaced or relabelled (v0.7): a pawn's
+    /// plan token names it, so a plan made against another library is stale.
+    library_generation: AtomicU64,
     catalog_cache: Mutex<Arc<CatalogCache>>,
     pub(crate) last_scan_ms: Mutex<Option<u64>>,
     scan: Mutex<Option<ScanProgress>>,
@@ -397,6 +400,7 @@ impl AppState {
             nexus_file,
             mods_unmade,
             shelf: RwLock::new(Arc::new(shelf)),
+            library_generation: AtomicU64::new(0),
             catalog_cache: Mutex::new(Arc::new(cache)),
             last_scan_ms: Mutex::new(last_scan_ms),
             scan: Mutex::new(None),
@@ -721,6 +725,12 @@ impl AppState {
         Arc::clone(&read(&self.shelf))
     }
 
+    /// The library's generation: it rises each time the shelf is replaced or
+    /// relabelled.
+    pub fn library_generation(&self) -> u64 {
+        self.library_generation.load(Ordering::SeqCst)
+    }
+
     fn catalog_cache_snapshot(&self) -> Arc<CatalogCache> {
         Arc::clone(&lock(&self.catalog_cache))
     }
@@ -733,6 +743,7 @@ impl AppState {
         let mut current = write(&self.shelf);
         let labels = lock(&self.nexus).package_labels(shelf.packages());
         *current = Arc::new(shelf.with_labels(labels));
+        self.library_generation.fetch_add(1, Ordering::SeqCst);
     }
 
     /// The Nexus store's labels changed (a check heard them, a link changed):
@@ -751,6 +762,7 @@ impl AppState {
             return;
         }
         Arc::make_mut(&mut *current).set_labels(labels);
+        self.library_generation.fetch_add(1, Ordering::SeqCst);
     }
 
     /// What the overview says about the scan.
@@ -1347,12 +1359,31 @@ impl AppState {
         &self,
         op: impl FnOnce(&DeployContext, &mut Journal) -> Result<R, RiftError>,
     ) -> Result<R, RiftError> {
+        self.deploy_as(&Actor::Player, op)
+    }
+
+    /// [`AppState::deploy`], with its installs recorded as `actor`'s (v0.7: a
+    /// pawn's tool). The same one turn as every other change, so a check made
+    /// inside `op` holds until the change commits.
+    pub fn deploy_as<R>(
+        &self,
+        actor: &Actor,
+        op: impl FnOnce(&DeployContext, &mut Journal) -> Result<R, RiftError>,
+    ) -> Result<R, RiftError> {
         let _turn = self.turn();
-        self.deploy_unlocked(op)
+        self.deploy_unlocked_as(actor, op)
     }
 
     fn deploy_unlocked<R>(
         &self,
+        op: impl FnOnce(&DeployContext, &mut Journal) -> Result<R, RiftError>,
+    ) -> Result<R, RiftError> {
+        self.deploy_unlocked_as(&Actor::Player, op)
+    }
+
+    fn deploy_unlocked_as<R>(
+        &self,
+        actor: &Actor,
         op: impl FnOnce(&DeployContext, &mut Journal) -> Result<R, RiftError>,
     ) -> Result<R, RiftError> {
         let world = self.world();
@@ -1361,7 +1392,8 @@ impl AppState {
             JournalSlot::Damaged(err) => return Err(err.clone()),
             JournalSlot::NoGame => return Err(RiftError::GameNotFound),
         };
-        let scene = self.scene(&world)?;
+        let mut scene = self.scene(&world)?;
+        scene.actor = actor.clone();
         let ctx = scene.ctx(self.config.dirs.state_dir());
         let result = match panic::catch_unwind(AssertUnwindSafe(|| op(&ctx, &mut journal))) {
             Ok(result) => result,
