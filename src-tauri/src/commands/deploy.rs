@@ -12,8 +12,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rift_core::{ExtractProgress, OptionId, RiftError};
-use rift_deploy::Journal;
+use rift_core::{ExtractProgress, ModOption, OptionId, Package, RiftError};
+use rift_deploy::{Actor, DeployContext, Journal};
 
 use crate::commands::overview::game_summary;
 use crate::commands::versions;
@@ -25,6 +25,7 @@ use crate::dto::{
 };
 use crate::events;
 use crate::family::{self, Families};
+use crate::library::Shelf;
 use crate::state::{lock, read, AppState, JournalSlot};
 
 /// Install progress reaches the window at most this often (and always at the end).
@@ -51,22 +52,10 @@ pub fn plan_install_impl(state: &AppState, option_id: &str) -> Result<InstallPla
         .option(&OptionId(option_id.to_string()))
         .ok_or_else(|| not_found(option_id))?;
     let families = Families::of_shelf(&shelf, &lock(&state.nexus));
-    let planned = state.plan(|ctx, journal| {
-        let replacing = family::replaced(&families, &shelf, package, option, |id| {
-            journal.is_installed(id)
-        });
-        let plan = rift_deploy::plan_install_replacing(ctx, journal, package, option, &replacing);
-        let replaces: Vec<ReplacesView> = replacing
-            .iter()
-            .map(|id| versions::replaces_view(&families, ctx, journal, id).0)
-            .collect();
-        (plan, replaces)
-    });
+    let planned =
+        state.plan(|ctx, journal| plan_view(&families, &shelf, ctx, journal, package, option));
     match planned {
-        Ok((plan, replaces)) => Ok(InstallPlanView {
-            replaces,
-            ..InstallPlanView::from(&plan)
-        }),
+        Ok(view) => Ok(view),
         Err(err) => match refusal(&err) {
             Some(sentence) => Ok(InstallPlanView {
                 option_id: option.id.0.clone(),
@@ -82,9 +71,49 @@ pub fn plan_install_impl(state: &AppState, option_id: &str) -> Result<InstallPla
     }
 }
 
+/// An install's plan as the window sees it, made against one journal: the
+/// writes, the warnings and the older versions it replaces.
+pub fn plan_view(
+    families: &Families,
+    shelf: &Shelf,
+    ctx: &DeployContext,
+    journal: &Journal,
+    package: &Package,
+    option: &ModOption,
+) -> InstallPlanView {
+    let replacing = family::replaced(families, shelf, package, option, |id| {
+        journal.is_installed(id)
+    });
+    let plan = rift_deploy::plan_install_replacing(ctx, journal, package, option, &replacing);
+    let replaces: Vec<ReplacesView> = replacing
+        .iter()
+        .map(|id| versions::replaces_view(families, ctx, journal, id).0)
+        .collect();
+    InstallPlanView {
+        replaces,
+        ..InstallPlanView::from(&plan)
+    }
+}
+
+/// The check an install makes inside its own turn, before the first byte:
+/// given the plan made there, `Err` refuses it (v0.7: a pawn's plan token).
+pub type InstallCheck<'a> = &'a dyn Fn(&InstallPlanView, &Journal) -> Result<(), RiftError>;
+
 pub fn install_impl(
     state: &Arc<AppState>,
     option_id: &str,
+) -> Result<InstallResultView, RiftError> {
+    install_checked(state, option_id, &Actor::Player, None)
+}
+
+/// [`install_impl`] as `actor`, refused by `check` (inside the turn that
+/// commits, so nothing can change between the check and the install) when
+/// it says so. The player's press and Tamsin's tool take this one path.
+pub fn install_checked(
+    state: &Arc<AppState>,
+    option_id: &str,
+    actor: &Actor,
+    check: Option<InstallCheck<'_>>,
 ) -> Result<InstallResultView, RiftError> {
     // Play waits while an install is under way, from here to its last byte.
     let _installing = state.begin_install();
@@ -112,7 +141,17 @@ pub fn install_impl(
             },
         );
     };
-    let (report, put) = state.deploy(|ctx, journal| {
+    let (report, put) = state.deploy_as(actor, |ctx, journal| {
+        // A checked install keeps the library from being republished from
+        // its check to its commit (WA1): taken inside the turn, as the lock
+        // order says, and let go before the put-away below.
+        let publishing = check.is_some().then(|| state.hold_library());
+        if let Some(check) = check {
+            check(
+                &plan_view(&families, &shelf, ctx, journal, package, option),
+                journal,
+            )?;
+        }
         let replacing = family::replaced(&families, &shelf, package, option, |id| {
             journal.is_installed(id)
         });
@@ -127,6 +166,7 @@ pub fn install_impl(
             &mut progress,
         )?;
         drop(source);
+        drop(publishing);
         // The step committed: the older versions it left without installs go,
         // still under the deploy lock and before the scan below.
         let journal: &Journal = journal;
@@ -169,10 +209,26 @@ pub fn plan_uninstall_impl(
 }
 
 pub fn uninstall_impl(state: &AppState, option_id: &str) -> Result<UninstallResultView, RiftError> {
+    Ok(uninstall_recorded(state, option_id)?.0)
+}
+
+/// [`uninstall_impl`], also naming the install it removed as the journal held
+/// it inside the turn: who placed it, and its `seq` (v0.7, WB4).
+pub fn uninstall_recorded(
+    state: &AppState,
+    option_id: &str,
+) -> Result<(UninstallResultView, Option<(Actor, u64)>), RiftError> {
     let id = OptionId(option_id.to_string());
-    let report = state.deploy(|ctx, journal| rift_deploy::uninstall(ctx, journal, &id))?;
+    let (report, removed) = state.deploy(|ctx, journal| {
+        let removed = journal
+            .installs
+            .iter()
+            .find(|install| install.option_id == id)
+            .map(|install| (install.actor.clone(), install.seq));
+        Ok((rift_deploy::uninstall(ctx, journal, &id)?, removed))
+    })?;
     state.events.changed(events::GAME_CHANGED);
-    Ok((&report).into())
+    Ok(((&report).into(), removed))
 }
 
 /// What is in the game now: the installs (adopted ones too), the pak load
