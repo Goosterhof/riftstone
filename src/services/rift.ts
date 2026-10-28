@@ -23,6 +23,7 @@ import type {
   LabelFacets,
   MusterSlotsView,
   MusterView,
+  SaveBackupReport,
   NexusBrowsePage,
   NexusBrowseQuery,
   NexusFindings,
@@ -186,6 +187,8 @@ export interface RiftBackend {
   getMuster(slotId: string): Promise<MusterView>;
   /** v0.4: open the slot's save folder in Explorer, Rust-side (its path stays out of the window). */
   openSavesFolder(slotId: string): Promise<void>;
+  /** Copy every account's whole encrypted save folder to a chosen destination. */
+  backupSaves(destination: string): Promise<SaveBackupReport>;
   /** v0.6: open THE FRAY, the party screen, in its own window without taking focus
    *  (WINDOW-CONTRACT § v0.6); a second press brings it forward. */
   openFray(): Promise<void>;
@@ -312,6 +315,7 @@ async function tauriBackend(): Promise<RiftBackend> {
     getMusterSlots: () => invoke("get_muster_slots"),
     getMuster: (slotId) => invoke("get_muster", { slotId }),
     openSavesFolder: (slotId) => invoke("open_saves_folder", { slotId }),
+    backupSaves: (destination) => invoke("backup_saves", { destination }),
     openFray: () => invoke("open_fray"),
     ...versionsCommands(invoke),
     on: async (event, handler) => {

@@ -2224,6 +2224,11 @@ was confirmed in-game by the investor (a specialization, and armour the first pa
    decrypted copy on disk. The stone carries no way to encrypt a save. The test fixtures are
    encrypted by code compiled only for tests (`rift-save`'s `fixtures` feature, a dev-dependency
    only).
+   **Amendment, investor 2026-10-27:** the explicit request to back up saves and
+   add a Riftstone option permits copies of the original encrypted files to a
+   separate chosen destination. It permits no original-save writes, restoration,
+   re-signing, uploading or decrypted-on-disk data. The manual backup contract
+   below supersedes only the original no-copy clause.
 2. **Names come from the player's own game, never from the repo** (the Smuggler's Ledger's legal
    floor). The pak is opened read-only (RS-3 still forbids writing it). The name tables are
    cached in the app's cache folder, keyed by the pak's size and modified time, so the 2 s read

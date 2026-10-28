@@ -3,7 +3,8 @@
 // whole page is your world (hearth); a hired pawn's sheet is cold. Three
 // regions: the pinned page head (inscription, purse, the open slot's line,
 // THE RE-CARVING's carved count), the slot list, and the member tab line over
-// one member's sheet. Read-only: no door here changes anything.
+// one member's sheet. The manual backup door copies encrypted files into a
+// separate folder; every live save remains read-only.
 //
 // v0.5 (#00015 §18.8–§18.10): the left column lists characters, with the
 // slots that won't open apart; the head's open-slot line is the slot menu,
@@ -11,6 +12,7 @@
 // pinned to one.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useMuster } from "@/composables/useMuster";
+import { useSaveBackup } from "@/composables/useSaveBackup";
 import { useNavigation } from "@/composables/useNavigation";
 import { useToasts } from "@/composables/useToasts";
 import { failureDetails, voice, voicedLine, type RecoveryKind } from "@/services/voice";
@@ -36,6 +38,7 @@ import MusterState from "@/components/MusterState.vue";
 import RiftButton from "@/components/RiftButton.vue";
 
 const muster = useMuster();
+const backup = useSaveBackup();
 const nav = useNavigation();
 
 const roster = ref<InstanceType<typeof MusterRoster> | null>(null);
@@ -215,6 +218,16 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         <span v-if="marks.count" class="muster__changed rs-mono">{{ marks.count }} CHANGED</span>
       </div>
       <p class="rs-sr-only" aria-live="polite">{{ muster.announcement.value }}</p>
+      <div class="muster__backup-tools">
+        <RiftButton size="sm" :busy="backup.busy.value" @click="backup.create"> Back up all saves… </RiftButton>
+        <span class="muster__dim">All Steam accounts and slots, including system data. Close the game first.</span>
+      </div>
+      <p v-if="backup.report.value" class="muster__backup-result" role="status">
+        Verified backup: {{ backup.report.value.files }} {{ backup.report.value.files === 1 ? "file" : "files" }} across
+        {{ backup.report.value.accounts }} {{ backup.report.value.accounts === 1 ? "account" : "accounts" }}.
+        <RiftButton size="sm" @click="backup.show">Show backup</RiftButton>
+      </p>
+      <p v-if="backup.error.value" class="muster__backup-error" role="alert">{{ backup.error.value }}</p>
     </header>
 
     <MusterState
@@ -317,6 +330,19 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 </template>
 
 <style scoped>
+.muster__backup-tools,
+.muster__backup-result {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--rs-space-3);
+  margin-top: var(--rs-space-3);
+  font-size: var(--rs-text-sm);
+}
+.muster__backup-error {
+  color: var(--rs-ember);
+  margin-top: var(--rs-space-3);
+}
 .muster {
   flex: 1;
   min-width: 0;

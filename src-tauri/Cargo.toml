@@ -43,6 +43,7 @@ base64.workspace = true
 image.workspace = true
 notify.workspace = true
 chrono.workspace = true
+sha2.workspace = true
 # The optional Nexus API key lives in the OS credential store (Windows
 # Credential Manager on the investor's machine; the Secret Service on the
 # Linux bench) — never in a file, never in the webview (RS-6).

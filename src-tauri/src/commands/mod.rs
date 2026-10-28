@@ -28,6 +28,7 @@ pub mod nexus;
 pub mod nxm;
 pub mod overview;
 pub mod play;
+pub mod save_backup;
 pub mod standings;
 pub mod versions;
 

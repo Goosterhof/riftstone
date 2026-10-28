@@ -60,7 +60,7 @@ meaning faster* — and the voice lives in the frame, the states and the two sig
 - **RS-5 — One folder.** The `mods` folder beside `riftstone.exe` is the only library (a bench may point `RIFTSTONE_MODS_DIR` elsewhere). Every archive and folder directly inside it is one package; nothing else is scanned. Folder packages are known by their name, so moving the whole install keeps every link.
 - **RS-6 — Nexus is optional.** Update checks, labels, Find, browsing and a mod's files use the anonymous GraphQL v2 API and need no key. The optional personal API key adds the key's extras through v1: the account, downloads, tracking and endorsing. It lives in Windows Credential Manager, never in a file or the webview; a download URL and an nxm link's key are secrets like it (never logged, never in an error, never in the window). Every request names the Riftstone (`Application-Name`, `Application-Version`), and v1's quota headers are honoured.
 - **RS-7 — Vue 3 + UnoCSS**, `@unocss/reset` before `virtual:uno.css`, the `prefers-reduced-motion` floor.
-- **RS-8 — The saves are the player's (v0.4).** A save is read into memory and nothing else: the stone never writes, renames, re-signs or copies a save, never sends one, and keeps no decrypted copy on disk. It carries no way to encrypt a save, and neither does the rest of the repo outside test builds: the only sealer is `rift-save`'s `fixtures` code (which `rift-muster`'s fixtures build on), and only test builds compile it. The Sentinel measures that on every push: the graph the shipped exe is built from switches on no `fixtures` feature. The privacy sweep's Python opens saves and seals none: its self-test opens `scripts/fixtures/sweep-invented-save.bin`, which that code sealed and `rift-save`'s own test checks opens to exactly its invented party. The game's pak is read the same way, read-only (RS-3 still forbids writing it). A save folder's path holds the Steam account number, so no log line, error or event names it.
+- **RS-8 — The saves are the player's (v0.4; backup exception, investor 2026-10-27).** The stone never changes, renames, re-signs or uploads an original save, and keeps no decrypted copy on disk. At the player's explicit **Back up all saves…** press it may copy the original encrypted files to a separate chosen destination. It verifies every copy and unchanged sources before publishing a new snapshot, refuses while the game runs and refuses a destination in Steam's saves, the game, mod library or app data. No restore is included. The local backup manifest retains account mapping for manual recovery; source paths/account numbers never enter logs, errors or events. It carries no way to encrypt a save, and neither does the rest of the repo outside test builds: the only sealer is `rift-save`'s `fixtures` code (which `rift-muster`'s fixtures build on), and only test builds compile it. The Sentinel measures that on every push: the graph the shipped exe is built from switches on no `fixtures` feature. The privacy sweep's Python opens saves and seals none. The game's pak stays read-only (RS-3).
 
 ## The DD2 Load Rules (researched 2026-10-16; constants in `crates/rift-core/src/dd2.rs`)
 
@@ -345,8 +345,55 @@ The exact rebased frontend passed 470 tests, typecheck, lint without warnings, f
 and production build. Browser mock inspection is separate from native Windows acceptance.
 The new regressions are `tests/selectionLifetime.spec.ts` and `tests/libraryUsability.spec.ts`.
 
+## Manual save backups — investor request, 27 October 2026
+
+v0.6.2 adds **Back up all saves…** to THE MUSTER. The manual action keeps the
+destination and timing under the player's control before experiments such as
+character-height trials; automatic backups on Play or installation would require retention and
+failure decisions beyond this request. This is the explicit RS-8 copy exception.
+
+`save_backup.rs` inventories the full discovered folders, streams original encrypted
+bytes into an exclusive staging folder, syncs and SHA-256 checks the copies, then
+compares the sources again before a no-replace publication. The command holds the
+game turn and repeatedly checks the process watcher. It protects Steam saves, the
+game, both mod shelves, app data and the app's install folder. The window gets only
+destination/counts, never the source path or account identifiers; the local manifest
+keeps the account mapping for manual recovery. Backup is independent of party parsing.
+
+The colleague's review caught the older-versions shelf destination; it is protected
+and exercised through Tauri's actual IPC dispatcher. Synthetic tests also cover all
+accounts and system files, changing/added source files, game start, symlinks, repeat
+backup, picker cancellation, repeated presses and receipt/reveal. The two Muster
+README frames were refreshed from invented data and inspected. The window contract
+owns the command and interruption behavior. Native build and installed acceptance
+must be recorded separately from source checks.
+
+Linux validation before the fullscreen integration: workspace **1,017 passed, 0 failed, 11 ignored**;
+window **589 passed**; clippy with warnings denied, Rust/Vue formatting, typecheck,
+production build, privacy self-test and full private-data sweep pass. Browser mock
+checks at 1320×860 and 1024×680 keep the backup door visible without horizontal
+overflow. The colleague's source review and older-shelf correction are complete;
+native Windows validation and installed acceptance remain pending at this entry.
+
+The integrated v0.6.2 candidate `a5c8285` contains the approved backup revision
+`5262298` and the released fullscreen merge `2e256c7`. Its Linux workspace passes
+**1,022 tests, 0 failed, 11 ignored**, and all **589 window tests**, strict clippy,
+lint, formatting, typecheck, production build and full privacy sweep pass. Native
+Windows Rust 1.98.0 MSVC tests at that exact candidate pass **1,007 tests, 0 failed,
+11 ignored** with `RUSTFLAGS=-D warnings`; native
+`cargo clippy --workspace --all-targets -j 4 -- -D warnings` also passes without
+warnings. The installer build uses that candidate; installed button presses and
+native display acceptance remain separate. Later journal/frame-only edits do not
+change executable source.
+
 ## Known Limitations
 
+- **Manual save backups (v0.6.2)** cover every discovered account's original encrypted
+  `win64_save` files, including system/creator data, independently of readable party slots.
+  The destination must be outside Steam saves, the game, both mod shelves and app data.
+  A crash can leave a hidden `.riftstone-save-backup-*` folder in the chosen destination;
+  it is incomplete. Only a published `DD2 saves …` folder with its manifest is a completed
+  backup. Restore, scheduling and automatic cleanup/retention are not included.
 - Downloads in the stone need a premium account; a free account goes through the file's page and
   the site's Mod Manager Download button, which reaches the stone only while its nxm handler is on.
   Vortex, when installed with "Handle Nexus Links" on, takes the handler back at each of its starts.
@@ -392,8 +439,10 @@ The new regressions are `tests/selectionLifetime.spec.ts` and `tests/libraryUsab
   ruling 10, and again at 2f410ea with the player's word (959 passed, 0 failed); the installer
   was built and the probe asked about exactly the package the investor reported, a folder whose
   file names are all in the pinned download.
-  `cargo clippy` is not installed on the Windows bench and has never run
-  there. Still owed: `cargo clippy` natively, and every press on a Windows desktop: Play by each
+  On 2026-10-27 the matching Windows Clippy component was installed. The colleague's
+  first clean run at `5906e79` was peer-reported; the Heretic independently ran
+  `cargo clippy --workspace --all-targets -j 4 -- -D warnings` at `a5c8285`, exit 0
+  with no warnings. Still owed: every press on a Windows desktop: Play by each
   route; Open mods folder, also after deleting it while the stone runs; the nxm switch on and
   off, also over another program's key; a download with each account type, one cancelled, one
   into a FAT32 or exFAT folder; uninstall with the switch on; an upgrade over an installed v0.3

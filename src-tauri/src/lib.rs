@@ -45,6 +45,7 @@ pub mod nxm;
 pub mod persist;
 pub mod play;
 pub mod protocol;
+pub mod save_backup;
 pub mod state;
 pub mod thumbs;
 pub mod watch;
@@ -220,6 +221,7 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         commands::muster::get_muster_slots,
         commands::muster::get_muster,
         commands::muster::open_saves_folder,
+        commands::save_backup::backup_saves,
         commands::versions::plan_keep_newest,
         commands::versions::keep_newest,
         commands::versions::put_away,
