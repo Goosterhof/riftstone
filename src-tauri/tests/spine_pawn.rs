@@ -190,3 +190,51 @@ fn she_reads_the_tail_of_the_reframework_log_and_nothing_else() {
     fs::remove_file(&log).unwrap();
     assert!(errands.read_reframework_log(5).is_err());
 }
+
+#[test]
+fn no_scan_publishes_between_her_check_and_her_commit() {
+    // The Heretic's WA1: a scan never takes the deploy turn, so the library
+    // could be republished after the check passed and before the install
+    // committed. A checked install now holds the library from its check to
+    // its commit; the scan publishes after.
+    let (_bench, _dirs, state) = opened();
+    let lantern = option_named(&state, "Lantern Glow Recolor");
+    let checked = std::sync::Barrier::new(2);
+    let at_check = std::sync::atomic::AtomicU64::new(u64::MAX);
+    let during = std::sync::atomic::AtomicU64::new(u64::MAX);
+    let check = |_: &riftstone_lib::dto::InstallPlanView, _: &rift_deploy::Journal| {
+        at_check.store(
+            state.library_generation(),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        checked.wait();
+        // The scan runs now; give it every chance to publish.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        during.store(
+            state.library_generation(),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        Ok(())
+    };
+    std::thread::scope(|scope| {
+        let install =
+            scope.spawn(|| deploy::install_checked(&state, &lantern, &pawn(), Some(&check)));
+        checked.wait();
+        let scan = scope.spawn(|| state.scan_blocking());
+        install.join().unwrap().unwrap();
+        assert!(
+            scan.join().unwrap(),
+            "the scan still finishes, after the commit"
+        );
+    });
+    let at_check = at_check.into_inner();
+    assert_eq!(
+        during.into_inner(),
+        at_check,
+        "the library stayed as checked until the install committed"
+    );
+    assert!(
+        state.library_generation() > at_check,
+        "and was published after"
+    );
+}

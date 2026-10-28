@@ -516,6 +516,19 @@ pub enum PlayRefusal {
     /// Play was pressed and the launch refused or failed: the stone's own
     /// sentence. The request stays waiting.
     Launch(String),
+    /// The run's ledger cannot be written, which stops every change in the
+    /// run, this one too (the Heretic's WA2): nothing launches, and the
+    /// request stays waiting.
+    LedgerDown,
+}
+
+/// What the Arisen's press did. `persisted` is false when the decision was
+/// made (the game started, or the Arisen declined) but could not be written
+/// to the run's ledger: the window says so (the Heretic's WA3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayAnswered {
+    pub decision: Decision,
+    pub persisted: bool,
 }
 
 /// One answered call, for the `rift://pawn-hands` event.
@@ -1013,7 +1026,7 @@ impl<'a> Broker<'a> {
         held_request_id: &str,
         accept: bool,
         launch: impl FnOnce() -> Result<(), String>,
-    ) -> Result<Decision, PlayRefusal> {
+    ) -> Result<PlayAnswered, PlayRefusal> {
         let mut state = self.lock();
         if run_id != self.run_id || state.retiring {
             return Err(PlayRefusal::StaleHeld);
@@ -1024,6 +1037,9 @@ impl<'a> Broker<'a> {
                 return Err(PlayRefusal::StaleHeld)
             }
             Some(_) => {}
+        }
+        if state.ledger_down {
+            return Err(PlayRefusal::LedgerDown);
         }
         let decision = if accept {
             launch().map_err(PlayRefusal::Launch)?;
@@ -1038,11 +1054,18 @@ impl<'a> Broker<'a> {
             at: (self.clock)(),
             delivered: false,
         });
-        if let Err(err) = self.sink.record(&state.ledger) {
-            log::warn!("the pawn's run ledger could not record the Arisen's answer: {err}");
-            state.ledger_down = true;
-        }
-        Ok(decision)
+        let persisted = match self.sink.record(&state.ledger) {
+            Ok(()) => true,
+            Err(err) => {
+                log::warn!("the pawn's run ledger could not record the Arisen's answer: {err}");
+                state.ledger_down = true;
+                false
+            }
+        };
+        Ok(PlayAnswered {
+            decision,
+            persisted,
+        })
     }
 
     /// Retire the run (BUILD-SPEC § v0.7, runs): take no new calls, wait for
@@ -1803,7 +1826,10 @@ mod tests {
         // The Arisen declines; a retry of the held id still gets `held`.
         assert_eq!(
             broker.answer_play(RUN, H1, false, || unreachable!()),
-            Ok(Decision::Declined)
+            Ok(PlayAnswered {
+                decision: Decision::Declined,
+                persisted: true
+            })
         );
         assert_eq!(
             play(&broker, H1),
@@ -1882,13 +1908,71 @@ mod tests {
                 launched = true;
                 Ok(())
             }),
-            Ok(Decision::Played)
+            Ok(PlayAnswered {
+                decision: Decision::Played,
+                persisted: true
+            })
         );
         assert!(launched);
         assert_eq!(
             play(&broker, H2).text,
             "played at 2026-10-28T12:00:00Z: the Arisen started the game"
         );
+    }
+
+    #[test]
+    fn a_stopped_ledger_stops_the_arisens_play_too() {
+        // The Heretic's WA2: the run's ledger stop governs the host's press.
+        let stone = Stone::default();
+        let sink = Sink::default();
+        let broker = Broker::new(RUN, &stone, &sink, clock);
+        play(&broker, H1);
+        *sink.1.lock().unwrap() = Some(0); // every write from now on fails
+        let uninstall = body(serde_json::json!({ "id": ID, "tool": "uninstall",
+            "args": { "installId": "aa#Glow" } }));
+        assert_eq!(
+            broker.handle(&name(ID), &uninstall).unwrap().answer.text,
+            LEDGER_DOWN
+        );
+        let never = || -> Result<(), String> { panic!("nothing may launch") };
+        assert_eq!(
+            broker.answer_play(RUN, H1, true, never),
+            Err(PlayRefusal::LedgerDown)
+        );
+        assert_eq!(
+            broker.answer_play(RUN, H1, false, never),
+            Err(PlayRefusal::LedgerDown)
+        );
+        assert_eq!(
+            broker.ledger().held.unwrap().held_request_id,
+            H1,
+            "still waiting"
+        );
+    }
+
+    #[test]
+    fn a_decision_that_could_not_be_written_says_so() {
+        // The Heretic's WA3: the game started, the decision did not reach
+        // the disk; the answer says both.
+        let stone = Stone::default();
+        let sink = Sink::default();
+        let broker = Broker::new(RUN, &stone, &sink, clock);
+        play(&broker, H1);
+        *sink.1.lock().unwrap() = Some(0);
+        let mut launched = false;
+        let answered = broker.answer_play(RUN, H1, true, || {
+            launched = true;
+            Ok(())
+        });
+        assert!(launched, "the game did start");
+        assert_eq!(
+            answered,
+            Ok(PlayAnswered {
+                decision: Decision::Played,
+                persisted: false
+            })
+        );
+        assert!(!broker.retire().persisted, "the run's ledger is not whole");
     }
 
     #[test]

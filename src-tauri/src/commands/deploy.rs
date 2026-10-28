@@ -142,6 +142,10 @@ pub fn install_checked(
         );
     };
     let (report, put) = state.deploy_as(actor, |ctx, journal| {
+        // A checked install keeps the library from being republished from
+        // its check to its commit (WA1): taken inside the turn, as the lock
+        // order says, and let go before the put-away below.
+        let publishing = check.is_some().then(|| state.hold_library());
         if let Some(check) = check {
             check(
                 &plan_view(&families, &shelf, ctx, journal, package, option),
@@ -162,6 +166,7 @@ pub fn install_checked(
             &mut progress,
         )?;
         drop(source);
+        drop(publishing);
         // The step committed: the older versions it left without installs go,
         // still under the deploy lock and before the scan below.
         let journal: &Journal = journal;
