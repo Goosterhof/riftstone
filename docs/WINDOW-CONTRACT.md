@@ -1024,7 +1024,7 @@ Types live in `src/types/workshop.ts`. Design: #00015 §20.
 | `pawn_write` | `data: string` | `void` | Keystrokes and pastes, UTF-8, to the PTY. Refuses `notHere`. |
 | `pawn_resize` | `cols: number, rows: number` | `void` | Called on fit; ignored when no pawn is here. |
 | `depart_pawn` | — | `void` | Ends the session: SIGTERM to the fence, then a kill after 3 s. A held Play is dropped. The pawn's installs stay (see `plan_put_back`). |
-| `answer_pawn_play` | `accept: boolean` | `void` | The held Play request. `true` runs `plan_launch` and `launch_game` exactly as the Play slab does, with the same warnings and refusals. `false` records `declined`. Either way the choice is recorded as the run's decision and reaches Tamsin through her next `list_installed` or a new `play` call (BUILD-SPEC § v0.7, *The held Play's decision*); the held call's own answer stays `held`. Refuses `nothingHeld`. |
+| `answer_pawn_play` | `runId: string, heldRequestId: string, accept: boolean` | `void` | The held Play request the window was shown, by its run and id. `true` runs `plan_launch` and `launch_game` exactly as the Play slab does, with the same warnings and refusals. `played` is recorded only once the game has started. A refusal, a failure or a cancel at a warning records nothing, and the request stays waiting with the refusal shown. `false` records `declined`. The decision reaches Tamsin through her next `list_installed` or a new `play` call (BUILD-SPEC § v0.7, *The held Play's decision*), and the held call's own answer stays `held`. Refuses `nothingHeld`, and `staleHeld` when the run and id are not the live run's waiting request, both when the press arrives and right before the game starts. |
 | `get_fence` | — | `FenceView` | The last probe record judged against the current ground. |
 | `run_fence_probe` | — | `FenceView` | The deterministic probe (BUILD-SPEC § v0.7, no model, about 10 s). Refuses `pawn` `pawnHere` while a pawn is summoned. |
 | `plan_bring_through` | `artifact: string` | `BringThroughPlan` | `artifact` is a file name in the workshop's `dist\`. The plan carries the digest **frozen now**. That digest is what the press refers to. |
@@ -1055,7 +1055,8 @@ is `pawn` `inputRefused`, naming the root it overlaps, never a path under `userd
 `RiftError` gains two kinds.
 - `pawn`, with `{ detail, reason }`, `reason` ∈ `noFence` (detail names the missing piece and the
   command that installs it, e.g. `sudo apt install socat`), `breached`, `alreadyHere`, `notHere`,
-  `pawnHere`, `nothingHeld`, `inputRefused`, `notThisRun` (a `put_back` id that is not the run's
+  `pawnHere`, `nothingHeld`, `staleHeld` (an `answer_pawn_play` for a run or request that is not
+  the one waiting now), `inputRefused`, `notThisRun` (a `put_back` id that is not the run's
   own still-installed install).
 - `bring`, with `{ detail, reason }`, `reason` ∈ `nameTaken` (a different file has the name),
   `bytesChanged` (detail carries both digests' first 16 hex), `noReceipt`, `receiptMismatch` (the
@@ -1074,7 +1075,8 @@ the investor's own and may be shown.
 - `ReceiptView`: the receipt's own fields (BUILD-SPEC § v0.7), passed through as the pawn wrote
   them, for display under `THE RECEIPT SAYS`.
 - `PawnStateView`: `{ runId: string | null, state: "absent" | "summoning" | "here" | "departed" |
-  "torn", since: string | null, exitCode: number | null, host: { distro, claudeVersion } | null, held: "play" | null }`.
+  "torn", since: string | null, exitCode: number | null, host: { distro, claudeVersion } | null, held: { heldRequestId, since } | null }`.
+  `held` names the waiting Play request, so the window's press can carry it with `runId`.
 - `PawnHand`: `{ runId, seq, at, tool, outcome: "done" | "refused" | "held" | "declined" |
   "repeated" (a replayed id answered from the ledger) | "unknown" (made but not recorded: the
   ledger could not be written), summary,

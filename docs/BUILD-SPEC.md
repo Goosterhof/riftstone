@@ -3075,6 +3075,22 @@ A new `play` id while a request is still waiting holds nothing new either: it an
 the waiting request's id in `data.heldRequestId`. At most one Play is held per run, and a
 departure drops it unanswered (`lastDecision` stays as it was).
 
+Three rules close the edges (the Heretic's review of `d1dee4e`, P1 and P2):
+- **Only a game that started is `played`** (P1). The Arisen's *Play* runs `plan_launch` and
+  `launch_game` as the slab does. If either refuses, fails, or the Arisen cancels at one of its
+  warnings, **no decision is recorded and the request stays waiting**. The window shows the
+  stone's refusal under the held card, and the Arisen can press *Play* again or *Not now*.
+  `played` is recorded only once `launch_game` has started the game.
+- **The press names what it answers** (P2). `answer_pawn_play` carries the `runId` and
+  `heldRequestId` the window was shown. The stone acts only when they are the live run and its
+  waiting request, checked under the decision's lock when the press arrives, and again after any
+  warning the launch waited on, right before the game starts. Anything else is refused `pawn`
+  `staleHeld`, and nothing is recorded or launched: a press from a retired run, or one for an
+  earlier request of the same run.
+- **Play calls are taken one at a time per run.** Delivering a decision is committed in the same
+  ledger write as the new id's answer, so a retry or a crash can neither consume a decision
+  without its answer being recorded nor make a second hold.
+
 **A timeout has a defined status.** The relay waits up to 120 s. Then it tells the model
 `unknown: the stone may still be doing this. Call list_installed, or call the same tool again,
 which repeats nothing`. A mutation's true outcome is always in the ledger and the hands row.
