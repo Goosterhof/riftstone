@@ -951,9 +951,18 @@ impl Desk {
             .ok_or_else(|| RiftError::pawn(PawnReason::NotHere, "Tamsin is not here."))
     }
 
-    pub fn write(&self, data: &str) -> Result<(), RiftError> {
-        self.here()?
-            .write(data.as_bytes())
+    /// Keystrokes for the summoning the window was showing. A run that is
+    /// not the live one gets nothing: its keys never reach a later pawn (the
+    /// Heretic's WR8).
+    pub fn write(&self, run_id: &str, data: &str) -> Result<(), RiftError> {
+        let pawn = self.here()?;
+        if pawn.run_id() != run_id {
+            return Err(RiftError::pawn(
+                PawnReason::NotHere,
+                "That summoning is over, so its keystrokes were not sent.",
+            ));
+        }
+        pawn.write(data.as_bytes())
             .map_err(|err| RiftError::io("could not reach Tamsin's terminal", err))
     }
 

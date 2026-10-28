@@ -19,7 +19,8 @@ import { asRiftFailure } from "@/services/rift";
 export interface WorkshopBackend {
   getWorkshop(): Promise<WorkshopView>;
   summonPawn(cols: number, rows: number): Promise<void>;
-  pawnWrite(data: string): Promise<void>;
+  /** Keystrokes for the summoning `runId`; the stone refuses them for any other. */
+  pawnWrite(runId: string, data: string): Promise<void>;
   pawnResize(cols: number, rows: number): Promise<void>;
   departPawn(): Promise<void>;
   answerPawnPlay(runId: string, heldRequestId: string, accept: boolean): Promise<PlayAnswered>;
@@ -49,7 +50,7 @@ async function tauriWorkshop(): Promise<WorkshopBackend> {
   return {
     getWorkshop: () => invoke("get_workshop"),
     summonPawn: (cols, rows) => invoke("summon_pawn", { cols, rows }),
-    pawnWrite: (data) => invoke("pawn_write", { data }),
+    pawnWrite: (runId, data) => invoke("pawn_write", { runId, data }),
     pawnResize: (cols, rows) => invoke("pawn_resize", { cols, rows }),
     departPawn: () => invoke("depart_pawn"),
     answerPawnPlay: (runId, heldRequestId, accept) => invoke("answer_pawn_play", { runId, heldRequestId, accept }),

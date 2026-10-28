@@ -439,9 +439,12 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
       });
       return Promise.resolve();
     },
-    pawnWrite: (data) => {
-      call("pawn_write", data);
+    pawnWrite: (run, data) => {
+      call("pawn_write", run, data);
       if (pawn.state !== "here") return Promise.reject(pawnRefused("notHere", "No pawn is here."));
+      if (pawn.runId !== run) {
+        return Promise.reject(pawnRefused("notHere", "That summoning is over, so its keystrokes were not sent."));
+      }
       // A local echo, as the TUI would draw it; Enter gets one plain line back.
       if (data === "\r") controls.emitOutput("\r\n  Understood. Rebuilding.\r\n\r\n> ");
       else controls.emitOutput(data);

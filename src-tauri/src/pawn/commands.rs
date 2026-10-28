@@ -234,9 +234,10 @@ pub async fn summon_pawn(
 pub async fn pawn_write(
     spine: Spine<'_>,
     desk: DeskState<'_>,
+    run_id: String,
     data: String,
 ) -> Result<(), RiftError> {
-    with_desk(&spine, &desk, move |_, desk| desk.write(&data)).await
+    with_desk(&spine, &desk, move |_, desk| desk.write(&run_id, &data)).await
 }
 
 #[tauri::command]

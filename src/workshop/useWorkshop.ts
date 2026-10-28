@@ -211,21 +211,32 @@ let pendingWrites: { run: string; data: string }[] = [];
 
 async function write(data: string): Promise<void> {
   const run = runId.value;
-  if (pawn.value?.state === "summoning" && run) {
+  if (!run) return;
+  if (pawn.value?.state === "summoning") {
     pendingWrites.push({ run, data });
     return;
   }
   if (!here.value) return;
-  await (await workshop()).pawnWrite(data).catch(() => undefined);
+  // The stone sends them only to this run, whatever is live by then.
+  await (await workshop()).pawnWrite(run, data).catch(() => undefined);
 }
 
-/** The run is here: what its terminal said while it was summoned goes now, in order. */
+/** Is `run` the run on show, and here? */
+function hereNow(run: string): boolean {
+  return runId.value === run && here.value;
+}
+
+/** The run is here: what its terminal said while it was summoned goes now, in
+ *  order, each send re-checked against the run on show (the Heretic's WR8). */
 async function flushPendingWrites(run: string): Promise<void> {
   const mine = pendingWrites.filter((w) => w.run === run);
   pendingWrites = [];
   if (!mine.length) return;
   const backend = await workshop();
-  for (const w of mine) await backend.pawnWrite(w.data).catch(() => undefined);
+  for (const w of mine) {
+    if (!hereNow(run)) return;
+    await backend.pawnWrite(run, w.data).catch(() => undefined);
+  }
 }
 
 async function resize(cols: number, rows: number): Promise<void> {

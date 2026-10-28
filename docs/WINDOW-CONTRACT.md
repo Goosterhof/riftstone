@@ -1021,7 +1021,7 @@ Types live in `src/types/workshop.ts`. Design: #00015 §20.
 |---|---|---|---|
 | `get_workshop` | — | `WorkshopView` | The folder (made or not yet), the built artifacts with the stone's digests, the pawn's state, the fence and the voice. The fence is judged against the ground now, which costs one `wsl.exe` survey; the window calls it on entering the room and on `rift://workshop-changed`. |
 | `summon_pawn` | `cols: number, rows: number` | `void` | Makes the workshop folder, the mailbox and Tamsin's config dir on first use, writes the relay, settings and persona for the current voice, and starts the PTY. Refuses `pawn` `alreadyHere`, `breached` or `noFence` (the missing piece named: the WSL distro, `bwrap`, `socat`, or `claude` in that distro). Output arrives as `rift://pawn-output`. |
-| `pawn_write` | `data: string` | `void` | Keystrokes and pastes, UTF-8, to the PTY. Refuses `notHere`. |
+| `pawn_write` | `runId: string, data: string` | `void` | Keystrokes and pastes, UTF-8, to the PTY of the summoning `runId`. Refuses `notHere` when no pawn is here or `runId` is not the live summoning, so a key typed for one run never reaches the next. |
 | `pawn_resize` | `cols: number, rows: number` | `void` | Called on fit; ignored when no pawn is here. |
 | `depart_pawn` | — | `void` | Ends the session: SIGTERM to the fence, then a kill after 3 s. A held Play is dropped. The pawn's installs stay (see `plan_put_back`). |
 | `answer_pawn_play` | `runId: string, heldRequestId: string, accept: boolean` | `{ decision: "played" \| "declined", persisted: boolean }` | The held Play request the window was shown, by its run and id. `true` runs `plan_launch` and `launch_game` exactly as the Play slab does, with the same warnings and refusals. `played` is recorded only once `launch_game` has started the launch: `DD2.exe` started, or Steam accepted the request. Whether the game then came up is the game watcher's to say, never this decision's (the Heretic's WD6). `persisted: false` says the decision stands but did not reach the run's ledger on disk; the window says so (WD5). A refusal, a failure or a cancel at a warning records nothing, and the request stays waiting with the refusal shown. `false` records `declined`. The decision reaches Tamsin through her next `list_installed` or a new `play` call (BUILD-SPEC § v0.7, *The held Play's decision*), and the held call's own answer stays `held`. Refuses `nothingHeld`, and `staleHeld` when the run and id are not the live run's waiting request, both when the press arrives and right before the game starts. |
@@ -1129,7 +1129,8 @@ the investor's own and may be shown.
   reply, including its answer to ConPTY's first cursor query, and ConPTY holds all later output
   behind that answer. What the terminal says before the run is `here` (the only state in which
   the stone accepts `pawn_write`) is held, sent in order once the run is here, and dropped if
-  the run never arrives.
+  the run never arrives. Each send names its run and is checked again before it goes, so a drain
+  under way stops when another run is on show.
 - A Play press answers the request that was waiting at the click: if another took its place
   while §16.2's plan was read, nothing is answered and the room says so. The decision reads
   `The stone started the launch.`; whether the game runs is the watcher's line, apart.

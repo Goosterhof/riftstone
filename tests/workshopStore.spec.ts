@@ -271,8 +271,8 @@ describe("the Heretic's review of the room (PR #11)", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await flushPromises();
     expect(w.pawn.value?.state).toBe("here");
-    const writes = mock.controls.calls.filter((c) => c.cmd === "pawn_write").map((c) => c.args[0]);
-    expect(writes).toStrictEqual(["\x1b[1;1R"]);
+    const writes = mock.controls.calls.filter((c) => c.cmd === "pawn_write").map((c) => c.args);
+    expect(writes).toStrictEqual([["run-mock-1", "\x1b[1;1R"]]);
   });
 
   it("should drop what a summoned run's terminal said when that run never arrives", async () => {
@@ -283,5 +283,34 @@ describe("the Heretic's review of the room (PR #11)", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await flushPromises();
     expect(mock.controls.calls.filter((c) => c.cmd === "pawn_write")).toStrictEqual([]);
+  });
+
+  /** The Heretic's WR8: a drain already sending survives no change of run. */
+  it("should stop sending a summoned run's words the moment another run is on show, and name the run on each", async () => {
+    const w = await bench();
+    await w.summon(80, 24);
+    await w.write("\x1b[1;1R");
+    await w.write("old run input");
+    const sent: unknown[][] = [];
+    let release: () => void = ignore;
+    setWorkshopBackend({
+      ...mock,
+      pawnWrite: (run: string, data: string) => {
+        sent.push([run, data]);
+        return new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      },
+    });
+    const state = (run: string, s: "summoning" | "here") =>
+      mock.controls.emitRawState({ runId: run, state: s, since: null, exitCode: null, host: null, held: null });
+    state("run-mock-1", "here");
+    await flushPromises();
+    expect(sent).toStrictEqual([["run-mock-1", "\x1b[1;1R"]]);
+    state("run-b", "here");
+    release();
+    await flushPromises();
+    expect(sent).toStrictEqual([["run-mock-1", "\x1b[1;1R"]]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 });
