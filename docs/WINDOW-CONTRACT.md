@@ -1032,10 +1032,14 @@ Types live in `src/types/workshop.ts`. Design: #00015 §20.
 | `plan_put_back` | `runId: string` | `PutBackPlan` | The Gift, narrowed (BUILD-SPEC § v0.7, the run ledger). `remove`: that run's own installs still installed and unchanged, newest first, as THE RETURN's plans. `review`: what that run uninstalled that was not its own, each with its Undo when the journal still allows it. It never claims to restore the world as it was. |
 | `put_back` | `runId: string, installIds: string[]` | `UninstallResultView[]` | Uninstalls exactly the `remove` items named, newest first, each through the journal. An id that is not that run's own still-installed install is refused, not skipped. `review` items are never acted on here. |
 | `open_workshop_folder` | — | `void` | Explorer, Rust-side. |
-| `set_pawn_voice` | `voice: "full" \| "sparing" \| "plain"` | `void` | Saved in settings; takes effect at the next summon (the window says so while a pawn is here). |
+| `set_pawn_voice` | `voice: "full" \| "sparing" \| "plain"` | `void` | Saved in `pawn.json`; takes effect at the next summon (the window says so while a pawn is here). |
+| `set_pawn_inputs` | `inputs: string[]` | `void` | Saved in `pawn.json` after each folder passes the protected-root check (below); refuses `pawn` `inputRefused`, naming the root, and saves nothing. |
 
-`get_settings` / `set_settings` gain `pawnInputs: string[]`: Windows folders mounted read-only at
-`/inputs/<n>` (for example a pinned vanilla extract). On set, and again at every summon, the stone
+The pawn's own settings live in the stone's app data as `pawn.json` (the voice, the inputs, the
+distro), never in `get_settings` / `set_settings`, so the public `Settings` carries nothing of the
+pawn (RS-10; ruled with the Heretic's review of PR #9). `set_pawn_inputs(inputs: string[])` sets the
+Windows folders mounted read-only at `/inputs/<n>` (for example a pinned vanilla extract), and
+`get_workshop` returns them. On set, and again at every summon, the stone
 resolves each folder's final path and refuses any that **overlaps a protected root in either
 direction** (BUILD-SPEC § v0.7, RS-9.2): Steam, the game, the mods folder and its siblings, the
 stone's app data, the investor's profile and `.claude`, and save-backup destinations. The refusal
@@ -1088,7 +1092,8 @@ the investor's own and may be shown.
   `FenceStep` is `{ step, expected: "land" | "notLand" | "fail" | "succeed", observed, ok }`.
 - `BringThroughPlan`: `{ artifact, bytes, sha256, landsAs: string, receipt: ReceiptView | null,
   conflict: "none" | "alreadyHad" | "nameTaken" }`.
-- `BringThroughResult`: `{ outcome: "landed" | "alreadyHad", packageId: string }`.
+- `BringThroughResult`: `{ outcome: "landed" | "alreadyHad" }`. The landed zip is named as a
+  package by the scan the press requests; the window reads it from `rift://library-changed`.
 - `PutBackPlan`: `{ runId, remove: UninstallPlanView[], review: { installId, optionId, name,
   at, undo: "available" | "reinstallFromRift", known: "yours" | "anotherSummoning" | "uncertain"
   }[], sentence }`. `known` is what the ledger can say: done and the player's, done and another
