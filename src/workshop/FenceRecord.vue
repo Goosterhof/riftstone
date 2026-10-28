@@ -1,12 +1,13 @@
 <script setup lang="ts">
 // R20.13 with the contract's FenceView — the probe record under the head. It
 // pushes the hollow down, never covers it. The record is the stone's: this
-// fold renders it and adds nothing (Pattern 013). The control is the first
-// step and must have landed before any refusal below it counts.
+// fold renders it and adds nothing (Pattern 013). The control comes first
+// and must have landed before any refusal below it counts; each row then
+// carries the stone's verdict: held, breached, or could not show.
 import { computed } from "vue";
 import type { FenceView } from "@/types/workshop";
 import RiftButton from "@/components/RiftButton.vue";
-import { CHIP_WORD, EXPECT_WORD, PAWN_NAME, PROBE_HELD_BACK, stamp } from "./words";
+import { CHIP_WORD, EXPECT_WORD, PAWN_NAME, PROBE_HELD_BACK, STEP_WORD, VERDICT_MARK, stamp } from "./words";
 
 const {
   fence,
@@ -33,7 +34,7 @@ const ground = computed(() => {
   ];
   return parts.join(" · ");
 });
-const control = computed(() => fence.steps.at(0) ?? null);
+const control = computed(() => fence.control);
 const noRecord = computed(() => fence.chip === "unprobed" && !fence.ground && fence.steps.length === 0);
 </script>
 
@@ -46,18 +47,24 @@ const noRecord = computed(() => fence.chip === "unprobed" && !fence.ground && fe
     </p>
     <p v-if="noRecord" class="fence__line">No probe record matches this host. The stone claims nothing.</p>
     <p v-if="fence.changed" class="fence__line fence__line--warn">{{ fence.changed }}</p>
-    <p v-if="control && !control.ok" class="fence__line fence__line--ember">
+    <p v-if="control === false" class="fence__line fence__line--ember">
       The control did not succeed, so the refusals below prove nothing.
     </p>
     <ol v-if="fence.steps.length" class="fence__steps rs-mono">
+      <li class="fence__step is-control" :class="{ 'is-broken': control === false }">
+        <span class="fence__mark" :aria-label="control ? 'held' : 'did not land'">{{ control ? "✓" : "✕" }}</span>
+        <span class="fence__what">control: write in the workshop</span>
+        <span class="fence__expect">{{ EXPECT_WORD.land }}</span>
+        <span class="fence__seen">{{ control ? "landed" : "did not land" }}</span>
+      </li>
       <li
-        v-for="(s, i) in fence.steps"
-        :key="i"
+        v-for="s in fence.steps"
+        :key="s.step"
         class="fence__step"
-        :class="{ 'is-broken': !s.ok, 'is-control': i === 0 }"
+        :class="{ 'is-broken': s.verdict === 'breached', 'is-open': s.verdict === 'inconclusive' }"
       >
-        <span class="fence__mark" :aria-label="s.ok ? 'held' : 'did not hold'">{{ s.ok ? "✓" : "✕" }}</span>
-        <span class="fence__what">{{ s.step }}</span>
+        <span class="fence__mark" :aria-label="VERDICT_MARK[s.verdict].word">{{ VERDICT_MARK[s.verdict].mark }}</span>
+        <span class="fence__what">{{ STEP_WORD[s.step] ?? s.step }}</span>
         <span class="fence__expect">{{ EXPECT_WORD[s.expected] }}</span>
         <span class="fence__seen">{{ s.observed }}</span>
       </li>
@@ -146,6 +153,9 @@ const noRecord = computed(() => fence.chip === "unprobed" && !fence.ground && fe
   padding-bottom: var(--rs-space-1);
   border-bottom: 1px solid var(--rs-edge);
   margin-bottom: 2px;
+}
+.fence__step.is-open > span {
+  color: var(--rs-faint);
 }
 .fence__step.is-broken > span {
   color: var(--rs-ember);

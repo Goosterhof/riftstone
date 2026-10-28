@@ -208,12 +208,11 @@ defineExpose({ focusSearch: () => well.value?.focus() });
         @click="nav.go(n.id)"
       >
         <span class="navlink__words"
-          ><span
-            >{{ n.label
-            }}<span v-if="suffixOf(n.id)" class="navlink__suffix" :class="`is-${suffixOf(n.id)?.tone}`">{{
-              ` · ${suffixOf(n.id)?.text}`
-            }}</span></span
-          ><span class="navlink__hint">{{ n.hint }}</span></span
+          ><span>{{ n.label }}</span
+          ><span v-if="suffixOf(n.id)" class="navlink__hint navlink__suffix" :class="`is-${suffixOf(n.id)?.tone}`">{{
+            suffixOf(n.id)?.text
+          }}</span
+          ><span v-else class="navlink__hint">{{ n.hint }}</span></span
         >
         <span class="navlink__meta">
           <span v-if="navCount[n.id]" class="navlink__n" :class="{ 'is-update': n.id === 'nexus' }">{{
@@ -439,10 +438,10 @@ defineExpose({ focusSearch: () => well.value?.focus() });
 .navlink__words {
   min-width: 0;
 }
-/* R20.1: a place, not a pulse — `· HERE` in rift, `· ASKS` in warn. */
+/* R20.1: a place, not a pulse. It takes the hint's line, so the row never
+   wraps at the 248 px pillar: rift while the pawn is here, warn when she asks. */
 .navlink__suffix {
-  font: 400 12px / 1 var(--rs-font-mono);
-  letter-spacing: 0;
+  font-family: var(--rs-font-mono);
 }
 .navlink__suffix.is-rift {
   color: var(--rs-rift);

@@ -1,9 +1,10 @@
 // THE WORKSHOP's mock: the fifteen commands and four events over an invented
 // workshop, in memory, on real timers. It never fetches and never names a real
 // mod. The scenario comes from the page's query string, `?workshop=<name>`:
-//   contained (default) | unprobed | stale | breached | nofence | first |
+//   contained (default) | unprobed | stale | inconclusive | breached | nofence | first |
 //   departed | torn | unpersisted | nametaken
-// - unprobed: no probe record; stale: a record proved on another claude.
+// - unprobed: no probe record; stale: a record proved on another claude;
+//   inconclusive: a whole record whose step 3 could not show its refusal.
 // - breached: the last probe reached a place the fence should close; summoning refuses.
 // - nofence: the host survey finds no socat in the distro; summoning refuses.
 // - first: the workshop folder is not made yet and nothing is built.
@@ -37,6 +38,7 @@ export type WorkshopScenario =
   | "contained"
   | "unprobed"
   | "stale"
+  | "inconclusive"
   | "breached"
   | "nofence"
   | "first"
@@ -49,6 +51,7 @@ const SCENARIOS: readonly WorkshopScenario[] = [
   "contained",
   "unprobed",
   "stale",
+  "inconclusive",
   "breached",
   "nofence",
   "first",
@@ -123,46 +126,76 @@ function digestOf(seed: string): string {
   return out.slice(0, 64);
 }
 
+/** The rows as the spine sends them: ids "1"–"12", then the broker checks. */
 const STEPS: { step: string; expected: FenceStep["expected"]; observed: string }[] = [
-  { step: "control: write in the workshop", expected: "land", observed: "landed" },
-  { step: "write into the mods folder", expected: "notLand", observed: "did not land: Directory nonexistent" },
-  { step: "write into the game folder", expected: "notLand", observed: "did not land: Directory nonexistent" },
-  { step: "list Steam's userdata", expected: "fail", observed: "refused: No such file or directory" },
-  { step: "read the stone's canary", expected: "fail", observed: "refused: No such file or directory" },
-  { step: "write into the investor's .claude", expected: "notLand", observed: "did not land: Directory nonexistent" },
-  { step: "run a planted cmd.exe", expected: "notLand", observed: "did not land: not found" },
-  { step: "run the real cmd.exe", expected: "notLand", observed: "did not land: not found" },
-  { step: "claude --version", expected: "succeed", observed: "answered: 2.1.312 (Claude Code)" },
-  { step: "read the canary through a junction", expected: "fail", observed: "refused: No such file or directory" },
   {
-    step: "read the stone's secret from the environment",
-    expected: "fail",
-    observed: "the environment carried no secret",
+    step: "1",
+    expected: "notLand",
+    observed: "refused: /bin/sh: 1: cannot create …/mods/probe.txt: Directory nonexistent",
   },
-  { step: "link and write in answers/", expected: "fail", observed: "refused: Read-only file system" },
-  { step: "inject keystrokes (TIOCSTI)", expected: "fail", observed: "refused: Operation not permitted" },
+  {
+    step: "2",
+    expected: "notLand",
+    observed: "refused: /bin/sh: 1: cannot create …/Dragons Dogma 2/probe.txt: Read-only file system",
+  },
+  { step: "3", expected: "fail", observed: "refused: ls: cannot access '…/Steam/userdata': No such file or directory" },
+  { step: "4", expected: "fail", observed: "refused: cat: …/probe-canary.txt: No such file or directory" },
+  {
+    step: "5",
+    expected: "notLand",
+    observed: "refused: /bin/sh: 1: cannot create …/.claude/riftstone-probe: Directory nonexistent",
+  },
+  { step: "6", expected: "notLand", observed: "could not run: /bin/sh: 1: ./probe/planted.exe: not found" },
+  { step: "7", expected: "notLand", observed: "could not run: /bin/sh: 1: /mnt/c/Windows/System32/cmd.exe: not found" },
+  { step: "8", expected: "succeed", observed: "answered: 2.1.312 (Claude Code)" },
+  {
+    step: "9",
+    expected: "fail",
+    observed: "refused: cat: /inputs/probe/link/probe-canary.txt: No such file or directory",
+  },
+  { step: "10", expected: "fail", observed: "the environment carried no secret" },
+  {
+    step: "11",
+    expected: "fail",
+    observed: "refused: ln: failed to create symbolic link '/stone/mailbox/answers/x.json': Read-only file system",
+  },
+  { step: "12", expected: "fail", observed: "refused: EPERM" },
+  { step: "B1", expected: "fail", observed: "refused: the WSL symlink and the junction, both unread" },
+  { step: "B2", expected: "fail", observed: "refused: the bad name unparsed, 64 KiB + 1 unread" },
 ];
 
 function fenceFor(chip: Chip, scenario: WorkshopScenario): FenceView {
-  if (chip === "unprobed" && scenario !== "stale") {
-    return { chip, ground: null, provedAt: null, steps: [], changed: null };
+  if (chip === "unprobed" && scenario !== "stale" && scenario !== "inconclusive") {
+    return { chip, control: null, ground: null, provedAt: null, steps: [], changed: null };
   }
-  const steps = STEPS.map((s) => ({ ...s, ok: true }));
+  const steps: FenceStep[] = STEPS.map((s) => ({ ...s, ok: true, verdict: "held" }));
+  let changed: string | null = null;
   if (chip === "breached") {
-    steps[2] = { ...steps[2], observed: "landed: the file is on disk", ok: false };
+    steps[1] = { ...steps[1], observed: "LANDED outside the workshop", ok: false, verdict: "breached" };
   }
+  if (scenario === "inconclusive") {
+    steps[2] = {
+      ...steps[2],
+      observed: "could not show: the stone knows no Steam userdata with anything in it here",
+      ok: false,
+      verdict: "inconclusive",
+    };
+    changed = "the last probe could not show step 3";
+  }
+  if (scenario === "stale") changed = "proved on claude 2.1.298; this is 2.1.312";
   return {
     chip,
+    control: true,
     ground: scenario === "stale" ? { ...GROUND, claudeVersion: "2.1.298" } : GROUND,
     provedAt: "2026-10-28T21:02:00Z",
     steps,
-    changed: scenario === "stale" ? "proved on claude 2.1.298; this is 2.1.312" : null,
+    changed,
   };
 }
 
 function initialChip(scenario: WorkshopScenario): Chip {
   if (scenario === "breached") return "breached";
-  if (scenario === "unprobed" || scenario === "stale") return "unprobed";
+  if (scenario === "unprobed" || scenario === "stale" || scenario === "inconclusive") return "unprobed";
   return "contained";
 }
 

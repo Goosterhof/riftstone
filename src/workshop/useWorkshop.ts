@@ -252,9 +252,20 @@ async function bring(plan: BringThroughPlan): Promise<"landed" | "alreadyHad" | 
   const result = await attempt(async () => (await workshop()).bringThrough(plan.artifact, plan.sha256));
   if (result) {
     await load();
-    await (await rift()).rescan().catch(() => undefined);
+    // The scan the press requests names the landed zip as a package; the card
+    // does not wait on it (the window reads it from rift://library-changed).
+    void rescanQuietly();
   }
   return result?.outcome ?? null;
+}
+
+/** Ask for a rescan and let it run; its answer arrives as rift://library-changed. */
+async function rescanQuietly(): Promise<void> {
+  try {
+    await (await rift()).rescan();
+  } catch {
+    // A scan that fails says so through the stone's own events.
+  }
 }
 
 async function planPutBack(): Promise<PutBackPlan | null> {

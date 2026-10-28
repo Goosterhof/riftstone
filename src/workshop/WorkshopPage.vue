@@ -15,7 +15,7 @@ import PutBackBlock from "./PutBackBlock.vue";
 import WorkshopBench from "./WorkshopBench.vue";
 import WorkshopHollow from "./WorkshopHollow.vue";
 import { useWorkshop } from "./useWorkshop";
-import { CHIP_WORD, PAWN_NAME, clock } from "./words";
+import { CHIP_WORD, PAWN_NAME, STEP_WORD, clock } from "./words";
 
 const w = useWorkshop();
 const nav = useNavigation();
@@ -65,7 +65,11 @@ const nameLine = computed(() => {
 });
 
 /** The steps the last probe saw the fence fail, as the record says them. */
-const broken = computed(() => (fence.value?.steps ?? []).filter((s) => !s.ok));
+const broken = computed(() =>
+  (fence.value?.steps ?? [])
+    .filter((s) => s.verdict === "breached")
+    .map((s) => `${STEP_WORD[s.step] ?? s.step} (${s.observed})`),
+);
 
 const sliverMarks = computed(() => ({
   built: w.view.value?.artifacts.length ?? 0,
@@ -260,7 +264,7 @@ onBeforeUnmount(() => {
             <p class="ws-stone__carved ws-stone__carved--ember rs-inscription">THE FENCE DID NOT HOLD</p>
             <p class="ws-stone__body">
               The last probe reached a place the fence should close<template v-if="broken.length"
-                >: {{ broken.map((s) => `${s.step} (${s.observed})`).join("; ") }}</template
+                >: {{ broken.join("; ") }}</template
               >. The stone won't summon a pawn until a probe holds.
             </p>
             <div class="ws-stone__doors">

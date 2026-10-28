@@ -8,7 +8,7 @@
 import { shallowRef, type Component, type Ref } from "vue";
 import type { Page } from "./useNavigation";
 
-/** A carved suffix on the room's nav row while it holds something (R20.1). */
+/** The line under the room's name while it holds something, in place of its hint (R20.1). */
 export interface RoomSuffix {
   text: string;
   tone: "rift" | "warn";

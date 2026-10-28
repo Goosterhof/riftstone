@@ -137,6 +137,8 @@ struct Prepared {
 #[serde(rename_all = "camelCase")]
 pub struct FenceView {
     pub chip: &'static str,
+    /// Whether the record's control landed; `None` without a record.
+    pub control: Option<bool>,
     pub ground: Option<Ground>,
     pub proved_at: Option<String>,
     pub steps: Vec<FenceStepView>,
@@ -1130,6 +1132,7 @@ fn view_of(
     };
     FenceView {
         chip,
+        control: record.as_ref().map(|r| r.control),
         ground: record.as_ref().map(|r| r.ground.clone()),
         proved_at: record.as_ref().map(|r| r.proved_at.clone()),
         steps: record

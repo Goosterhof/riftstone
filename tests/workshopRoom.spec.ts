@@ -259,3 +259,24 @@ describe("the terminal's colours", () => {
     expect(TERMINAL_THEME.selectionForeground).toBe(rs.text);
   });
 });
+
+describe("the fence's record", () => {
+  it("should show each row's verdict, a row that could not show its refusal apart from a breach, and the control first", async () => {
+    const w = await room("inconclusive");
+    expect(w.find(".ws-chip").text()).toContain("UNPROBED");
+    await w.find("[aria-controls='ws-fence-record']").trigger("click");
+    await settle();
+    const rows = w.findAll(".fence__step");
+    expect(rows).toHaveLength(15);
+    expect(rows[0]?.text()).toContain("control: write in the workshop");
+    expect(rows[0]?.text()).toContain("✓");
+    const three = rows[3];
+    expect(three?.text()).toContain("list Steam's userdata");
+    expect(three?.find(".fence__mark").text()).toBe("?");
+    expect(three?.find(".fence__mark").attributes("aria-label")).toBe("could not show");
+    expect(three?.classes()).toContain("is-open");
+    expect(three?.classes()).not.toContain("is-broken");
+    expect(rows[14]?.text()).toContain("broker: a bad name, 64 KiB + 1");
+    expect(w.text()).toContain("the last probe could not show step 3");
+  });
+});

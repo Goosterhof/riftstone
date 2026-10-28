@@ -57,15 +57,23 @@ export interface Ground {
   digest: string;
 }
 
+export type StepVerdict = "held" | "breached" | "inconclusive";
+
+/** One row of the record: steps "1"–"12", then the broker checks "B1" and "B2". */
 export interface FenceStep {
   step: string;
   expected: StepExpect;
   observed: string;
+  /** `verdict === "held"`. */
   ok: boolean;
+  /** held: the stone saw the refusal; breached: something crossed; inconclusive: it showed neither. */
+  verdict: StepVerdict;
 }
 
 export interface FenceView {
   chip: Chip;
+  /** Whether the record's control landed; null without a record. */
+  control: boolean | null;
   ground: Ground | null;
   provedAt: string | null;
   steps: FenceStep[];

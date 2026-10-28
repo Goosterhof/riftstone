@@ -11,8 +11,8 @@ export function workshopRoom(): ExtraRoom {
   const w = useWorkshop();
   void w.subscribe().then(() => w.load());
   const suffix = computed<RoomSuffix | null>(() => {
-    if (w.held.value) return { text: "ASKS", tone: "warn" };
-    if (w.here.value) return { text: "HERE", tone: "rift" };
+    if (w.held.value) return { text: "Tamsin asks to play", tone: "warn" };
+    if (w.here.value) return { text: "Tamsin is here", tone: "rift" };
     return null;
   });
   return {

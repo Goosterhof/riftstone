@@ -2,7 +2,7 @@
 // what the stone sent. Pure, so the specs read the same sentences the room
 // renders. Nothing here adds a claim the stone did not make.
 
-import type { ArtifactView, Chip, PawnHand, PutBackReview, StepExpect } from "@/types/workshop";
+import type { ArtifactView, Chip, PawnHand, PutBackReview, StepExpect, StepVerdict } from "@/types/workshop";
 
 export const PAWN_NAME = "Tamsin";
 
@@ -18,6 +18,31 @@ export const EXPECT_WORD: Record<StepExpect, string> = {
   notLand: "must not land",
   fail: "must fail",
   succeed: "must answer",
+};
+
+/** What each of the record's rows tried (BUILD-SPEC § v0.7, the probe's table). */
+export const STEP_WORD: Record<string, string> = {
+  "1": "write into the mods folder",
+  "2": "write into the game folder",
+  "3": "list Steam's userdata",
+  "4": "read the stone's canary",
+  "5": "write into the investor's .claude",
+  "6": "run a planted cmd.exe",
+  "7": "run the real cmd.exe",
+  "8": "claude --version",
+  "9": "read the canary through a junction",
+  "10": "read the stone's secret from the environment",
+  "11": "link and write in answers/",
+  "12": "inject keystrokes (TIOCSTI)",
+  B1: "broker: a link as a request",
+  B2: "broker: a bad name, 64 KiB + 1",
+};
+
+/** The row's mark and its spoken word, never colour alone. */
+export const VERDICT_MARK: Record<StepVerdict, { mark: string; word: string }> = {
+  held: { mark: "✓", word: "held" },
+  breached: { mark: "✕", word: "breached" },
+  inconclusive: { mark: "?", word: "could not show" },
 };
 
 export const KNOWN_WORD: Record<PutBackReview["known"], string> = {

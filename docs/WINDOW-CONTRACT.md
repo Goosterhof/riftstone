@@ -1087,8 +1087,10 @@ the investor's own and may be shown.
   ledger could not be written), summary,
   installId: string | null, refusal: string | null }`. `summary` is the row's text
   (`installed Stature 0.2.0 · 7 files`). `refusal` is the stone's own sentence, verbatim.
-- `FenceView`: `{ chip: "contained" | "unprobed" | "breached", ground: { distro, claudeVersion,
-  kernel, digest } | null, provedAt: string | null, steps: FenceStep[], changed: string | null }`.
+- `FenceView`: `{ chip: "contained" | "unprobed" | "breached", control: boolean | null, ground: {
+  distro, claudeVersion, kernel, digest } | null, provedAt: string | null, steps: FenceStep[],
+  changed: string | null }`. `control` is whether the record's control landed (null without a
+  record); the window shows it first, before any refusal.
   `changed` is the sentence for a record that does not make the chip `contained`: one proved on
   another ground (`proved on claude 2.1.312; this is 2.1.320`), one that could not show a row
   (`the last probe could not show step 3`), one from an earlier probe, or a host the stone could
@@ -1096,18 +1098,37 @@ the investor's own and may be shown.
   `FenceStep` is `{ step, expected: "land" | "notLand" | "fail" | "succeed", observed, ok,
   verdict: "held" | "breached" | "inconclusive" }`. `steps` lists rows 1–12, then the broker
   checks `B1` and `B2`. `ok` is `verdict === "held"`.
-- `BringThroughPlan`: `{ artifact, bytes, sha256, landsAs: string, receipt: ReceiptView | null,
-  conflict: "none" | "alreadyHad" | "nameTaken" }`.
+- `BringThroughPlan`: `{ artifact, bytes, sha256, landsAs: string, receipt: ReceiptView,
+  conflict: "none" | "alreadyHad" | "nameTaken" }`. A build without a readable, matching receipt
+  has no plan (`bring` `noReceipt` / `receiptMismatch`), so the plan always carries one.
 - `BringThroughResult`: `{ outcome: "landed" | "alreadyHad" }`. The landed zip is named as a
   package by the scan the press requests; the window reads it from `rift://library-changed`.
-- `PutBackPlan`: `{ runId, remove: UninstallPlanView[], review: { installId, optionId, name,
-  at, undo: "available" | "reinstallFromRift", known: "yours" | "anotherSummoning" | "uncertain"
-  }[], sentence }`. `known` is what the ledger can say: done and the player's, done and another
+- `PutBackPlan`: `{ runId, remove: UninstallPlanView[], review: { installId, name, at, undo:
+  "available" | "reinstallFromRift", known: "yours" | "anotherSummoning" | "uncertain" }[],
+  sentence }`. The journal keys an install by its option, so a `remove` item's `optionId` is the
+  install id `put_back` takes. `known` is what the ledger can say: done and the player's, done and another
   summoning's, or `uncertain` (an outcome or owner that was not recorded; the Heretic's WB5).
   `sentence` is the press's own promise and counts each kind in its own words, e.g. *Removes the 3
   installs Tamsin made in this summoning. She also uninstalled 1 of yours. The stone cannot tell
   whether 1 more was uninstalled, or whose it was. They are listed below.*
 - `Voice`: `"full" | "sparing" | "plain"` (default `sparing`).
+
+### The room as built (#00015 §20, rendered at 1320 and 1024)
+
+- The window side lives in `src/workshop/`, imported only by `src/composables/useRooms.ts` under
+  `VITE_RIFT_PAWN === "1"`. The public window holds the registry and nothing else.
+- The nav row's state (R20.1) takes the hint's line, `Tamsin is here` (rift) or `Tamsin asks to
+  play` (warn), instead of a `· HERE` / `· ASKS` suffix after the name. The suffix wrapped the
+  row onto two lines at the 248 px pillar.
+- The terminal at 14 px measured 73 columns at 1320 and 74 at 1024 in headless Chromium, under
+  Q20.3's prediction of about 80. The bench stays 320 until WebView2 is read on the installed
+  build, which Q20.3 names as the settling read.
+- The fence fold shows the control first, then rows 1–12 and B1/B2 by their verdict: `✓` held,
+  `✕` breached (ember), `?` could not show (faint).
+- A bring-through reports `landed` as soon as the stone does. The rescan it requests runs on,
+  and its result arrives as `rift://library-changed`.
+- No per-row Undo and no log viewer in the hands: the contract carries neither. Put back is
+  the undo. `Resume the last conversation` (Q20.8) is not offered, since it is unmeasured.
 
 ### What the window may not do
 
