@@ -10,9 +10,10 @@
 //! a pipe, one byte past 64 KiB) is answered `refused` under its id when the
 //! name is a proper one, so the relay never waits out its 120 s for nothing.
 //!
-//! [`Summoning::depart`] ends it in the contract's order: the pawn's process
-//! is killed (a forced kill after 3 s), the loop stops reading, every call
-//! already taken is finished and answered, and the run retires.
+//! [`Summoning::depart`] ends it in the contract's order: the mailbox stops
+//! taking requests first (only calls already admitted are finished; the
+//! Heretic's WS3), the pawn's process is signalled and, after 3 s, killed,
+//! every admitted call is finished and answered, and the run retires.
 
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
 use crate::pawn::fence::{bwrap_argv, wsl_args, FenceCommand, FencePlan, FenceRefusal};
 use crate::pawn::folder::MailFolder;
@@ -30,6 +31,10 @@ use crate::pawn::mailbox::{request_id_of, Answer, Broker, Handled, Outcome, Reti
 const MAILBOX_POLL: Duration = Duration::from_millis(100);
 /// How long a departing pawn has before a forced kill.
 const DEPART_GRACE: Duration = Duration::from_secs(3);
+/// How long a forced kill is given to take effect before departure returns.
+const KILL_REAP: Duration = Duration::from_secs(2);
+/// How often a finished terminal's process is asked whether it has ended.
+const EXIT_POLL: Duration = Duration::from_millis(50);
 
 /// The process a summoning starts in its PTY.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +89,9 @@ pub struct Summoning {
     writer: Mutex<Box<dyn Write + Send>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     child: SharedChild,
+    /// Signals the process without the child's lock, so a departure is never
+    /// held up by anything else asking after the child (the Heretic's WS1).
+    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     stop: Arc<AtomicBool>,
     mailbox: Mutex<Option<JoinHandle<()>>>,
 }
@@ -143,6 +151,7 @@ pub fn summon(
         .master
         .try_clone_reader()
         .map_err(|err| format!("The stone could not read Tamsin's terminal: {err}."))?;
+    let killer = child.clone_killer();
     let child: SharedChild = Arc::new(Mutex::new(child));
 
     let pump_child = Arc::clone(&child);
@@ -162,12 +171,15 @@ pub fn summon(
         writer: Mutex::new(writer),
         master: Mutex::new(pty.master),
         child,
+        killer: Mutex::new(killer),
         stop,
         mailbox: Mutex::new(Some(mailbox)),
     })
 }
 
-/// Read the terminal until it closes, then report the exit.
+/// Read the terminal until it closes, then report the exit. The exit is
+/// polled, the child's lock taken only for each look, never held through a
+/// blocking wait (WS1): a terminal can close while its process lives on.
 fn pump(mut reader: Box<dyn Read + Send>, child: &SharedChild, watcher: &dyn Watcher) {
     let mut buffer = [0u8; 8192];
     let mut seq = 0u64;
@@ -180,7 +192,14 @@ fn pump(mut reader: Box<dyn Read + Send>, child: &SharedChild, watcher: &dyn Wat
             }
         }
     }
-    let code = lock(child).wait().ok().map(|status| status.exit_code());
+    let code = loop {
+        match lock(child).try_wait() {
+            Ok(Some(status)) => break Some(status.exit_code()),
+            Ok(None) => {}
+            Err(_) => break None,
+        }
+        std::thread::sleep(EXIT_POLL);
+    };
     watcher.ended(code);
 }
 
@@ -227,6 +246,14 @@ fn mailbox_loop(
                         log::warn!("a pawn request was refused unread: {}", refusal.sentence());
                         if let Some(answer) = unread_answer(&name, refusal.sentence()) {
                             write_answer(&answers, &name, &answer);
+                            // Nothing was acted on, so nothing enters the
+                            // ledger; the hands row still shows the refusal.
+                            watcher.hand(&Handled {
+                                answer,
+                                tool: None,
+                                repeated: false,
+                                install_id: None,
+                            });
                         }
                     }
                 }
@@ -276,22 +303,26 @@ impl Summoning {
         matches!(lock(&self.child).try_wait(), Ok(None))
     }
 
-    /// End the summoning: the process is killed (forced after 3 s), the
-    /// mailbox stops reading, every call already taken is finished and
-    /// answered, and the run retires.
+    /// End the summoning: the mailbox stops taking requests (a request
+    /// first seen after this is never acted on; WS3), the process is
+    /// signalled and, after 3 s, killed outright, every call already taken
+    /// is finished and answered, and the run retires.
     pub fn depart(&self) -> Retired {
-        {
-            let mut child = lock(&self.child);
-            let _ = child.kill();
-            let deadline = Instant::now() + DEPART_GRACE;
-            while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            if matches!(child.try_wait(), Ok(None)) {
-                let _ = child.kill();
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = lock(&self.killer).kill();
+        let deadline = Instant::now() + DEPART_GRACE;
+        while self.is_here() && Instant::now() < deadline {
+            std::thread::sleep(EXIT_POLL);
+        }
+        if self.is_here() {
+            // The child's own kill escalates past a signal it ignores; the
+            // departure returns once the process is really gone.
+            let _ = lock(&self.child).kill();
+            let reaped = Instant::now() + KILL_REAP;
+            while self.is_here() && Instant::now() < reaped {
+                std::thread::sleep(EXIT_POLL);
             }
         }
-        self.stop.store(true, Ordering::SeqCst);
         if let Some(mailbox) = lock(&self.mailbox).take() {
             let _ = mailbox.join();
         }
@@ -530,6 +561,76 @@ mod tests {
         assert!(retired.ledger.ended_at.is_some());
         run.ears
             .wait_for("the end", |ears| lock(&ears.ended).is_some());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_terminal_that_closes_while_its_process_lives_never_holds_up_departure() {
+        // The Heretic's WS1: the pump used to hold the child's lock through
+        // a blocking wait once the terminal reached EOF, so depart() waited
+        // for the process to end by itself (30 s here).
+        let run = run();
+        let pawn = start(&run, &sh("exec </dev/null >/dev/null 2>&1; exec sleep 30"));
+        std::thread::sleep(Duration::from_millis(300)); // the pump has seen EOF
+        let began = Instant::now();
+        pawn.depart();
+        assert!(
+            began.elapsed() < Duration::from_secs(6),
+            "{:?}",
+            began.elapsed()
+        );
+        assert!(!pawn.is_here());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_request_first_seen_after_departure_began_is_never_acted_on() {
+        // The Heretic's WS3: admission closes when the departure starts. The
+        // pawn ignores the hang-up (inherited through exec), so the departure
+        // waits out its 3 s grace; a request posted in that window must stay
+        // where it is, unread and unanswered.
+        let run = run();
+        let pawn = Arc::new(start(&run, &sh("trap '' HUP TERM; exec sleep 30")));
+        std::thread::sleep(Duration::from_millis(200));
+        let id = "33333333-2222-4333-8444-555555555555";
+        let request = run.requests.join(format!("{id}.json"));
+        std::thread::scope(|scope| {
+            let leaving = scope.spawn(|| pawn.depart());
+            std::thread::sleep(Duration::from_millis(400));
+            assert!(!leaving.is_finished(), "the grace is still running");
+            let body = serde_json::json!({ "id": id, "tool": "list_installed", "args": {} });
+            std::fs::write(&request, body.to_string()).unwrap();
+            std::thread::sleep(Duration::from_millis(500)); // several mailbox polls
+            leaving.join().unwrap();
+        });
+        assert_eq!(
+            run.errands.listed.load(Ordering::SeqCst),
+            0,
+            "never acted on"
+        );
+        assert!(request.exists(), "never taken");
+        assert!(
+            !run.answers.join(format!("{id}.json")).exists(),
+            "never answered"
+        );
+        assert!(!pawn.is_here(), "the forced kill ended it");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_unread_refusal_is_still_a_hands_row() {
+        let run = run();
+        let pawn = start(&run, &sh("sleep 30"));
+        let id = "44444444-2222-4333-8444-555555555555";
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), run.requests.join(format!("{id}.json")))
+            .unwrap();
+        run.ears
+            .wait_for("the hand", |ears| !lock(&ears.hands).is_empty());
+        let hand = lock(&run.ears.hands)[0].clone();
+        assert_eq!(hand.answer.outcome, Outcome::Refused);
+        assert_eq!(hand.answer.id, id);
+        pawn.depart();
     }
 
     #[test]

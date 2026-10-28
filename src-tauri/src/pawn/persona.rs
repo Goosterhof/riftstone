@@ -305,4 +305,88 @@ mod tests {
         drop(input);
         assert!(relay.wait().unwrap().success());
     }
+
+    /// The Heretic's WS2: a mailbox failure after publication is `unknown`
+    /// and keeps the id, so the retry repeats nothing; a failure before
+    /// publication is a plain refusal. Run on the relay's own Mailbox in
+    /// python3, with its answer read failing once after the post.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_mailbox_failure_after_publication_keeps_the_id() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let root = tempfile::tempdir().unwrap();
+        let mailbox = root.path().join("mailbox");
+        std::fs::create_dir_all(mailbox.join("requests")).unwrap();
+        std::fs::create_dir_all(mailbox.join("answers")).unwrap();
+        let script = root.path().join("relay.py");
+        std::fs::write(&script, RELAY).unwrap();
+        let harness = r#"
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("relay", sys.argv[1])
+relay = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(relay)
+box = relay.Mailbox(sys.argv[2], wait=0.3)
+real = relay.Mailbox.answer
+state = {"fail": True}
+def flaky(self, request_id):
+    if state["fail"] and os.listdir(self.requests):
+        state["fail"] = False
+        raise OSError(5, "Input/output error")
+    return real(self, request_id)
+box.answer = flaky.__get__(box)
+first = box.call("uninstall", {"installId": "a#b"})
+posted = sorted(os.listdir(box.requests))
+request_id = posted[0][:-len(".json")]
+with open(os.path.join(box.answers, request_id + ".json"), "w") as out:
+    out.write(json.dumps({"id": request_id, "outcome": "done", "text": "uninstalled", "data": None}))
+os.remove(os.path.join(box.requests, posted[0]))
+second = box.call("uninstall", {"installId": "a#b"})
+after = sorted(os.listdir(box.requests))
+try:
+    relay.Mailbox(os.path.join(sys.argv[2], "gone"), wait=0.3).call("list_installed", {})
+    before = "answered"
+except OSError:
+    before = "raised"
+print(json.dumps({"first": first, "posted": posted, "second": second, "after": after, "before": before}))
+"#;
+        let mut python = Command::new("python3")
+            .arg("-I")
+            .arg("-")
+            .arg(&script)
+            .arg(&mailbox)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("python3 is on the bench");
+        python
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(harness.as_bytes())
+            .unwrap();
+        let output = python.wait_with_output().unwrap();
+        assert!(output.status.success());
+        let seen: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(seen["first"]["outcome"], "unknown", "{seen}");
+        assert!(seen["first"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("after the request was sent"));
+        assert_eq!(seen["posted"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            seen["second"]["outcome"], "done",
+            "the retry got the stone's answer"
+        );
+        assert_eq!(
+            seen["after"],
+            serde_json::json!([]),
+            "and posted nothing new"
+        );
+        assert_eq!(
+            seen["before"], "raised",
+            "a failure before publication is a refusal"
+        );
+    }
 }

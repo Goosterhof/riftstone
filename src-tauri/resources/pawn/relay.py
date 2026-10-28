@@ -7,9 +7,12 @@ mailbox: an exclusive create of `requests/<uuid>.tmp`, then a rename to
 only here; this relay polls it every 100 ms (inotify does not see Windows-side
 writes to drvfs) for up to 120 s.
 
-A call that timed out is answered `unknown`. Calling the same tool with the same
-arguments again reuses its id, so the stone answers it from its ledger and
-repeats nothing.
+A call that timed out is answered `unknown`. So is one whose mailbox read or
+write failed after the request was published, or while its id was already out
+(the Heretic's WS2): the stone may have it. Calling the same tool with the same
+arguments again reuses that id, so the stone answers it from its ledger and
+repeats nothing. Only a failure proven to come before publication (the rename)
+is `refused`: nothing was asked.
 
 The stone writes this file at summon and mounts it read-only. Run:
     python3 -I relay.py [mailbox] [wait seconds]   (default /stone/mailbox, 120)
@@ -28,6 +31,11 @@ WAIT_SECONDS = 120.0
 TIMEOUT_TEXT = (
     "unknown: the stone may still be doing this. Call list_installed, "
     "or call the same tool again, which repeats nothing."
+)
+TRANSPORT_TEXT = (
+    "unknown: the mailbox failed after the request was sent ({}). The stone may "
+    "still be doing this. Call list_installed, or call the same tool again, which "
+    "repeats nothing."
 )
 
 
@@ -113,6 +121,10 @@ class Mailbox:
     def post(self, request_id, tool, args):
         body = json.dumps({"id": request_id, "tool": tool, "args": args}).encode("utf-8")
         tmp = os.path.join(self.requests, request_id + ".tmp")
+        try:
+            os.unlink(tmp)  # this relay's own half-written try of the same id
+        except FileNotFoundError:
+            pass
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             os.write(fd, body)
@@ -133,14 +145,24 @@ class Mailbox:
 
     def call(self, tool, args):
         key = json.dumps([tool, args], sort_keys=True)
+        # An id already out (an earlier call timed out or failed) may be with
+        # the stone: any failure now leaves the outcome unknown.
+        published = key in self.timed_out
         request_id = self.timed_out.get(key) or str(uuid.uuid4())
-        answered = self.answer(request_id)
-        if answered is None:
-            self.post(request_id, tool, args)
-            deadline = time.monotonic() + self.wait
-            while answered is None and time.monotonic() < deadline:
-                time.sleep(POLL_SECONDS)
-                answered = self.answer(request_id)
+        try:
+            answered = self.answer(request_id)
+            if answered is None:
+                self.post(request_id, tool, args)
+                published = True
+                deadline = time.monotonic() + self.wait
+                while answered is None and time.monotonic() < deadline:
+                    time.sleep(POLL_SECONDS)
+                    answered = self.answer(request_id)
+        except OSError as err:
+            if not published:
+                raise  # before publication: nothing was asked
+            self.timed_out[key] = request_id
+            return {"outcome": "unknown", "text": TRANSPORT_TEXT.format(err), "data": None}
         if answered is None:
             self.timed_out[key] = request_id
             return {"outcome": "unknown", "text": TIMEOUT_TEXT, "data": None}
