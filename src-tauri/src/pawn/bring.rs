@@ -578,6 +578,40 @@ mod tests {
         assert!(mods_names(&bench).is_empty(), "nothing landed");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn a_junctioned_dist_folder_is_refused_and_outside_bytes_never_land() {
+        let bench = bench();
+        let outside = tempfile::tempdir().unwrap();
+        let elsewhere = Bench {
+            _root: tempfile::tempdir().unwrap(),
+            workshop: outside.path().to_path_buf(),
+            mods: bench.mods.clone(),
+        };
+        fs::create_dir_all(outside.path().join("dist")).unwrap();
+        build(&elsewhere, "Outside.zip", b"outside bytes");
+        fs::remove_dir(bench.workshop.join("dist")).unwrap();
+        let made = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(bench.workshop.join("dist"))
+            .arg(outside.path().join("dist"))
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "mklink /J: {made:?}");
+        let refusal = plan_bring_through(&bench.workshop, &bench.mods, "Outside.zip").unwrap_err();
+        assert_eq!(refusal.reason, BringReason::NotInDist);
+        let refusal = bring_through(
+            &bench.workshop,
+            &bench.mods,
+            "Outside.zip",
+            &sha(b"outside bytes"),
+            "b9",
+        )
+        .unwrap_err();
+        assert_eq!(refusal.reason, BringReason::NotInDist);
+        assert!(mods_names(&bench).is_empty(), "nothing landed");
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn a_linked_receipt_is_no_receipt() {
