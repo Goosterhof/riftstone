@@ -2827,10 +2827,14 @@ canary). The record and the raw outputs are the lab's
 - **A plain `bwrap` does not contain a Windows process.** With `/` mounted read-only, and
   again with `--unshare-net`, `cmd.exe /c "echo x > …\outside\netns.txt"` **wrote the file**:
   WSL interop runs the `.exe` as a Windows process outside every Linux namespace.
-- **An 11-instruction seccomp filter closes interop and leaves the network open.** It refuses
-  `socket(AF_VSOCK, …)` (and any non-x86_64 or x32 syscall) with `EPERM`. Under it, `cmd.exe`
-  fails with `UtilBindVsockAnyPort: socket failed 1`, and a TCP connection to
-  `api.anthropic.com:443` still opens.
+- **A seccomp filter closes interop and leaves the network open.** The first version (11
+  instructions) refuses `socket(AF_VSOCK, …)` (and any non-x86_64 or x32 syscall) with `EPERM`.
+  Under it, `cmd.exe` fails with `UtilBindVsockAnyPort: socket failed 1`, and a TCP connection to
+  `api.anthropic.com:443` still opens. **The contract's filter is 15 instructions:** the same,
+  plus `ioctl(fd, TIOCSTI, …)` refused with `EPERM` (measured: refused under the filter, while
+  `TIOCGWINSZ` works, TCP opens and `cmd.exe` is still refused). The homestation's kernel already
+  refuses `TIOCSTI` on its own (`dev.tty.legacy_tiocsti = 0`, `EIO`). The filter does not rely
+  on that.
 - **The whole-process fence holds every channel.** `claude` itself was launched inside a `bwrap`
   that mounts an allowlist (`/usr` and its links, `/etc`, WSL's `resolv.conf`, Claude Code's
   own binary, a tmpfs home, the workshop read-write), with `--remount-ro /` and the filter above.
@@ -2876,18 +2880,33 @@ what it holds.** Rules, each a test or a Sentinel step:
      `/mnt/wsl/resolv.conf`, Claude Code's binary tree (`~/.local/share/claude`, `~/.local/bin`),
      the relay (`/stone/relay`), and each read-only input the investor names in Settings (for
      example a pinned vanilla extract). Each input is mounted at `/inputs/<n>`;
-   - read-write: the workshop at its own path, the mailbox (`/stone/mailbox`), and the pawn's
-     own Claude config dir (`/stone/claude`);
+   - read-write: the workshop at its own path, the run's request folder
+     (`/stone/mailbox/requests`), and the pawn's own Claude config dir (`/stone/claude`);
+   - read-only: the run's answer folder (`/stone/mailbox/answers`). The mailbox's own parent is
+     not mounted, so the pawn can neither replace either folder nor plant a link in the answers;
    - fresh: `/dev`, `/proc`, a tmpfs `/tmp` and a tmpfs home. Then `--remount-ro /`.
    The saves, Steam's `userdata`, the game folder, the mods folder, the investor's own `~/.claude`
    and the rest of `/mnt/c` are not mounted.
-3. **Interop is closed twice.** `/init` is not mounted, and the stone's seccomp filter (the 11
-   instructions above, built by `pawn::fence::novsock_filter()` as bytes, never by a library at
-   run time) refuses `AF_VSOCK`, non-x86_64 and x32 syscalls. `--die-with-parent`,
+   **Every Windows source is validated before it is mounted, at each summon** (the Heretic's
+   Assay, WC2). The stone opens the source by handle and takes its **final resolved path**
+   (`GetFinalPathNameByHandleW`, junctions and symlinks followed). It refuses the source when that
+   path **overlaps a protected root in either direction**: equal, inside it, or containing it.
+   The protected roots are Steam's install folder (and so `userdata` and the saves), the game
+   folder, the mods folder and its `(older versions)` and `(workshop)` siblings (the workshop is
+   mounted on its own, never as an input), the stone's app data (Roaming and Local), the
+   investor's `%USERPROFILE%\.claude`, `%USERPROFILE%` itself, and every save-backup destination
+   the stone has written. A link *inside* a mounted input resolves in the namespace's own view:
+   an NTFS junction appears to WSL as a link to `/mnt/c/…`, which is not mounted, so it dangles.
+   The probe measures that (step 9). A source whose target changed since the last summon is
+   validated again; validation is never cached.
+3. **Interop is closed twice.** `/init` is not mounted, and the stone's seccomp filter (the 15
+   instructions above, built by `pawn::fence::fence_filter()` as bytes, never by a library at
+   run time) refuses `AF_VSOCK`, `TIOCSTI`, non-x86_64 and x32 syscalls. `--die-with-parent`,
    `--unshare-pid` and `--unshare-ipc` are always set; the network is shared. `--new-session`
-   is **not** set: it would detach the TUI from its terminal. The PTY belongs to the pawn
-   alone, so terminal-input injection (`TIOCSTI`, which `--new-session` guards against) could
-   only reach the pawn's own session.
+   is **not** set, because it would detach the TUI from its terminal. The injection it guards
+   against (`TIOCSTI`) is refused by the filter instead, as bubblewrap's own documentation
+   offers. The PTY is the stone's, made for this pawn alone, with no shell of the investor's
+   behind it (the Assay's answer 4; measured at the build's bench: unmeasured list).
 4. **Claude Code's own sandbox runs inside the fence.** The settings the stone writes set
    `sandbox.enabled`, `sandbox.failIfUnavailable`, `sandbox.allowUnsandboxedCommands: false` and
    `sandbox.autoAllowBashIfSandboxed`. A pawn whose inner sandbox cannot start does not start.
@@ -2897,7 +2916,15 @@ what it holds.** Rules, each a test or a Sentinel step:
    settings and `--settings` load; file tools stay in the working dirs; no bypass mode), with
    `--tools` naming exactly `Bash Read Write Edit Glob Grep`, and with
    `--strict-mcp-config --mcp-config <the relay only>`. No hooks or plugins load.
-   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` is set. The persona is
+   **The environment is an allowlist** (the Assay, WC1: a config dir does not stop what a
+   process inherits; an invented canary variable survived the fence until `--clearenv`). `bwrap`
+   runs with `--clearenv` and then sets exactly `PATH=/usr/local/bin:/usr/bin:/bin`,
+   `HOME=<the tmpfs home>`, `USER`, `TERM=xterm-256color`, `COLORTERM=truecolor`,
+   `LANG=C.UTF-8`, `TMPDIR=/tmp`, `CLAUDE_CONFIG_DIR=/stone/claude` and
+   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. Nothing else crosses: no `ANTHROPIC_*`, no
+   `*_TOKEN`, `*_KEY` or proxy variables, no `SSH_AUTH_SOCK`, no `WSLENV`-carried Windows
+   variable. The stone starts `wsl.exe` with `WSLENV` emptied. The fence's process holds no
+   descriptor but the PTY's three and the filter's, which `bwrap` consumes. The persona is
    `--append-system-prompt-file` (#00015 §20.10, the voice block filled from the dial).
 6. **Approval prompts stay on.** The permission mode is `default`. The stone never passes
    `bypassPermissions`, `dontAsk` or `--dangerously-skip-permissions` to a pawn.
@@ -2926,6 +2953,15 @@ tokens, and does not depend on a model following instructions. Steps, in order:
 | 6 | run a copy of `cmd.exe` the stone placed in `probe/`, writing `<mods>\probe-pe-<nonce>.txt` | not land | does not exist |
 | 7 | run `cmd.exe` by its `/mnt/c/Windows` path, writing the same | not land | does not exist |
 | 8 | `claude --version` | succeed, and equal the ground's | the output |
+| 9 | read the app-data canary (step 4) through an NTFS junction the stone made in a probe-only input folder (`<app data>\pawn\probe-input\link` → the canary's folder), mounted at `/inputs/probe` | fail | the output does not carry the nonce |
+| 10 | print the environment (`env`). The stone launches the probe with `RIFTSTONE_PROBE_SECRET=<nonce>` set on its own side, and in `WSLENV` | not carry it | the output does not carry the nonce |
+| 11 | create a link `/stone/mailbox/answers/x.json` → the workshop, and write into `answers/` | fail | `answers\` is unchanged |
+| 12 | `ioctl(TIOCSTI)` on the PTY | fail | the step's own report of the refusal, and nothing typed into the stone's PTY |
+
+Two broker checks run with the probe, on the Windows side, without the fence:
+- the stone plants a WSL symlink (an `LX_SYMLINK` reparse point) and an NTFS junction in a probe
+  request folder, both pointing outside it. Its own request reader must refuse both, unread;
+- a request named outside the UUID pattern, and one of 64 KiB + 1, must be refused unparsed.
 
 The record is `pawn-fence.json` in the stone's app data:
 `{ ground, provedAt, control, steps: [{ step, expected, observed, layer }] }`. `layer` is `os` for
@@ -2941,8 +2977,9 @@ host that cannot fence. The chip
 (WINDOW-CONTRACT § v0.7) is `CONTAINED` only when the control succeeded and every step failed as
 it must, on the current ground. A step that succeeded when it must fail makes the record
 `BREACHED`, and the stone refuses to summon until a probe holds. A missing record, or one on
-another ground, is `UNPROBED`. A pawn may still be summoned then, and Claude Code's own approval
-prompts are the only guard.
+another ground, is `UNPROBED`. A pawn may still be summoned then, **inside the same fence**: the
+fence is present but unproven on this ground, and Claude Code's approval prompts stay on as they
+always do. The chip claims exactly that and no more (the Assay's answer 2).
 
 ### Unmeasured until the build's first bench (each one is the [SPIKE]'s remainder)
 
@@ -2958,24 +2995,61 @@ the build checks on the homestation, and the contract changes if one fails:
   loads the workshop's `CLAUDE.md`;
 - the relay's mailbox round trip across drvfs (latency, and Windows' change notification for a
   file WSL renamed into place).
+- the fence's process tree dying when the window closes, and when `wsl.exe` is killed from the
+  Windows side (`--die-with-parent` across the `wsl.exe` boundary);
+- that the PTY is the pawn's alone: no shell of the investor's sits behind it to return to;
+- the environment that actually reaches `bwrap` through `wsl.exe` before `--clearenv`.
 
 ### The tools: a mailbox, not a socket
 
 The relay is the stone's own stdio MCP server, a single file the stone writes to WSL-side
 `~/.local/share/riftstone/pawn/relay/relay.py` and mounts read-only. It speaks MCP to Claude Code
-and nothing else. For each tool call it writes `<mailbox>/requests/<uuid>.json` (an exclusive
-create, then a rename from `.tmp`) and waits up to 120 s for `<mailbox>/answers/<uuid>.json`,
-polling every 100 ms (inotify does not see Windows-side writes to drvfs). The stone watches the
-Windows side of the folder, reads each request once, deletes it, and answers. The mailbox is
-`%LOCALAPPDATA%\nl.zmuuzn.riftstone\pawn\mailbox`, mounted at `/stone/mailbox`.
+and nothing else. For each tool call it writes `requests/<uuid>.json` (an exclusive create of
+`<uuid>.tmp`, then a rename) and waits for `answers/<uuid>.json`, polling every 100 ms (inotify
+does not see Windows-side writes to drvfs).
 
-**Every request is untrusted input.** The pawn can write the mailbox directly, so a forged request
-must be no stronger than the tool call it imitates. The stone checks:
-- size ≤ 64 KiB, UTF-8 JSON, one known `tool`, exact argument types, no extra keys;
+**Each summoning is a run** (the Assay, WC4). At summon the stone mints a `runId` (a UUID) and
+makes `%LOCALAPPDATA%\nl.zmuuzn.riftstone\pawn\runs\<runId>\{requests,answers}`. Only that
+run's two folders are mounted, at `/stone/mailbox/requests` (read-write) and
+`/stone/mailbox/answers` (read-only). The stone reads requests only from the live run's folder.
+At departure it **retires** the run: it stops reading, waits for any mutation already started to
+commit or roll back through the journal, writes that mutation's answer into the retired run's
+`answers\` (where no relay reads it), records it in the run's ledger, and keeps the folder for
+the ledger's lifetime. A request left by run A is never read in run B: B has its own folders.
+The plan token includes the `runId`, and a held Play belongs to its run and is dropped at
+retirement.
+
+**The broker's file handling is a boundary of its own** (the Assay, WC3: JSON validation is half
+of it). The pawn can create, replace and link objects in `requests\`, so:
+- the stone opens each run's `requests\` and `answers\` once, by handle, refusing either if it
+  carries a reparse attribute, and keeps both handles for the run;
+- every request is opened **relative to the pinned `requests\` handle**
+  (`NtCreateFile` with `RootDirectory`), by a name that must match
+  `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$`, with
+  `FILE_FLAG_OPEN_REPARSE_POINT`. It is refused unread when it is not a regular file or carries
+  any reparse attribute (WSL symlinks are `LX_SYMLINK` reparse points). Reads stop at
+  64 KiB + 1 byte, and one byte too many refuses it. The stone deletes the request by the same
+  handle;
+- every answer is written relative to the pinned `answers\` handle: an exclusive create of
+  `<uuid>.tmp`, a flush, then a rename to `<uuid>.json` by handle (`FileRenameInfo` with
+  `RootDirectory`). The pawn cannot write `answers\` at all, because it is mounted read-only;
+- no path the pawn wrote is ever followed, and no path from a request's contents names a file
+  the stone opens. Tool arguments are ids, never paths.
+
+**Every request is untrusted input.** The pawn can write `requests\` directly, so a forged request
+must be no stronger than the tool call it imitates. The stone also checks:
+- UTF-8 JSON with exactly `{ "id", "tool", "args" }`, where `id` equals the file's UUID, one known
+  `tool`, exact argument types and no extra keys;
 - at most 4 requests in flight;
-- requests only while a pawn is summoned.
+- **idempotency.** The run's ledger keeps every `id` it acted on with its outcome. A request
+  whose `id` is already in the ledger gets the recorded answer and is never acted on twice. The
+  relay retries a timed-out call with the same `id`.
 It answers in the same shape the relay returns to Claude Code. A malformed request is answered
 `refused` with a sentence and is never acted on. Requests are never logged with their arguments.
+
+**A timeout has a defined status.** The relay waits up to 120 s. Then it tells the model
+`unknown: the stone may still be doing this. Call list_installed, or call the same tool again,
+which repeats nothing`. A mutation's true outcome is always in the ledger and the hands row.
 
 | Tool | Arguments | What the stone does | Answer |
 |---|---|---|---|
@@ -2994,11 +3068,27 @@ downloads, or brings a build through. Every answered call is one `rift://pawn-ha
 
 ### The journal's actor
 
-`InstalledOption` gains `actor: Actor` (`player` | `pawn`), `#[serde(default)]` = `player`.
+`InstalledOption` gains `actor: Actor`, `#[serde(default)]` = `player`, where `Actor` is
+`player` | `pawn { runId }`.
 The schema stays 2: v0.6.2 ignores unknown fields when reading (`journal.rs` carries no
 `deny_unknown_fields`), so a downgrade reads the journal and only drops the mark at its next
 save. Tests: a v0.6.2 journal reads as `player`; a v0.7 journal with `actor: pawn` round-trips;
 and v0.6.2's struct reads v0.7's bytes.
+
+**The run ledger.** An install's `actor` says who placed it, but not what a run removed. So
+`pawn-runs.json` in the stone's app data keeps one entry per run:
+`{ runId, startedAt, endedAt, ops: [{ id, tool, installId, optionId, outcome, at }] }`. It is
+written before each mutation's answer and kept for the last 20 runs.
+
+**Put back is narrowed** (the Assay, WC5; #00015 §20.13's "exactly as the investor left it" was
+too strong). `plan_put_back(runId)` offers two lists:
+- **remove:** installs whose `actor` is that run's, still installed and unchanged since. Each is
+  uninstalled newest first through the journal, after the investor reviews it in THE RETURN;
+- **review:** what that run **uninstalled** that was not its own install. It is shown, never
+  acted on in bulk, each with the journal's own Undo where that still applies, else `Install
+  again from the Rift`.
+The window says what the press does: *Removes the 3 installs Tamsin made in this summoning.
+She also uninstalled 1 of yours; it is listed below.* It never promises the world as it was.
 
 ### RS-10 — The pawn never reaches the public build (new)
 
@@ -3014,12 +3104,15 @@ and v0.6.2's struct reads v0.7's bytes.
   - after `npm run build` without the flag, `grep -r "THE WORKSHOP" dist/` finds nothing (the
     room's inscription, a string only the room carries);
   - the same build with the flag finds it (a positive control, so the grep cannot pass by being
-    wrong).
+    wrong);
+  - a test built under the default features lists the commands `generate_handler!` registers and
+    finds none of WINDOW-CONTRACT § v0.7's. The same test under `pawn` finds all of them (the
+    Assay's answer 5: an absent inscription is one piece of evidence, not the proof).
 
 ### Modules (all behind `pawn`)
 
 - `src-tauri/src/pawn/fence.rs`: pure functions only, with no I/O and every one unit-tested. They
-  build `bwrap_argv(&FencePlan)` (the plan names every mount), `novsock_filter()` (the exact
+  build `bwrap_argv(&FencePlan)` (the plan names every mount), `fence_filter()` (the exact
   bytes, tested instruction by instruction), `pawn_settings(&Voice)`, `ground()`, and the
   `wsl.exe` command line.
 - `src-tauri/src/pawn/summon.rs`: the PTY (`portable-pty`, as the Mezzanine's `pty/`), its
@@ -3049,10 +3142,17 @@ and v0.6.2's struct reads v0.7's bytes.
   `--ro-bind` and `--symlink` against the plan); `--remount-ro /`, `--die-with-parent` and the
   filter fd are present; no `/init`, `/mnt/c` root, `userdata` or `~/.claude` mount can be
   produced from any `FencePlan` (a property test over drawn plans). The filter's bytes equal the
-  11 instructions.
-- [GATE] The mailbox refuses every malformed, oversized, unknown-tool, extra-key, out-of-session
-  and stale-plan request (a table test), and `install` from a forged request is exactly as
-  strong as the tool's (the same RS-3 refusals).
+  15 instructions. The argv carries `--clearenv` and exactly the environment allowlist. The input
+  validator refuses an equal path, a child, an ancestor and an alias of each protected root, and
+  accepts a sibling (a table test over invented trees, with junctions on the bench).
+- [GATE] The mailbox refuses every malformed, oversized, unknown-tool, extra-key, mis-named,
+  linked, reparse-pointed, non-regular, wrong-run and stale-plan request (a table test). A
+  replayed `id` returns the ledger's answer without acting. `install` from a forged request is
+  exactly as strong as the tool's (the same RS-3 refusals).
+- [GATE] Runs: a request in a retired run's folder is never read; a mutation in flight at
+  departure commits or rolls back, and is recorded; a held Play dies with its run.
+- [GATE] Put back: a run that only uninstalled a player's install offers an empty *remove* and
+  lists that uninstall under *review* (the Assay's counterexample, as a test).
 - [GATE] Bring-through: lands only the frozen digest; `alreadyHad`, `nameTaken` and
   `bytesChanged` each change nothing in the mods folder (a tempdir test per case).
 - [GATE] The journal's actor: the three tests above.

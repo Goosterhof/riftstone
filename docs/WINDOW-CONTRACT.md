@@ -1029,14 +1029,17 @@ Types live in `src/types/workshop.ts`. Design: #00015 §20.
 | `run_fence_probe` | — | `FenceView` | The deterministic probe (BUILD-SPEC § v0.7, no model, about 10 s). Refuses `pawn` `pawnHere` while a pawn is summoned. |
 | `plan_bring_through` | `artifact: string` | `BringThroughPlan` | `artifact` is a file name in the workshop's `dist\`. The plan carries the digest **frozen now**. That digest is what the press refers to. |
 | `bring_through` | `artifact: string, sha256: string` | `BringThroughResult` | RS-2's second exception: copy to a partial, hash the copy, land only on equality, never over a file. Rejects `bring` (below). |
-| `plan_put_back` | — | `UninstallPlanView[]` | The Gift: every install whose `actor` is `pawn` from the current or last session that is still installed, newest first, as the plans THE RETURN shows. |
-| `put_back` | `installIds: string[]` | `UninstallResultView[]` | Uninstalls those, newest first, each through the journal. Each install's own Undo still works afterwards. |
+| `plan_put_back` | `runId: string` | `PutBackPlan` | The Gift, narrowed (BUILD-SPEC § v0.7, the run ledger). `remove`: that run's own installs still installed and unchanged, newest first, as THE RETURN's plans. `review`: what that run uninstalled that was not its own, each with its Undo when the journal still allows it. It never claims to restore the world as it was. |
+| `put_back` | `runId: string, installIds: string[]` | `UninstallResultView[]` | Uninstalls exactly the `remove` items named, newest first, each through the journal. An id that is not that run's own still-installed install is refused, not skipped. `review` items are never acted on here. |
 | `open_workshop_folder` | — | `void` | Explorer, Rust-side. |
 | `set_pawn_voice` | `voice: "full" \| "sparing" \| "plain"` | `void` | Saved in settings; takes effect at the next summon (the window says so while a pawn is here). |
 
 `get_settings` / `set_settings` gain `pawnInputs: string[]`: Windows folders mounted read-only at
-`/inputs/<n>` (for example a pinned vanilla extract). The stone refuses a folder inside Steam's
-`userdata`, the saves, the mods folder or its own app data.
+`/inputs/<n>` (for example a pinned vanilla extract). On set, and again at every summon, the stone
+resolves each folder's final path and refuses any that **overlaps a protected root in either
+direction** (BUILD-SPEC § v0.7, RS-9.2): Steam, the game, the mods folder and its siblings, the
+stone's app data, the investor's profile and `.claude`, and save-backup destinations. The refusal
+is `pawn` `inputRefused`, naming the root it overlaps, never a path under `userdata`.
 
 ### Events
 
@@ -1052,7 +1055,8 @@ Types live in `src/types/workshop.ts`. Design: #00015 §20.
 `RiftError` gains two kinds.
 - `pawn`, with `{ detail, reason }`, `reason` ∈ `noFence` (detail names the missing piece and the
   command that installs it, e.g. `sudo apt install socat`), `breached`, `alreadyHere`, `notHere`,
-  `pawnHere`, `nothingHeld`.
+  `pawnHere`, `nothingHeld`, `inputRefused`, `notThisRun` (a `put_back` id that is not the run's
+  own still-installed install).
 - `bring`, with `{ detail, reason }`, `reason` ∈ `nameTaken` (a different file has the name),
   `bytesChanged` (detail carries both digests' first 16 hex), `noReceipt`, `receiptMismatch` (the
   receipt names other bytes), `notInDist`.
@@ -1069,9 +1073,10 @@ the investor's own and may be shown.
   boolean }`. `inLibrary` is true when a file with these exact bytes is in the mods folder.
 - `ReceiptView`: the receipt's own fields (BUILD-SPEC § v0.7), passed through as the pawn wrote
   them, for display under `THE RECEIPT SAYS`.
-- `PawnStateView`: `{ state: "absent" | "summoning" | "here" | "departed" | "torn", since: string
-  | null, exitCode: number | null, host: { distro, claudeVersion } | null, held: "play" | null }`.
-- `PawnHand`: `{ seq, at, tool, outcome: "done" | "refused" | "held" | "declined", summary,
+- `PawnStateView`: `{ runId: string | null, state: "absent" | "summoning" | "here" | "departed" |
+  "torn", since: string | null, exitCode: number | null, host: { distro, claudeVersion } | null, held: "play" | null }`.
+- `PawnHand`: `{ runId, seq, at, tool, outcome: "done" | "refused" | "held" | "declined" |
+  "repeated" (a replayed id answered from the ledger), summary,
   installId: string | null, refusal: string | null }`. `summary` is the row's text
   (`installed Stature 0.2.0 · 7 files`). `refusal` is the stone's own sentence, verbatim.
 - `FenceView`: `{ chip: "contained" | "unprobed" | "breached", ground: { distro, claudeVersion,
@@ -1081,6 +1086,10 @@ the investor's own and may be shown.
 - `BringThroughPlan`: `{ artifact, bytes, sha256, landsAs: string, receipt: ReceiptView | null,
   conflict: "none" | "alreadyHad" | "nameTaken" }`.
 - `BringThroughResult`: `{ outcome: "landed" | "alreadyHad", packageId: string }`.
+- `PutBackPlan`: `{ runId, remove: UninstallPlanView[], review: { installId, optionId, name,
+  at, undo: "available" | "reinstallFromRift" }[], sentence }`. `sentence` is the press's own
+  promise, e.g. *Removes the 3 installs Tamsin made in this summoning. She also uninstalled 1 of
+  yours; it is listed below.*
 - `Voice`: `"full" | "sparing" | "plain"` (default `sparing`).
 
 ### What the window may not do
