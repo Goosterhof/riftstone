@@ -8,6 +8,8 @@
 //!   checked inside its committing turn, and `pawn-runs.json`.
 //! - [`fence`]: the fence's argv, filter, settings and ground, and the mount
 //!   validators (RS-9). Pure.
+//! - [`host`]: the WSL distro, surveyed and made ready before each summon
+//!   (`noFence` names the missing piece); the relay folder's files.
 //! - [`mailbox`]: what the stone does with a request: validation, the tool
 //!   table, the run's idempotent ledger and its retirement.
 //! - [`persona`]: Tamsin's appended system prompt from the voice dial, the
@@ -21,6 +23,7 @@ pub mod bring;
 pub mod errands;
 pub mod fence;
 pub mod folder;
+pub mod host;
 pub mod mailbox;
 pub mod persona;
 pub mod put_back;
