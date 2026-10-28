@@ -135,6 +135,7 @@ mod tests {
             version: None,
             installed_at: String::new(),
             game_build: None,
+            actor: crate::journal::Actor::Player,
             origin: Origin::Riftstone,
             files: vec![DeployedFile {
                 game_path: path.into(),

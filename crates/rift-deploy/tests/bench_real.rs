@@ -75,6 +75,7 @@ fn bench_real_game_state_read_only() {
         state_dir: state_dir.path(),
         ref_status: &status,
         game_running: running,
+        actor: &rift_deploy::PLAYER,
     };
     let state = read_game_state(&ctx, &journal);
     let owned_by =

@@ -39,6 +39,7 @@ fn plan(state: &AppState, busy: bool) -> Option<(GameInstall, LaunchPlan)> {
                 state_dir: &state.config.dirs.data,
                 ref_status: &ref_status,
                 game_running: running,
+                actor: &rift_deploy::PLAYER,
             };
             let game_state = rift_deploy::read_game_state(&ctx, &empty);
             rift_deploy::plan_launch(&game, &ref_status, &empty, &game_state, running, busy)

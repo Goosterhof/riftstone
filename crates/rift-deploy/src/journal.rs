@@ -119,7 +119,27 @@ pub struct InstalledOption {
     pub game_build: Option<String>,
     pub origin: Origin,
     pub files: Vec<DeployedFile>,
+    /// Who placed it (v0.7). A journal written before v0.7 has no field and
+    /// reads as the player's; v0.6.2 reads this one and drops the mark at its
+    /// next save (no `deny_unknown_fields`), so the schema stays 2.
+    #[serde(default)]
+    pub actor: Actor,
 }
+
+/// Who asked for an install (v0.7, BUILD-SPEC § v0.7 *The journal's actor*).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Actor {
+    /// The player, at a press in the window. Every install before v0.7.
+    #[default]
+    Player,
+    /// Tamsin, through her `install` tool, in the summoning `run_id` names.
+    #[serde(rename_all = "camelCase")]
+    Pawn { run_id: String },
+}
+
+/// The player, as a context's [`crate::DeployContext::actor`] borrows it.
+pub static PLAYER: Actor = Actor::Player;
 
 impl InstalledOption {
     /// Did the journal take this install over from files already in the
@@ -797,6 +817,7 @@ mod tests {
             version: Some("1.2".into()),
             installed_at: "2026-10-16T10:00:00Z".into(),
             game_build: Some("25290080".into()),
+            actor: Actor::Player,
             origin: Origin::Riftstone,
             files: vec![DeployedFile {
                 game_path: "natives/stm/a.mesh".into(),
@@ -834,6 +855,65 @@ mod tests {
         // Another game folder gets its own, empty journal.
         let other = Journal::load(state.path(), Path::new("/elsewhere/DD2")).unwrap();
         assert!(other.installs.is_empty());
+    }
+
+    #[test]
+    fn a_journal_written_before_v0_7_reads_every_install_as_the_players() {
+        let mut json = serde_json::to_value(sample(Path::new("/g"))).unwrap();
+        json["installs"][0].as_object_mut().unwrap().remove("actor");
+        let loaded: Journal = serde_json::from_value(json).unwrap();
+        assert_eq!(loaded.installs[0].actor, Actor::Player);
+    }
+
+    #[test]
+    fn a_pawns_install_round_trips_with_its_run() {
+        let state = tempfile::tempdir().unwrap();
+        let mut journal = sample(Path::new("/g"));
+        journal.installs[0].actor = Actor::Pawn {
+            run_id: "0b5e2c6e-4a8d-4d3e-9f4b-2a1c7d9e8f00".into(),
+        };
+        let json = serde_json::to_value(&journal).unwrap();
+        assert_eq!(
+            json["installs"][0]["actor"],
+            serde_json::json!({ "kind": "pawn", "runId": "0b5e2c6e-4a8d-4d3e-9f4b-2a1c7d9e8f00" })
+        );
+        journal.save(state.path()).unwrap();
+        assert_eq!(
+            Journal::load(state.path(), Path::new("/g")).unwrap(),
+            journal
+        );
+    }
+
+    /// v0.6.2's install, field for field: no `actor`, and no
+    /// `deny_unknown_fields` (the struct as it shipped in `ab79e87`).
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    #[allow(dead_code)]
+    struct InstalledOptionV062 {
+        seq: u64,
+        option_id: OptionId,
+        name: String,
+        package_file: String,
+        package_path: PathBuf,
+        package_size: u64,
+        option_root: String,
+        version: Option<String>,
+        installed_at: String,
+        game_build: Option<String>,
+        origin: Origin,
+        files: Vec<DeployedFile>,
+    }
+
+    #[test]
+    fn v0_6_2_reads_a_v0_7_install_and_only_drops_the_mark() {
+        let mut journal = sample(Path::new("/g"));
+        journal.installs[0].actor = Actor::Pawn {
+            run_id: "0b5e2c6e-4a8d-4d3e-9f4b-2a1c7d9e8f00".into(),
+        };
+        let bytes = serde_json::to_vec(&journal.installs[0]).unwrap();
+        let old: InstalledOptionV062 = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(old.option_id, journal.installs[0].option_id);
+        assert_eq!(old.files, journal.installs[0].files);
     }
 
     #[test]

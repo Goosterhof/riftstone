@@ -619,6 +619,7 @@ fn sized_record(
         version: None,
         installed_at: "2026-10-16T10:00:00.000Z".into(),
         game_build: None,
+        actor: rift_deploy::Actor::Player,
         origin: Origin::Riftstone,
         files: files
             .iter()
