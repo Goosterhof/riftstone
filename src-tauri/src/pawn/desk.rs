@@ -150,6 +150,7 @@ pub struct FenceStepView {
     pub expected: probe::Expect,
     pub observed: String,
     pub ok: bool,
+    pub verdict: probe::Verdict,
 }
 
 #[derive(Default)]
@@ -163,8 +164,6 @@ pub struct Desk {
     settings_path: PathBuf,
     record_path: PathBuf,
     runs_dir: PathBuf,
-    /// The ground the last summon or probe was prepared on.
-    ground: Mutex<Option<Ground>>,
     runs_file: Arc<RunsFile>,
     settings: Mutex<PawnSettings>,
     state: Mutex<DeskState>,
@@ -426,7 +425,6 @@ impl Desk {
         Arc::new_cyclic(|me| Desk {
             runs_dir: data_dir.join("pawn").join("runs"),
             record_path: data_dir.join("pawn-fence.json"),
-            ground: Mutex::new(None),
             runs_file: Arc::new(RunsFile::new(data_dir.join(RunsFile::NAME))),
             settings_path,
             settings: Mutex::new(settings),
@@ -470,43 +468,55 @@ impl Desk {
         persist::read_json(&self.record_path)
     }
 
-    /// The chip, judged against the ground the last summon or probe was
-    /// prepared on. Before either since the stone started, a holding record
-    /// cannot be judged and reads `unprobed`; a breach reads `breached`.
-    pub fn fence_view(&self) -> FenceView {
-        let record = self.record();
-        let current = lock(&self.ground).clone();
-        let (chip, changed) = match (&record, &current) {
-            (Some(record), _) if record.breached() => ("breached", None),
-            (Some(_), None) => (
-                "unprobed",
-                Some("not checked against this host since the stone started".to_string()),
-            ),
-            (record, Some(current)) => {
-                let (chip, changed) = probe::chip(record.as_ref(), current);
-                (chip, changed)
-            }
-            (None, None) => ("unprobed", None),
-        };
-        FenceView {
-            chip,
-            ground: record.as_ref().map(|r| r.ground.clone()),
-            proved_at: record.as_ref().map(|r| r.proved_at.clone()),
-            steps: record
-                .map(|r| {
-                    r.steps
-                        .into_iter()
-                        .map(|step| FenceStepView {
-                            step: step.step,
-                            expected: step.expected,
-                            observed: step.observed,
-                            ok: step.ok,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            changed,
-        }
+    /// The chip, judged against the ground as it is now: the host surveyed
+    /// again and the plan a summon would get, never the ground some earlier
+    /// preparation saw (the Heretic's WP3). When the stone cannot check the
+    /// ground now, a holding record reads `unprobed` and says why; a breach
+    /// reads `breached` on any ground.
+    pub fn fence_view(&self, state: &AppState) -> FenceView {
+        view_of(self.record(), || self.current_ground(state))
+    }
+
+    /// The ground a summon would be prepared on now, computed without
+    /// writing anything: the host surveyed, the workshop and the inputs
+    /// resolved and checked, and the plan built as `prepare` builds it.
+    fn current_ground(&self, state: &AppState) -> Result<Ground, String> {
+        let settings = self.settings();
+        let shell = shell(settings.distro.clone());
+        let survey = survey(shell.as_ref(), settings.distro.as_deref())
+            .map_err(|missing| missing.sentence())?;
+        let workshop = workshop_dir(state.library_dir())
+            .filter(|w| w.is_dir())
+            .ok_or("no summon or probe has made the workshop yet")?;
+        let roots = protected_roots(state).map_err(|e| e.to_string())?;
+        let workshop_fence = final_path(&workshop)
+            .ok()
+            .and_then(|f| fence_path(&f))
+            .ok_or("the workshop could not be resolved")?;
+        let run_id = new_run_id();
+        let run_fence = self
+            .run_fence(&run_id)
+            .ok_or("the runs folder could not be resolved")?;
+        let plan = plan_of(
+            &settings,
+            &survey,
+            workshop_fence,
+            run_fence,
+            run_id,
+            &roots,
+        )
+        .map_err(|e| e.to_string())?;
+        ground(&plan, &survey.host, RELAY.as_bytes()).map_err(|refusal| refusal.0)
+    }
+
+    /// A run's mailbox as the fence names it: the runs folder by its final
+    /// path, then the run's id. Both `prepare` and `current_ground` name it
+    /// this way, so the two grounds agree by construction.
+    fn run_fence(&self, run_id: &str) -> Option<String> {
+        let runs = final_path(&self.runs_dir)
+            .ok()
+            .and_then(|f| fence_path(&f))?;
+        Some(format!("{}/{run_id}", runs.trim_end_matches('/')))
     }
 
     pub fn runs(&self) -> Arc<RunsFile> {
@@ -592,22 +602,19 @@ impl Desk {
             fence_path(&resolved).ok_or_else(|| no_fence(format!("{name} is not on a drive.")))
         };
         let workshop_fence = trusted("The workshop", &workshop)?;
-        let run_fence = trusted("The run's mailbox", &run_dir)?;
-        let mut inputs = Vec::new();
-        for input in &settings.inputs {
-            let resolved = validate_input(input, &roots)?;
-            inputs.push(fence_path(&resolved).ok_or_else(|| {
-                RiftError::pawn(PawnReason::InputRefused, "An input is not on a drive.")
-            })?);
-        }
-        let plan = FencePlan {
-            home: survey.home.clone(),
-            user: survey.user.clone(),
-            workshop: workshop_fence.clone(),
-            run_dir: run_fence,
-            run_id: run_id.clone(),
-            inputs,
-        };
+        // Checked as the folder the stone made; named as current_ground names it.
+        trusted("The run's mailbox", &run_dir)?;
+        let run_fence = self
+            .run_fence(&run_id)
+            .ok_or_else(|| no_fence("The run's mailbox is not on a drive."))?;
+        let plan = plan_of(
+            &settings,
+            &survey,
+            workshop_fence.clone(),
+            run_fence,
+            run_id.clone(),
+            &roots,
+        )?;
         install_files(
             shell.as_ref(),
             &relay_files(&plan, &persona(settings.voice, &workshop_fence)),
@@ -616,7 +623,6 @@ impl Desk {
         .map_err(no_fence)?;
         let ground =
             ground(&plan, &survey.host, RELAY.as_bytes()).map_err(|refusal| no_fence(refusal.0))?;
-        *lock(&self.ground) = Some(ground.clone());
         Ok(Prepared {
             shell,
             survey,
@@ -700,6 +706,7 @@ impl Desk {
         }
         let prepared = self.prepare(state)?;
         let nonce = new_run_id();
+        let marker = format!("probe-ran-{}", new_run_id());
         let secret = new_run_id();
         let pawn_base = self
             .runs_dir
@@ -721,7 +728,7 @@ impl Desk {
         let probe_dir = prepared.workshop.join("probe");
         std::fs::create_dir_all(&probe_dir)
             .map_err(|e| io("could not make the probe folder", e))?;
-        plant_cmd(&probe_dir.join("planted.exe"));
+        let planted = plant_cmd(&probe_dir.join("planted.exe"));
 
         let fence_of = |path: &Path| -> String {
             final_path(path)
@@ -740,6 +747,7 @@ impl Desk {
         };
         let targets = probe::Targets {
             nonce: nonce.clone(),
+            marker: marker.clone(),
             mods: fence_of(&mods),
             game: game.as_deref().map(fence_of),
             userdata: userdata.as_deref().map(fence_of),
@@ -749,31 +757,70 @@ impl Desk {
             mods_windows: windows_of(&mods),
             cmd_exe: "/mnt/c/Windows/System32/cmd.exe".into(),
         };
+        let userdata_names: Vec<String> = userdata
+            .as_deref()
+            .and_then(|dir| std::fs::read_dir(dir).ok())
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .filter(|name| name.len() > 3)
+                    .collect()
+            })
+            .unwrap_or_default();
         let ctx = probe::Context {
             nonce: nonce.clone(),
+            marker,
             claude_version: prepared.survey.host.claude_version.clone(),
             secret: secret.clone(),
-            userdata_names: userdata
-                .as_deref()
-                .and_then(|dir| std::fs::read_dir(dir).ok())
-                .map(|entries| {
-                    entries
-                        .flatten()
-                        .map(|e| e.file_name().to_string_lossy().into_owned())
-                        .filter(|name| name.len() > 3)
-                        .collect()
-                })
-                .unwrap_or_default(),
+            userdata_names: userdata_names.clone(),
         };
         let probe_input_fence = fence_of(&probe_input);
         let answers = prepared.run_dir.join("answers");
         let control_file = probe_dir.join("control.txt");
         let pe_file = mods.join(format!("probe-pe-{nonce}.txt"));
-        let home_claude = format!("{}/.claude/riftstone-probe-{nonce}", prepared.survey.home);
+        let home_claude = format!("{}/.claude", prepared.survey.home);
+        let home_file = format!("{home_claude}/riftstone-probe-{nonce}");
+
+        // What makes each row's result mean something, read outside the fence.
+        let need = |ok: bool, missing: &str| if ok { Ok(()) } else { Err(missing.to_string()) };
+        let canary_whole = || std::fs::read_to_string(&canary).is_ok_and(|text| text == nonce);
+        let secret_crosses = {
+            let (ran, output) = run_unfenced(&prepared.survey.host.distro, "env", &secret);
+            matches!(ran, probe::Ran::Exited(0)) && output.contains(&secret)
+        };
+        let mods_there = mods.is_dir();
 
         let mut control = false;
         let mut records = Vec::new();
         for step in probe::steps(&targets) {
+            let ready: Result<(), String> = match step.id {
+                "1" => need(mods_there, "the mods folder is not on disk"),
+                "2" => need(
+                    game.as_deref().is_some_and(Path::is_dir),
+                    "the stone knows no game folder here",
+                ),
+                "3" => need(
+                    !userdata_names.is_empty(),
+                    "the stone knows no Steam userdata with anything in it here",
+                ),
+                "4" => need(canary_whole(), "the canary is not on disk"),
+                "6" => planted.clone().and(need(mods_there, "the mods folder is not on disk")),
+                "7" => need(
+                    mods_there && cmd_exe_outside().is_file(),
+                    "there is no cmd.exe outside the fence to aim at",
+                ),
+                "9" => need(
+                    canary_whole() && probe_input.join("link").symlink_metadata().is_ok(),
+                    "the canary or its link is not on disk",
+                ),
+                "10" => need(
+                    secret_crosses,
+                    "the secret does not reach WSL even without the fence, so its absence proves nothing",
+                ),
+                "11" => need(answers.is_dir(), "the run's answers folder is not on disk"),
+                _ => Ok(()),
+            };
             let argv = bwrap_argv(
                 &prepared.plan,
                 &FenceCommand::Probe {
@@ -782,69 +829,86 @@ impl Desk {
                 },
             )
             .map_err(|refusal| no_fence(refusal.0))?;
-            let (exit_ok, output) =
+            let (ran, output) =
                 run_step(&prepared.survey.host.distro, &prepared.plan, &argv, &secret);
             // What landed on the real disk, read outside the fence; a file
             // that landed where it must not is the stone's own, removed now.
             let landed_at = |path: &Path| -> Option<bool> {
-                let landed = path.exists();
+                let landed = path.symlink_metadata().is_ok();
                 if landed {
                     let _ = std::fs::remove_file(path);
                 }
                 Some(landed)
             };
-            let landed = match step.id {
-                "C" => Some(std::fs::read_to_string(&control_file).is_ok_and(|text| text == nonce)),
-                "1" => landed_at(&mods.join(format!("probe-{nonce}.txt"))),
-                "2" => game.as_ref().map_or(Some(false), |game| {
-                    landed_at(&game.join(format!("probe-{nonce}.txt")))
-                }),
-                "5" => {
-                    let asked = prepared
-                        .shell
-                        .run(
-                            &format!(
-                                "test -e {0} && rm -f {0} && echo landed",
-                                sh_quote(&home_claude)
-                            ),
-                            b"",
-                        )
-                        .map(|out| out.stdout.contains("landed"))
-                        .unwrap_or(false);
-                    Some(asked)
-                }
-                "6" | "7" => landed_at(&pe_file),
-                "11" => Some(
-                    answers.join("x.json").symlink_metadata().is_ok()
-                        || answers.join("y.json").exists(),
+            let (landed, ready) = match step.id {
+                "C" => (
+                    Some(std::fs::read_to_string(&control_file).is_ok_and(|text| text == nonce)),
+                    ready,
                 ),
-                _ => None,
+                "1" => (landed_at(&mods.join(format!("probe-{nonce}.txt"))), ready),
+                "2" => (
+                    game.as_ref()
+                        .and_then(|game| landed_at(&game.join(format!("probe-{nonce}.txt")))),
+                    ready,
+                ),
+                // The investor's own ~/.claude, looked at through the distro:
+                // a look that fails sees nothing, and proves nothing.
+                "5" => match prepared.shell.run(
+                    &format!(
+                        "test -d {0} && echo there; test -e {1} && rm -f {1} && echo landed",
+                        sh_quote(&home_claude),
+                        sh_quote(&home_file)
+                    ),
+                    b"",
+                ) {
+                    Ok(out) => (
+                        Some(out.stdout.contains("landed")),
+                        ready.and(need(
+                            out.stdout.contains("there"),
+                            "the distro user has no ~/.claude to aim at",
+                        )),
+                    ),
+                    Err(_) => (None, Err("the stone could not look in the distro".into())),
+                },
+                "6" | "7" => (landed_at(&pe_file), ready),
+                "11" => (
+                    Some(
+                        answers.join("x.json").symlink_metadata().is_ok()
+                            || answers.join("y.json").symlink_metadata().is_ok(),
+                    ),
+                    ready,
+                ),
+                _ => (None, ready),
             };
             let record = probe::judge(
                 &step,
                 &probe::Seen {
-                    exit_ok,
+                    ran,
                     output,
                     landed,
+                    ready,
                 },
                 &ctx,
             );
             if step.id == "C" {
-                control = record.ok;
+                control = record.verdict() == probe::Verdict::Held;
             } else {
                 records.push(record);
             }
         }
+        let broker = broker_checks(&pawn_base, &canary_dir, &nonce, prepared.shell.as_ref());
         let _ = std::fs::remove_file(&control_file);
         let _ = std::fs::remove_file(probe_dir.join("planted.exe"));
         let record = FenceRecord {
+            version: probe::PROBE_VERSION,
             ground: prepared.ground,
             proved_at: now(),
             control,
             steps: records,
+            broker,
         };
         persist::write_json(&self.record_path, &record, true)?;
-        Ok(self.fence_view())
+        Ok(self.fence_view(state))
     }
 
     fn here(&self) -> Result<Arc<Summoning>, RiftError> {
@@ -1046,21 +1110,258 @@ fn same_folder(
     }
 }
 
+/// The view of a probe record, judged against the ground `current` reads now.
+/// The ground is asked for only when the answer can change the chip: a missing
+/// record is `unprobed` and a breach `breached` on any ground.
+fn view_of(
+    record: Option<FenceRecord>,
+    current: impl FnOnce() -> Result<Ground, String>,
+) -> FenceView {
+    let (chip, changed) = match &record {
+        Some(record) if record.breached() => ("breached", None),
+        None => ("unprobed", None),
+        Some(record) => match current() {
+            Ok(current) => probe::chip(Some(record), &current),
+            Err(why) => (
+                "unprobed",
+                Some(format!("the stone could not check this host now: {why}")),
+            ),
+        },
+    };
+    FenceView {
+        chip,
+        ground: record.as_ref().map(|r| r.ground.clone()),
+        proved_at: record.as_ref().map(|r| r.proved_at.clone()),
+        steps: record
+            .map(|r| {
+                r.steps
+                    .into_iter()
+                    .chain(r.broker)
+                    .map(|step| FenceStepView {
+                        verdict: step.verdict(),
+                        step: step.step,
+                        expected: step.expected,
+                        observed: step.observed,
+                        ok: step.ok,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        changed,
+    }
+}
+
+/// The two broker checks (BUILD-SPEC § v0.7), on this host's own disk and
+/// through the stone's own reader, outside the fence:
+/// - `B1`: a WSL symlink (an `LX_SYMLINK` reparse point, made through the
+///   distro) and an NTFS junction (on the bench, a second symlink), both
+///   pointing at the canary, planted in a fresh probe request folder. The
+///   reader must refuse both unread, and the canary stay whole.
+/// - `B2`: a request named outside the UUID pattern must be refused before it
+///   is parsed, and one of 64 KiB + 1 refused unread.
+fn broker_checks(
+    pawn_base: &Path,
+    canary_dir: &Path,
+    nonce: &str,
+    shell: &dyn Shell,
+) -> Vec<probe::StepRecord> {
+    use crate::pawn::folder::{FolderRefusal, MailFolder};
+    use probe::{Expect, StepRecord, Verdict};
+    let dir = pawn_base.join("probe-requests");
+    let _ = std::fs::remove_dir_all(&dir);
+    let made = std::fs::create_dir_all(&dir);
+    let canary = canary_dir.join("probe-canary.txt");
+    let canary_whole = || std::fs::read_to_string(&canary).is_ok_and(|text| text == nonce);
+    let name = || format!("{}.json", new_run_id());
+    let inconclusive =
+        |id: &str, why: String| StepRecord::new(id, Expect::Fail, Verdict::Inconclusive, why);
+    let folder = made
+        .map_err(|err| err.to_string())
+        .and_then(|()| MailFolder::open(&dir).map_err(|err| err.to_string()));
+
+    let b1 = (|| {
+        let folder = folder
+            .as_ref()
+            .map_err(|err| inconclusive("B1", format!("could not show: {err}")))?;
+        let wsl_link = name();
+        let fence_of = |path: &Path| {
+            final_path(path)
+                .ok()
+                .and_then(|resolved| fence_path(&resolved))
+                .unwrap_or_else(|| path.to_string_lossy().into_owned())
+        };
+        let _ = shell.run(
+            &format!(
+                "ln -s {} {}",
+                sh_quote(&fence_of(&canary)),
+                sh_quote(&format!("{}/{wsl_link}", fence_of(&dir)))
+            ),
+            b"",
+        );
+        let junction = name();
+        let _ = make_link(&dir.join(&junction), canary_dir);
+        let planted = [&wsl_link, &junction]
+            .iter()
+            .all(|n| dir.join(n).symlink_metadata().is_ok());
+        if !planted || !canary_whole() {
+            return Err(inconclusive(
+                "B1",
+                "could not show: the stone could not plant both links".into(),
+            ));
+        }
+        let mut seen = Vec::new();
+        for n in [&wsl_link, &junction] {
+            match folder.take(n) {
+                Err(FolderRefusal::Linked | FolderRefusal::NotRegular) => seen.push(true),
+                Ok(_) => {
+                    return Err(StepRecord::new(
+                        "B1",
+                        Expect::Fail,
+                        Verdict::Breached,
+                        "READ a request that was a link".into(),
+                    ))
+                }
+                Err(other) => {
+                    return Err(inconclusive(
+                        "B1",
+                        format!("could not show: {}", other.sentence()),
+                    ))
+                }
+            }
+        }
+        Ok(if seen.len() == 2 && canary_whole() {
+            StepRecord::new(
+                "B1",
+                Expect::Fail,
+                Verdict::Held,
+                "refused: the WSL symlink and the junction, both unread".into(),
+            )
+        } else {
+            inconclusive("B1", "the canary changed".into())
+        })
+    })()
+    .unwrap_or_else(|record| record);
+
+    let b2 = (|| {
+        let folder = folder
+            .as_ref()
+            .map_err(|err| inconclusive("B2", format!("could not show: {err}")))?;
+        let badly_named = "not-a-request.json";
+        let oversize = name();
+        let request =
+            serde_json::json!({ "id": "x", "tool": "list_installed", "args": {} }).to_string();
+        let wrote = std::fs::write(dir.join(badly_named), &request).and_then(|()| {
+            std::fs::write(
+                dir.join(&oversize),
+                vec![b' '; crate::pawn::mailbox::MAX_REQUEST_BYTES + 1],
+            )
+        });
+        if let Err(err) = wrote {
+            return Err(inconclusive("B2", format!("could not show: {err}")));
+        }
+        // The loop takes any `.json` and the broker reads its name first.
+        let named = match folder.take(badly_named) {
+            Ok(bytes) => crate::pawn::mailbox::parse_request(badly_named, &bytes).is_err(),
+            Err(_) => true,
+        };
+        let sized = matches!(folder.take(&oversize), Err(FolderRefusal::TooLarge));
+        Ok(if named && sized {
+            StepRecord::new(
+                "B2",
+                Expect::Fail,
+                Verdict::Held,
+                "refused: the bad name unparsed, 64 KiB + 1 unread".into(),
+            )
+        } else if !named {
+            StepRecord::new(
+                "B2",
+                Expect::Fail,
+                Verdict::Breached,
+                "PARSED a request without a proper name".into(),
+            )
+        } else {
+            StepRecord::new(
+                "B2",
+                Expect::Fail,
+                Verdict::Breached,
+                "READ a request of 64 KiB + 1".into(),
+            )
+        })
+    })()
+    .unwrap_or_else(|record| record);
+
+    let _ = std::fs::remove_dir_all(&dir);
+    vec![b1, b2]
+}
+
+/// The fence's plan from the pawn's settings and the surveyed host, each
+/// input checked against the protected roots by its final path.
+fn plan_of(
+    settings: &PawnSettings,
+    survey: &crate::pawn::host::Survey,
+    workshop: String,
+    run_dir: String,
+    run_id: String,
+    roots: &[ProtectedRoot],
+) -> Result<FencePlan, RiftError> {
+    let mut inputs = Vec::new();
+    for input in &settings.inputs {
+        let resolved = validate_input(input, roots)?;
+        inputs.push(fence_path(&resolved).ok_or_else(|| {
+            RiftError::pawn(PawnReason::InputRefused, "An input is not on a drive.")
+        })?);
+    }
+    Ok(FencePlan {
+        home: survey.home.clone(),
+        user: survey.user.clone(),
+        workshop,
+        run_dir,
+        run_id,
+        inputs,
+    })
+}
+
 /// Run one probe step in the fence and collect what it said, with a 30 s
 /// bound. The stone's secret is set on its own side and in `WSLENV`, so step
 /// 10 sees whether anything carries it across.
-fn run_step(distro: &str, plan: &FencePlan, argv: &[String], secret: &str) -> (bool, String) {
+fn run_step(distro: &str, plan: &FencePlan, argv: &[String], secret: &str) -> (probe::Ran, String) {
+    let Ok(args) = crate::pawn::fence::wsl_args(distro, plan, argv) else {
+        return (
+            probe::Ran::NotStarted("the step's command could not be built".into()),
+            String::new(),
+        );
+    };
+    run_bounded(&args, secret)
+}
+
+/// Run a script in the distro **without** the fence, with the stone's secret
+/// set the same way: step 10's control. If the secret does not reach even
+/// this process, its absence inside the fence proves nothing.
+fn run_unfenced(distro: &str, script: &str, secret: &str) -> (probe::Ran, String) {
+    let args = vec![
+        "-d".to_string(),
+        distro.to_string(),
+        "--cd".into(),
+        "/".into(),
+        "-e".into(),
+        "/bin/sh".into(),
+        "-c".into(),
+        script.to_string(),
+    ];
+    run_bounded(&args, secret)
+}
+
+/// `wsl.exe` with these arguments (on the bench, `/bin/sh -c` with the last
+/// one), the secret set and carried by `WSLENV`, bounded at 30 s.
+fn run_bounded(args: &[String], secret: &str) -> (probe::Ran, String) {
     use std::io::Read;
     use std::process::{Command, Stdio};
-    let Ok(args) = crate::pawn::fence::wsl_args(distro, plan, argv) else {
-        return (false, "the step's command could not be built".into());
-    };
     #[cfg(windows)]
     let mut command = {
         use std::os::windows::process::CommandExt;
         let mut command = Command::new("wsl.exe");
         command
-            .args(&args)
+            .args(args)
             .env("RIFTSTONE_PROBE_SECRET", secret)
             .env("WSLENV", "RIFTSTONE_PROBE_SECRET")
             .creation_flags(0x0800_0000);
@@ -1074,13 +1375,19 @@ fn run_step(distro: &str, plan: &FencePlan, argv: &[String], secret: &str) -> (b
             .env("RIFTSTONE_PROBE_SECRET", secret);
         command
     };
-    let Ok(mut child) = command
+    let mut child = match command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-    else {
-        return (false, "the step could not start".into());
+    {
+        Ok(child) => child,
+        Err(err) => {
+            return (
+                probe::Ran::NotStarted(format!("the step could not start: {err}")),
+                String::new(),
+            )
+        }
     };
     let pipe = |mut reader: Box<dyn Read + Send>| {
         std::thread::spawn(move || {
@@ -1092,15 +1399,20 @@ fn run_step(distro: &str, plan: &FencePlan, argv: &[String], secret: &str) -> (b
     let out = child.stdout.take().map(|o| pipe(Box::new(o)));
     let err = child.stderr.take().map(|e| pipe(Box::new(e)));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let status = loop {
+    let ran = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
+            Ok(Some(status)) => break status.code().map_or(probe::Ran::Killed, probe::Ran::Exited),
             Ok(None) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            _ => {
+            Ok(None) => {
                 let _ = child.kill();
-                break None;
+                let _ = child.wait();
+                break probe::Ran::TimedOut;
+            }
+            Err(err) => {
+                let _ = child.kill();
+                break probe::Ran::NotStarted(format!("the step could not be waited on: {err}"));
             }
         }
     };
@@ -1108,7 +1420,7 @@ fn run_step(distro: &str, plan: &FencePlan, argv: &[String], secret: &str) -> (b
     for reader in [out, err].into_iter().flatten() {
         output.push_str(&reader.join().unwrap_or_default());
     }
-    (status.is_some_and(|s| s.success()), output)
+    (ran, output)
 }
 
 /// A link from `link` to `target`: an NTFS junction on Windows, a symlink on
@@ -1139,16 +1451,30 @@ fn make_link(link: &Path, target: &Path) -> std::io::Result<()> {
 }
 
 /// A copy of Windows' own `cmd.exe` in the workshop's probe folder (step 6).
-fn plant_cmd(at: &Path) {
+/// `Err` says why there is none: then step 6 shows nothing.
+fn plant_cmd(at: &Path) -> Result<(), String> {
+    if !cfg!(windows) {
+        return Err("only Windows has a cmd.exe to copy".into());
+    }
+    std::fs::copy(cmd_exe_outside(), at)
+        .map(|_| ())
+        .map_err(|err| format!("the stone could not place its copy of cmd.exe: {err}"))
+}
+
+/// Windows' own `cmd.exe`, as the stone sees it outside the fence.
+fn cmd_exe_outside() -> PathBuf {
     #[cfg(windows)]
     {
-        let system = std::env::var_os("SystemRoot")
+        std::env::var_os("SystemRoot")
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
-        let _ = std::fs::copy(system.join("System32").join("cmd.exe"), at);
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+            .join("System32")
+            .join("cmd.exe")
     }
     #[cfg(not(windows))]
-    let _ = at;
+    {
+        PathBuf::from("/mnt/c/Windows/System32/cmd.exe")
+    }
 }
 
 /// Steam's `userdata`, beside the library that holds the game, or in the
@@ -1243,6 +1569,137 @@ mod tests {
             Some(PathBuf::from("/games/The Rift/mods (workshop)"))
         );
         assert_eq!(workshop_dir(Path::new("/")), None);
+    }
+
+    fn holding_record(ground: Ground) -> FenceRecord {
+        use probe::{StepRecord, Verdict, BROKER, PROBE_VERSION, TABLE};
+        FenceRecord {
+            version: PROBE_VERSION,
+            ground,
+            proved_at: "2026-10-28T20:00:00Z".into(),
+            control: true,
+            steps: TABLE
+                .iter()
+                .map(|(id, expect)| StepRecord::new(id, *expect, Verdict::Held, String::new()))
+                .collect(),
+            broker: BROKER
+                .iter()
+                .map(|id| StepRecord::new(id, probe::Expect::Fail, Verdict::Held, String::new()))
+                .collect(),
+        }
+    }
+
+    /// The Heretic's WP3: the inputs change the plan, so they change the
+    /// ground, and a proof on the old ground is no longer `contained`.
+    #[test]
+    fn the_chip_reads_the_ground_now_and_an_input_change_unproves_it() {
+        // The plan as plan_of builds it; an input is its fence path (inputs
+        // resolve only on Windows, so the bench names one directly).
+        let host = Host {
+            distro: "Ubuntu-24.04".into(),
+            claude_version: "2.1.312".into(),
+            kernel: "6.18".into(),
+        };
+        let ground_with = |inputs: Vec<String>| {
+            let id = new_run_id();
+            let plan = FencePlan {
+                home: "/home/arisen".into(),
+                user: "arisen".into(),
+                workshop: "/mnt/c/Games/mods (workshop)".into(),
+                run_dir: format!("/mnt/c/Data/pawn/runs/{id}"),
+                run_id: id,
+                inputs,
+            };
+            ground(&plan, &host, RELAY.as_bytes()).unwrap()
+        };
+        let vanilla = || vec!["/mnt/c/Extracts/vanilla".to_string()];
+        let one = ground_with(vanilla());
+        let none = ground_with(Vec::new());
+        assert_eq!(one, ground_with(vanilla()), "a run's id is not the ground");
+        assert_ne!(one.digest, none.digest, "an input is part of the ground");
+
+        let proved = || Some(holding_record(one.clone()));
+        assert_eq!(view_of(proved(), || Ok(one.clone())).chip, "contained");
+        let after = view_of(proved(), || Ok(none.clone()));
+        assert_eq!(after.chip, "unprobed");
+        assert_eq!(
+            after.changed.as_deref(),
+            Some("the fence itself changed since it was proved")
+        );
+        let unknown = view_of(proved(), || Err("no WSL distro answered".into()));
+        assert_eq!(unknown.chip, "unprobed");
+        assert_eq!(
+            unknown.changed.as_deref(),
+            Some("the stone could not check this host now: no WSL distro answered")
+        );
+        // The broker checks are part of the view's rows.
+        assert_eq!(after.steps.len(), 14);
+        assert_eq!(after.steps[12].step, "B1");
+    }
+
+    /// The Heretic's WP4: the broker checks run with the probe, through the
+    /// stone's own reader, on real links and real files.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_broker_checks_refuse_links_unread_and_bad_requests_unparsed() {
+        let base = tempfile::tempdir().unwrap();
+        let canary_dir = base.path().join("probe-canary");
+        std::fs::create_dir_all(&canary_dir).unwrap();
+        std::fs::write(canary_dir.join("probe-canary.txt"), "n0nce").unwrap();
+        let checks = broker_checks(
+            base.path(),
+            &canary_dir,
+            "n0nce",
+            &crate::pawn::host::LocalSh,
+        );
+        let seen: Vec<(&str, probe::Verdict)> = checks
+            .iter()
+            .map(|c| (c.step.as_str(), c.verdict()))
+            .collect();
+        assert_eq!(
+            seen,
+            [("B1", probe::Verdict::Held), ("B2", probe::Verdict::Held)],
+            "{checks:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(canary_dir.join("probe-canary.txt")).unwrap(),
+            "n0nce"
+        );
+        assert!(
+            !base.path().join("probe-requests").exists(),
+            "the request folder is cleared"
+        );
+        // Without a canary to aim at, the links cannot be planted: nothing is shown.
+        std::fs::remove_file(canary_dir.join("probe-canary.txt")).unwrap();
+        let checks = broker_checks(
+            base.path(),
+            &canary_dir,
+            "n0nce",
+            &crate::pawn::host::LocalSh,
+        );
+        assert_eq!(checks[0].verdict(), probe::Verdict::Inconclusive);
+    }
+
+    #[test]
+    fn a_breach_is_shown_without_asking_the_host() {
+        let mut record = holding_record(Ground {
+            distro: "d".into(),
+            claude_version: "c".into(),
+            kernel: "k".into(),
+            digest: "g".into(),
+        });
+        record.steps[0] = probe::StepRecord::new(
+            "1",
+            probe::Expect::NotLand,
+            probe::Verdict::Breached,
+            "LANDED".into(),
+        );
+        let view = view_of(Some(record), || panic!("a breach needs no ground"));
+        assert_eq!(view.chip, "breached");
+        assert_eq!(
+            view_of(None, || panic!("no record needs no ground")).chip,
+            "unprobed"
+        );
     }
 
     #[test]

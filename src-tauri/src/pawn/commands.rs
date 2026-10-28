@@ -113,7 +113,7 @@ pub fn get_workshop_impl(state: &AppState, desk: &Desk) -> Result<WorkshopView, 
         },
         artifacts: artifacts(&workshop, state.library_dir()),
         pawn: desk.pawn_state(),
-        fence: desk.fence_view(),
+        fence: desk.fence_view(state),
         voice: settings.voice,
         inputs: settings.inputs,
     })
@@ -280,7 +280,7 @@ pub async fn answer_pawn_play(
 
 #[tauri::command]
 pub async fn get_fence(spine: Spine<'_>, desk: DeskState<'_>) -> Result<FenceView, RiftError> {
-    with_desk(&spine, &desk, |_, desk| Ok(desk.fence_view())).await
+    with_desk(&spine, &desk, |state, desk| Ok(desk.fence_view(state))).await
 }
 
 #[tauri::command]

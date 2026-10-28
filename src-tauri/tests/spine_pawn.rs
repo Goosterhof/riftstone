@@ -632,13 +632,14 @@ fn bench_run_the_real_probe() {
     let view = desk.run_probe(&state).expect("the probe ran");
     for step in &view.steps {
         println!(
-            "BENCH step {:>2} {:?} ok={} — {}",
-            step.step, step.expected, step.ok, step.observed
+            "BENCH step {:>2} {:?} {:?} — {}",
+            step.step, step.expected, step.verdict, step.observed
         );
     }
     println!(
-        "BENCH chip={} ground={:?}",
+        "BENCH chip={} changed={:?} ground={:?}",
         view.chip,
+        view.changed,
         view.ground
             .as_ref()
             .map(|g| (&g.distro, &g.claude_version, &g.kernel))
