@@ -3051,8 +3051,29 @@ must be no stronger than the tool call it imitates. The stone also checks:
   starts**: a duplicate arriving while the first is still in flight joins it and receives the
   same answer when that finishes, rather than starting a second mutation (the Heretic's
   follow-up, 2026-10-28).
-It answers in the same shape the relay returns to Claude Code. A malformed request is answered
+It answers in the same shape the relay returns to Claude Code: `{ id, outcome, text, data }`, where
+`outcome` is `done`, `refused`, `held` or `unknown`. **`unknown`** (the Heretic's WB2) answers a
+mutation the stone made but could not record: the ledger keeps its intent, written before the
+mutation started, and the answer tells Tamsin to read `list_installed`. A ledger that cannot be
+written stops every further mutation in that run (`refused`, the stone's own sentence); reading
+tools still answer. An uninstall's ledger entry records whose install it removed,
+`removed: { actor, seq }`, as the journal had it at that moment (WB4). `install` hands the plan its
+token named to the install, which checks it again under the lock that commits (WB1). A malformed request is answered
 `refused` with a sentence and is never acted on. Requests are never logged with their arguments.
+
+**The held Play's decision** (the Heretic's review, 2026-10-28). The `play` call that asked has
+already been answered `held`, and that answer is the ledger's for its id forever: a retry of the
+same id gets `held` again, never the decision. The Arisen's press is recorded as its own
+**decision**, `{ runId, heldRequestId, decision: played | declined, at, delivered: false }`, in the
+run's ledger. It reaches Tamsin in two ways:
+- **read, never consumed:** every `list_installed` answer carries
+  `play: { waiting: heldRequestId | null, lastDecision: { heldRequestId, decision, at } | null }`;
+- **delivered once:** the next `play` call with a **new** id, while a decision is undelivered,
+  answers that decision (`done`, `played at …` or `declined: the Arisen said not now`), marks it
+  delivered, and holds nothing new. Asking again is a further new `play` call.
+A new `play` id while a request is still waiting holds nothing new either: it answers `held` with
+the waiting request's id in `data.heldRequestId`. At most one Play is held per run, and a
+departure drops it unanswered (`lastDecision` stays as it was).
 
 **A timeout has a defined status.** The relay waits up to 120 s. Then it tells the model
 `unknown: the stone may still be doing this. Call list_installed, or call the same tool again,
@@ -3066,7 +3087,7 @@ which repeats nothing`. A mutation's true outcome is always in the ledger and th
 | `plan_install` | `optionId` | `plan_install`, plus a **plan token**: a hash of the plan, the library's generation and the journal's sequence | the plan and the token |
 | `install` | `optionId, planToken` | refuses `stalePlan` unless the token still matches; otherwise `install` through the RS-4 journal with **`actor: pawn`**, inheriting RS-3's refusals word for word | the outcome |
 | `uninstall` | `installId` | `plan_uninstall` + `uninstall`, `actor: pawn` | the outcome |
-| `play` | — | **held**: the window shows the request; the tool answers at once `held: waiting for the Arisen`. `Play` in the window runs `plan_launch` + `launch_game` exactly as the slab does; `Not now` records `declined`. A held request is dropped when the pawn departs | `held` |
+| `play` | — | **held**: the window shows the request; the tool answers at once `held: waiting for the Arisen`. `Play` in the window runs `plan_launch` + `launch_game` exactly as the slab does; `Not now` records `declined`. A held request is dropped when the pawn departs. The Arisen's choice reaches Tamsin later, never by rewriting this answer (*The held Play's decision*, below) | `held`, or the run's undelivered decision |
 | `read_reframework_log` | `tailLines ≤ 2000` | reads `<game>\reframework\re2_framework_log.txt` (or the build's log name, as THE FRAY finds it) read-only | the lines, and their count |
 
 There is no tool that writes a file, reads a save, touches THE MUSTER, the Nexus key or the

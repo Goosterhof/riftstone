@@ -1024,7 +1024,7 @@ Types live in `src/types/workshop.ts`. Design: #00015 §20.
 | `pawn_write` | `data: string` | `void` | Keystrokes and pastes, UTF-8, to the PTY. Refuses `notHere`. |
 | `pawn_resize` | `cols: number, rows: number` | `void` | Called on fit; ignored when no pawn is here. |
 | `depart_pawn` | — | `void` | Ends the session: SIGTERM to the fence, then a kill after 3 s. A held Play is dropped. The pawn's installs stay (see `plan_put_back`). |
-| `answer_pawn_play` | `accept: boolean` | `void` | The held Play request. `true` runs `plan_launch` and `launch_game` exactly as the Play slab does, with the same warnings and refusals. `false` answers the pawn `declined`. Refuses `nothingHeld`. |
+| `answer_pawn_play` | `accept: boolean` | `void` | The held Play request. `true` runs `plan_launch` and `launch_game` exactly as the Play slab does, with the same warnings and refusals. `false` records `declined`. Either way the choice is recorded as the run's decision and reaches Tamsin through her next `list_installed` or a new `play` call (BUILD-SPEC § v0.7, *The held Play's decision*); the held call's own answer stays `held`. Refuses `nothingHeld`. |
 | `get_fence` | — | `FenceView` | The last probe record judged against the current ground. |
 | `run_fence_probe` | — | `FenceView` | The deterministic probe (BUILD-SPEC § v0.7, no model, about 10 s). Refuses `pawn` `pawnHere` while a pawn is summoned. |
 | `plan_bring_through` | `artifact: string` | `BringThroughPlan` | `artifact` is a file name in the workshop's `dist\`. The plan carries the digest **frozen now**. That digest is what the press refers to. |
@@ -1076,7 +1076,8 @@ the investor's own and may be shown.
 - `PawnStateView`: `{ runId: string | null, state: "absent" | "summoning" | "here" | "departed" |
   "torn", since: string | null, exitCode: number | null, host: { distro, claudeVersion } | null, held: "play" | null }`.
 - `PawnHand`: `{ runId, seq, at, tool, outcome: "done" | "refused" | "held" | "declined" |
-  "repeated" (a replayed id answered from the ledger), summary,
+  "repeated" (a replayed id answered from the ledger) | "unknown" (made but not recorded: the
+  ledger could not be written), summary,
   installId: string | null, refusal: string | null }`. `summary` is the row's text
   (`installed Stature 0.2.0 · 7 files`). `refusal` is the stone's own sentence, verbatim.
 - `FenceView`: `{ chip: "contained" | "unprobed" | "breached", ground: { distro, claudeVersion,
@@ -1087,9 +1088,12 @@ the investor's own and may be shown.
   conflict: "none" | "alreadyHad" | "nameTaken" }`.
 - `BringThroughResult`: `{ outcome: "landed" | "alreadyHad", packageId: string }`.
 - `PutBackPlan`: `{ runId, remove: UninstallPlanView[], review: { installId, optionId, name,
-  at, undo: "available" | "reinstallFromRift" }[], sentence }`. `sentence` is the press's own
-  promise, e.g. *Removes the 3 installs Tamsin made in this summoning. She also uninstalled 1 of
-  yours; it is listed below.*
+  at, undo: "available" | "reinstallFromRift", known: "yours" | "anotherSummoning" | "uncertain"
+  }[], sentence }`. `known` is what the ledger can say: done and the player's, done and another
+  summoning's, or `uncertain` (an outcome or owner that was not recorded; the Heretic's WB5).
+  `sentence` is the press's own promise and counts each kind in its own words, e.g. *Removes the 3
+  installs Tamsin made in this summoning. She also uninstalled 1 of yours. The stone cannot tell
+  whether 1 more was uninstalled, or whose it was. They are listed below.*
 - `Voice`: `"full" | "sparing" | "plain"` (default `sparing`).
 
 ### What the window may not do
