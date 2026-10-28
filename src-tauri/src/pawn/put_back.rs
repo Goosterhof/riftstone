@@ -43,6 +43,21 @@ pub struct ReviewItem {
     pub name: String,
     pub at: String,
     pub undo: Undo,
+    /// What the ledger can say about it, and no more (the Heretic's WB5).
+    pub known: Known,
+}
+
+/// How much the ledger knows about one uninstall on the review list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Known {
+    /// Done, and the install it removed was the player's.
+    Yours,
+    /// Done, and the install it removed was placed in another summoning.
+    AnotherSummoning,
+    /// The outcome is unknown, or whose install it was was not recorded: it
+    /// may or may not have been removed, and may or may not have been yours.
+    Uncertain,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -63,7 +78,7 @@ fn installs_of(n: usize) -> String {
 }
 
 /// The press's sentence: what it removes, and what it leaves for review.
-pub fn sentence(remove: usize, review: usize) -> String {
+pub fn sentence(remove: usize, review: &[ReviewItem]) -> String {
     let first = if remove == 0 {
         "Tamsin left no install of her own from this summoning in your world.".to_string()
     } else {
@@ -72,11 +87,39 @@ pub fn sentence(remove: usize, review: usize) -> String {
             installs_of(remove)
         )
     };
-    match review {
-        0 => first,
-        1 => format!("{first} She also uninstalled 1 of yours; it is listed below."),
-        n => format!("{first} She also uninstalled {n} of yours; they are listed below."),
+    let count = |known: Known| review.iter().filter(|item| item.known == known).count();
+    let (yours, another, uncertain) = (
+        count(Known::Yours),
+        count(Known::AnotherSummoning),
+        count(Known::Uncertain),
+    );
+    let mut done = Vec::new();
+    if yours > 0 {
+        done.push(format!("{yours} of yours"));
     }
+    if another > 0 {
+        done.push(format!("{another} placed in another summoning"));
+    }
+    let mut parts = vec![first];
+    if !done.is_empty() {
+        parts.push(format!("She also uninstalled {}.", done.join(" and ")));
+    }
+    match uncertain {
+        0 => {}
+        1 => parts
+            .push("The stone cannot tell whether 1 more was uninstalled, or whose it was.".into()),
+        n => parts.push(format!(
+            "The stone cannot tell whether {n} more were uninstalled, or whose they were."
+        )),
+    }
+    if !review.is_empty() {
+        parts.push(if review.len() == 1 {
+            "It is listed below.".into()
+        } else {
+            "They are listed below.".into()
+        });
+    }
+    parts.join(" ")
 }
 
 /// Plan Put back for `run_id`. `undo_available` says whether the journal's
@@ -128,7 +171,13 @@ pub fn plan_put_back(
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(&install_id)
                 .to_string();
+            let known = match (&op.outcome, &op.removed) {
+                (Outcome::Done, Some(removed)) if removed.actor == Actor::Player => Known::Yours,
+                (Outcome::Done, Some(_)) => Known::AnotherSummoning,
+                _ => Known::Uncertain,
+            };
             Some(ReviewItem {
+                known,
                 undo: if undo_available(&install_id) {
                     Undo::Available
                 } else {
@@ -142,7 +191,7 @@ pub fn plan_put_back(
         .collect::<Vec<_>>();
     PutBack {
         run_id: run_id.to_string(),
-        sentence: sentence(remove.len(), review.len()),
+        sentence: sentence(remove.len(), &review),
         remove,
         review,
     }
@@ -273,11 +322,12 @@ mod tests {
                 name: "Lantern Glow".into(),
                 at: "2026-10-28T12:05:00Z".into(),
                 undo: Undo::Available,
+                known: Known::Yours,
             }]
         );
         assert_eq!(
             plan.sentence,
-            "Tamsin left no install of her own from this summoning in your world. She also uninstalled 1 of yours; it is listed below."
+            "Tamsin left no install of her own from this summoning in your world. She also uninstalled 1 of yours. It is listed below."
         );
     }
 
@@ -350,7 +400,7 @@ mod tests {
         assert_eq!(plan.review[1].undo, Undo::ReinstallFromRift);
         assert_eq!(
             plan.sentence,
-            "Removes the 1 install Tamsin made in this summoning. She also uninstalled 2 of yours; they are listed below."
+            "Removes the 1 install Tamsin made in this summoning. She also uninstalled 2 of yours. They are listed below."
         );
     }
 
@@ -392,6 +442,45 @@ mod tests {
         let plan = plan_put_back(RUN, &ledger, &journal(vec![]), &|_| true);
         let ids: Vec<&str> = plan.review.iter().map(|r| r.install_id.as_str()).collect();
         assert_eq!(ids, ["aa#Glow", "ab#Hair", "ac#Own", "ad#Other"]);
+        let known: Vec<Known> = plan.review.iter().map(|r| r.known).collect();
+        assert_eq!(
+            known,
+            [
+                Known::Uncertain,
+                Known::Uncertain,
+                Known::Uncertain,
+                Known::AnotherSummoning
+            ]
+        );
+        assert_eq!(
+            plan.sentence,
+            "Tamsin left no install of her own from this summoning in your world. She also uninstalled 1 placed in another summoning. The stone cannot tell whether 3 more were uninstalled, or whose they were. They are listed below."
+        );
+    }
+
+    #[test]
+    fn an_uncertain_uninstall_of_her_own_is_never_called_yours() {
+        // The Heretic's WB5: an unknown outcome that recorded this run's own
+        // install must not read as a completed uninstall of the player's.
+        let ledger = ledger(vec![removing(
+            "uninstall",
+            "ac#Own",
+            Outcome::Unknown,
+            "Own",
+            Some(pawn(RUN)),
+        )]);
+        let plan = plan_put_back(RUN, &ledger, &journal(vec![]), &|_| true);
+        assert_eq!(plan.review.len(), 1);
+        assert!(!plan.sentence.contains("of yours"), "{}", plan.sentence);
+        assert!(
+            !plan.sentence.contains("She also uninstalled"),
+            "{}",
+            plan.sentence
+        );
+        assert_eq!(
+            plan.sentence,
+            "Tamsin left no install of her own from this summoning in your world. The stone cannot tell whether 1 more was uninstalled, or whose it was. It is listed below."
+        );
     }
 
     #[test]
