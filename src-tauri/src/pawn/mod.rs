@@ -14,6 +14,8 @@
 //!   table, the run's idempotent ledger and its retirement.
 //! - [`persona`]: Tamsin's appended system prompt from the voice dial, the
 //!   relay (`resources/pawn/relay.py`) and the workshop's starter.
+//! - [`summon`]: one summoning: the PTY through the fence, its output in
+//!   order, the mailbox loop, and departure.
 //! - [`put_back`]: the Gift, narrowed: what a press can honestly undo of one
 //!   summoning, and what it only lists.
 //! - [`folder`]: the run's two mailbox folders, by handle: no link, reparse
@@ -27,3 +29,4 @@ pub mod host;
 pub mod mailbox;
 pub mod persona;
 pub mod put_back;
+pub mod summon;
