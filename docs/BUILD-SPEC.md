@@ -2976,11 +2976,41 @@ Two broker checks run with the probe, on the Windows side, without the fence:
   request folder, both pointing outside it. Its own request reader must refuse both, unread;
 - a request named outside the UUID pattern, and one of 64 KiB + 1, must be refused unparsed.
 
+**A refusal counts only when the stone saw it** (the Heretic's Assay of the probe, WP1). Each
+step and each broker check gets one verdict:
+- `held`: the step began inside the fence (its first line is the run's marker, printed by the
+  script itself), finished within 30 s, aimed at something that exists outside (the mods and game
+  folders, Steam's `userdata` with entries in it, the canary and its link, the planted `cmd.exe`,
+  the investor's `~/.claude`, the run's `answers\`), and came back with the refusal itself. A
+  write must exit non-zero and leave nothing on disk. A program that cannot run answers 126 or
+  127. Step 12 calls the ioctl through libc and exits with its errno (41 for `EPERM`, 42 for
+  `EIO`). Step 10 first checks that the secret reaches WSL **without** the fence, so its absence
+  inside means something.
+- `breached`: something crossed: a file landed, the nonce or the secret came back, `userdata`
+  was listed, a Windows program ran (exit 0), or the ioctl succeeded. This is judged first,
+  whatever else is missing.
+- `inconclusive`: anything else. That covers a step that could not start, timed out, never
+  printed the marker, aimed at nothing, or failed for a reason other than the refusal.
+
 The record is `pawn-fence.json` in the stone's app data:
-`{ ground, provedAt, control, steps: [{ step, expected, observed, layer }] }`. `layer` is `os` for
-every refusal the fence makes. No step runs Claude Code, so no permission rule takes part.
-A step that lands where it must not is removed by the stone at once (the stone's own probe file,
-never anything else), and the record is `BREACHED`.
+`{ version: 2, ground, provedAt, control, steps: [{ step, expected, observed, ok, verdict, layer }],
+broker: [B1, B2] }`. `layer` is `os` for every refusal the fence makes. No step runs Claude
+Code, so no permission rule takes part. A step that lands where it must not is removed by the
+stone at once (the stone's own probe file, never anything else), and the record is `BREACHED`.
+**A record holds only when it is whole** (WP2):
+- this version;
+- the control;
+- exactly rows 1–12 in order, each with its expectation;
+- B1 and B2;
+- every one of them `held`.
+
+An inconclusive row leaves the chip `UNPROBED`, naming the row. A record from an earlier version
+reads back, and a recorded breach stays one, but it never holds.
+
+**The chip is judged against the ground now** (WP3). `get_fence` and `get_workshop` survey the
+host again (one `wsl.exe` call) and build the plan a summon would get, with the same function
+`prepare` uses. A changed input, distro, `claude` or kernel therefore reads `UNPROBED` at once.
+When the host cannot be checked, a holding record reads `UNPROBED` and says why.
 
 **The chip has no `POLICY` in v0.7.** The stone never launches a pawn without the fence. If
 `bwrap`, `socat` or the WSL distro is missing, summoning refuses (`noFence`, with the missing
@@ -3023,7 +3053,7 @@ Measured since (Goosterhof/riftstone#9 and the probe PR, the lab's spike runs K�
 PTY inside the fence; the Windows stone's ConPTY through `wsl.exe`, which waits on the cursor
 query `ESC[6n` that xterm.js answers; the tree's death across `wsl.exe` on departure and on
 process exit; the environment at the fence (only the nine names, no `WSLENV` secret); and the
-probe itself, natively on the homestation, `contained`.
+probe itself, natively on the homestation, `contained`. After the Assay's WP1–WP4 it ran again natively: every row and both broker checks were `held`, with step 10's control crossing without the fence, and the chip read `contained`.
 
 ### The tools: a mailbox, not a socket
 
