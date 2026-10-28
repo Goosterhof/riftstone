@@ -1125,6 +1125,11 @@ the investor's own and may be shown.
   build, which Q20.3 names as the settling read.
 - The fence fold shows the control first, then rows 1–12 and B1/B2 by their verdict: `✓` held,
   `✕` breached (ember), `?` could not show (faint).
+- The terminal takes input from `summoning` on, because xterm's `disableStdin` drops every
+  reply, including its answer to ConPTY's first cursor query, and ConPTY holds all later output
+  behind that answer. What the terminal says before the run is `here` (the only state in which
+  the stone accepts `pawn_write`) is held, sent in order once the run is here, and dropped if
+  the run never arrives.
 - A Play press answers the request that was waiting at the click: if another took its place
   while §16.2's plan was read, nothing is answered and the room says so. The decision reads
   `The stone started the launch.`; whether the game runs is the watcher's line, apart.

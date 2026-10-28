@@ -259,4 +259,29 @@ describe("the Heretic's review of the room (PR #11)", () => {
     expect(text(seen)).toBe("FIRSTSECONDTHIRD");
     expect(w.runId.value).toBe("run-b");
   });
+
+  it("should send what the terminal answered while the run was summoned, once the run is here", async () => {
+    const w = await bench();
+    await w.summon(80, 24);
+    expect(w.pawn.value?.state).toBe("summoning");
+    // ConPTY's cursor query, and xterm's answer, before the stone can take keystrokes.
+    mock.controls.emitRawOutput({ runId: "run-mock-1", seq: 0, data: b64("\x1b[6n") });
+    await w.write("\x1b[1;1R");
+    expect(mock.controls.calls.filter((c) => c.cmd === "pawn_write")).toStrictEqual([]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await flushPromises();
+    expect(w.pawn.value?.state).toBe("here");
+    const writes = mock.controls.calls.filter((c) => c.cmd === "pawn_write").map((c) => c.args[0]);
+    expect(writes).toStrictEqual(["\x1b[1;1R"]);
+  });
+
+  it("should drop what a summoned run's terminal said when that run never arrives", async () => {
+    const w = await bench();
+    await w.summon(80, 24);
+    await w.write("x");
+    mock.controls.tear(3);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await flushPromises();
+    expect(mock.controls.calls.filter((c) => c.cmd === "pawn_write")).toStrictEqual([]);
+  });
 });

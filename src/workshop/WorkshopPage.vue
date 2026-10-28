@@ -237,7 +237,7 @@ onBeforeUnmount(() => {
       <div class="ws-hollow" :class="`is-${place}`">
         <span class="ws-fissure" :class="{ 'is-flaring': parting }" aria-hidden="true" />
         <div class="ws-void" :class="{ 'is-parting': parting }">
-          <WorkshopHollow ref="hollow" :live="state === 'here'" />
+          <WorkshopHollow ref="hollow" :live="state === 'here' || state === 'summoning'" />
         </div>
 
         <div v-if="place === 'closed' || place === 'summoning'" class="ws-stone">

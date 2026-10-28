@@ -129,6 +129,7 @@ function newRun(id: string | null): void {
   runId.value = id;
   firstBytes.value = false;
   waiting = [];
+  pendingWrites = pendingWrites.filter((w) => w.run === id);
   playWarnings.value = null;
   playRefusal.value = null;
   playAnswered.value = null;
@@ -149,6 +150,8 @@ function onState(next: PawnStateView): void {
     playFor = null;
   }
   if (view.value) view.value = { ...view.value, pawn: next };
+  if (next.state === "here" && next.runId && next.runId === runId.value) void flushPendingWrites(next.runId);
+  else if (next.state !== "summoning") pendingWrites = [];
 }
 
 function onHand(hand: PawnHand): void {
@@ -200,9 +203,29 @@ async function summon(cols: number, rows: number): Promise<void> {
   await load();
 }
 
+/** What the terminal said while its run was still being summoned: ConPTY's
+ *  first chunk is a cursor query it holds every later byte behind, and xterm's
+ *  answer must reach the pawn once the stone can take it (it can only once
+ *  the run is here). Sent in order when it is; dropped if the run changes. */
+let pendingWrites: { run: string; data: string }[] = [];
+
 async function write(data: string): Promise<void> {
+  const run = runId.value;
+  if (pawn.value?.state === "summoning" && run) {
+    pendingWrites.push({ run, data });
+    return;
+  }
   if (!here.value) return;
   await (await workshop()).pawnWrite(data).catch(() => undefined);
+}
+
+/** The run is here: what its terminal said while it was summoned goes now, in order. */
+async function flushPendingWrites(run: string): Promise<void> {
+  const mine = pendingWrites.filter((w) => w.run === run);
+  pendingWrites = [];
+  if (!mine.length) return;
+  const backend = await workshop();
+  for (const w of mine) await backend.pawnWrite(w.data).catch(() => undefined);
 }
 
 async function resize(cols: number, rows: number): Promise<void> {
