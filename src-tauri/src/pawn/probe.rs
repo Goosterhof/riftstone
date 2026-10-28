@@ -339,6 +339,10 @@ pub fn judge(step: &Step, seen: &Seen, ctx: &Context) -> StepRecord {
         return record(Verdict::Inconclusive, ended);
     }
     let code = exit.unwrap_or(0);
+    // The tool's own failure: 1–125. 126 and 127 are the shell saying it could
+    // not run the tool at all, which shows nothing about the place it aimed at
+    // (the Heretic's cea51c4 follow-up).
+    let tool_refused = (1..=125).contains(&code);
 
     // The refusal itself, row by row.
     let (held, observed) = match step.id {
@@ -356,7 +360,8 @@ pub fn judge(step: &Step, seen: &Seen, ctx: &Context) -> StepRecord {
                 false,
                 format!("reported a write, yet nothing landed: {said}"),
             ),
-            Some(_) => (true, format!("refused: {said}")),
+            Some(_) if tool_refused => (true, format!("refused: {said}")),
+            Some(_) => (false, format!("ended {code}, before the write: {said}")),
         },
         // `sh` answers 127 for a program it cannot find and 126 for one it
         // cannot execute; any other end is not that refusal.
@@ -368,8 +373,9 @@ pub fn judge(step: &Step, seen: &Seen, ctx: &Context) -> StepRecord {
                 format!("ended {code}, which is not a refusal to run: {said}"),
             ),
         },
-        "3" | "4" | "9" if code != 0 => (true, format!("refused: {said}")),
-        "3" | "4" | "9" => (false, format!("succeeded, yet showed nothing: {said}")),
+        "3" | "4" | "9" if tool_refused => (true, format!("refused: {said}")),
+        "3" | "4" | "9" if code == 0 => (false, format!("succeeded, yet showed nothing: {said}")),
+        "3" | "4" | "9" => (false, format!("ended {code}, before the read: {said}")),
         "8" if code == 0 && carries(&ctx.claude_version) => (true, format!("answered: {said}")),
         "8" => (
             false,
@@ -425,8 +431,8 @@ impl FenceRecord {
     }
 
     /// Whole and held: this probe's version, the control, exactly the
-    /// table's rows in order with their expectations, both broker checks,
-    /// and every one `held`.
+    /// table's rows in order with their expectations, both broker checks
+    /// (each must fail), and every one recorded `held` outright.
     pub fn holds(&self) -> bool {
         let table = self.steps.len() == TABLE.len()
             && self
@@ -439,7 +445,9 @@ impl FenceRecord {
                 .broker
                 .iter()
                 .zip(BROKER)
-                .all(|(check, id)| check.step == id);
+                .all(|(check, id)| check.step == id && check.expected == Expect::Fail);
+        // A version-2 row says its verdict outright: the reading back from
+        // `ok` is for an older record's breaches, never for a proof.
         self.version == PROBE_VERSION
             && self.control
             && table
@@ -448,7 +456,7 @@ impl FenceRecord {
                 .steps
                 .iter()
                 .chain(&self.broker)
-                .all(|step| step.verdict() == Verdict::Held)
+                .all(|step| step.verdict == Some(Verdict::Held))
     }
 
     /// Why a record that did not breach does not hold, in one sentence.
@@ -714,6 +722,15 @@ mod tests {
             verdict("5", &ran(2, "Directory nonexistent", None)),
             Verdict::Inconclusive
         );
+        // The shell could not run the tool at all: 127 shows nothing about the
+        // place it aimed at (the Heretic's cea51c4 follow-up).
+        for id in ["1", "3", "4", "9", "11"] {
+            assert_eq!(
+                verdict(id, &ran(127, "sh: 1: helper: not found", Some(false))),
+                Verdict::Inconclusive,
+                "{id}"
+            );
+        }
         // A write that says it worked but never reached the disk is not a refusal.
         assert_eq!(
             verdict("1", &ran(0, "", Some(false))),
@@ -818,6 +835,12 @@ mod tests {
         relabelled.steps[0].expected = Expect::Succeed;
         let mut older = whole.clone();
         older.version = 1;
+        let mut unsaid = whole.clone();
+        for row in unsaid.steps.iter_mut().chain(unsaid.broker.iter_mut()) {
+            row.verdict = None;
+        }
+        let mut broker_expects = whole.clone();
+        broker_expects.broker[0].expected = Expect::Succeed;
         for (name, rec) in [
             ("empty", empty),
             ("only step 8", only_eight),
@@ -825,6 +848,8 @@ mod tests {
             ("a row twice", doubled),
             ("a row's expectation changed", relabelled),
             ("an older version", older),
+            ("version 2 with no verdicts said", unsaid),
+            ("a broker check that must succeed", broker_expects),
         ] {
             assert_eq!(chip(Some(&rec), &here).0, "unprobed", "{name}");
             assert!(!rec.holds(), "{name}");
