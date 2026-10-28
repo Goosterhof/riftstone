@@ -5,19 +5,21 @@
 //!   journal (a player's reinstall would have made them the player's). Each
 //!   is uninstalled newest first through the journal, after the investor
 //!   reviews it.
-//! - **review:** what that run uninstalled that was not its own install. It
-//!   is shown, never acted on in bulk, each with its Undo where that still
-//!   applies, else *Install again from the Rift*.
+//! - **review:** what that run uninstalled that was not its own install, by
+//!   whose install the journal said it was at the moment it was removed
+//!   ([`crate::pawn::mailbox::Removed`]; an option id can be installed again
+//!   by someone else, so it is never the test: the Heretic's WB4). An
+//!   uninstall whose outcome is `unknown`, or that recorded no owner, is
+//!   listed too. Shown, never acted on in bulk, each with its Undo where that
+//!   still applies, else *Install again from the Rift*.
 //!
 //! It never promises the world as it was. An install's id is its option id,
 //! as the journal keys it.
 
-use std::collections::BTreeSet;
-
 use rift_deploy::{Actor, Journal};
 use serde::Serialize;
 
-use crate::pawn::mailbox::{run_installs, Outcome, RunLedger};
+use crate::pawn::mailbox::{Outcome, RunLedger};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -101,14 +103,22 @@ pub fn plan_put_back(
         .collect();
     remove.sort_by_key(|item| std::cmp::Reverse(item.seq));
 
-    let own: BTreeSet<String> = run_installs(ledger).into_keys().collect();
     let review = ledger
         .ops
         .iter()
-        .filter(|op| op.tool == "uninstall" && op.outcome == Outcome::Done)
+        .filter(|op| {
+            op.tool == "uninstall" && matches!(op.outcome, Outcome::Done | Outcome::Unknown)
+        })
         .filter_map(|op| {
             let install_id = op.install_id.clone()?;
-            if own.contains(&install_id) {
+            // Her own install, removed by her: nothing of the player's to
+            // review. Anything else, or an owner not recorded, is listed.
+            if op.outcome == Outcome::Done
+                && op
+                    .removed
+                    .as_ref()
+                    .is_some_and(|removed| removed.actor == actor)
+            {
                 return None;
             }
             let name = op
@@ -167,7 +177,7 @@ pub fn checked_put_back(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pawn::mailbox::{Answer, LedgerOp};
+    use crate::pawn::mailbox::{Answer, LedgerOp, Removed};
     use rift_core::OptionId;
     use rift_deploy::{InstalledOption, Origin};
     use std::path::{Path, PathBuf};
@@ -198,7 +208,19 @@ mod tests {
     }
 
     fn op(tool: &str, install_id: &str, outcome: Outcome, name: &str) -> LedgerOp {
+        removing(tool, install_id, outcome, name, None)
+    }
+
+    /// An uninstall that recorded whose install it removed.
+    fn removing(
+        tool: &str,
+        install_id: &str,
+        outcome: Outcome,
+        name: &str,
+        removed: Option<Actor>,
+    ) -> LedgerOp {
         LedgerOp {
+            removed: removed.map(|actor| Removed { actor, seq: 1 }),
             id: format!("{tool}-{install_id}"),
             tool: tool.into(),
             install_id: Some(install_id.into()),
@@ -235,11 +257,12 @@ mod tests {
         let journal = journal(vec![install(1, "aa#Glow", "Lantern Glow", Actor::Player)]);
         let mut world = journal.clone();
         world.installs.clear(); // Tamsin uninstalled it.
-        let ledger = ledger(vec![op(
+        let ledger = ledger(vec![removing(
             "uninstall",
             "aa#Glow",
             Outcome::Done,
             "Lantern Glow",
+            Some(Actor::Player),
         )]);
         let plan = plan_put_back(RUN, &ledger, &world, &|_| true);
         assert!(plan.remove.is_empty());
@@ -279,7 +302,13 @@ mod tests {
             op("install", "ae#Reinstalled", Outcome::Done, "Reinstalled"),
             // Tamsin installed and removed this one herself: nothing to review.
             op("install", "af#Gone", Outcome::Done, "Gone"),
-            op("uninstall", "af#Gone", Outcome::Done, "Gone"),
+            removing(
+                "uninstall",
+                "af#Gone",
+                Outcome::Done,
+                "Gone",
+                Some(pawn(RUN)),
+            ),
             // A refused uninstall changed nothing.
             op("uninstall", "aa#Glow", Outcome::Refused, "Lantern Glow"),
         ]);
@@ -296,8 +325,20 @@ mod tests {
     #[test]
     fn a_gone_package_offers_a_reinstall_from_the_rift() {
         let ledger = ledger(vec![
-            op("uninstall", "aa#Glow", Outcome::Done, "Lantern Glow"),
-            op("uninstall", "ag#Hair", Outcome::Done, "Hair"),
+            removing(
+                "uninstall",
+                "aa#Glow",
+                Outcome::Done,
+                "Lantern Glow",
+                Some(Actor::Player),
+            ),
+            removing(
+                "uninstall",
+                "ag#Hair",
+                Outcome::Done,
+                "Hair",
+                Some(Actor::Player),
+            ),
         ]);
         let plan = plan_put_back(
             RUN,
@@ -311,6 +352,46 @@ mod tests {
             plan.sentence,
             "Removes the 1 install Tamsin made in this summoning. She also uninstalled 2 of yours; they are listed below."
         );
+    }
+
+    #[test]
+    fn an_option_id_used_again_by_the_player_is_still_the_players() {
+        // The Heretic's WB4 timeline: Tamsin installs A, removes her own A,
+        // the player installs A again, Tamsin removes the player's A.
+        let ledger = ledger(vec![
+            op("install", "aa#A", Outcome::Done, "A"),
+            removing("uninstall", "aa#A", Outcome::Done, "A", Some(pawn(RUN))),
+            removing("uninstall", "aa#A", Outcome::Done, "A", Some(Actor::Player)),
+        ]);
+        let plan = plan_put_back(RUN, &ledger, &journal(vec![]), &|_| true);
+        assert!(plan.remove.is_empty());
+        assert_eq!(plan.review.len(), 1, "the player's A is listed");
+        assert_eq!(plan.review[0].install_id, "aa#A");
+    }
+
+    #[test]
+    fn an_uninstall_of_unknown_outcome_or_owner_is_listed_for_review() {
+        let ledger = ledger(vec![
+            removing("uninstall", "aa#Glow", Outcome::Unknown, "Glow", None),
+            removing("uninstall", "ab#Hair", Outcome::Done, "Hair", None),
+            removing(
+                "uninstall",
+                "ac#Own",
+                Outcome::Unknown,
+                "Own",
+                Some(pawn(RUN)),
+            ),
+            removing(
+                "uninstall",
+                "ad#Other",
+                Outcome::Done,
+                "Other",
+                Some(pawn(OTHER_RUN)),
+            ),
+        ]);
+        let plan = plan_put_back(RUN, &ledger, &journal(vec![]), &|_| true);
+        let ids: Vec<&str> = plan.review.iter().map(|r| r.install_id.as_str()).collect();
+        assert_eq!(ids, ["aa#Glow", "ab#Hair", "ac#Own", "ad#Other"]);
     }
 
     #[test]

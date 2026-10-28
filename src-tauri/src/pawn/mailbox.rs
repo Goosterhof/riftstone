@@ -18,7 +18,7 @@
 //! The folder I/O (handles, reparse points, the 64 KiB cap on the read) is
 //! the summon's; this module is given bytes and a file name.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::{Condvar, Mutex};
 
 use rift_deploy::Actor;
@@ -320,6 +320,10 @@ pub enum Outcome {
     Done,
     Refused,
     Held,
+    /// The stone may have done this and could not record that it did: the
+    /// world is as `list_installed` shows it. Also how a mutation stands in
+    /// the ledger on disk between its start and its outcome.
+    Unknown,
 }
 
 /// The answer the stone writes to `answers\<id>.json`, in the shape the relay
@@ -360,9 +364,20 @@ pub trait Errands: Send + Sync {
     /// The plan, and the library's generation and the journal's sequence it
     /// was made against.
     fn plan_install(&self, option_id: &str) -> Result<PlannedInstall, String>;
-    /// Install through the RS-4 journal, recording `actor`.
-    fn install(&self, option_id: &str, actor: &Actor) -> Result<Done, String>;
-    /// `plan_uninstall` + `uninstall` through the journal.
+    /// Install through the RS-4 journal, recording `actor`, **only if the plan
+    /// is still `expected`**: the implementation re-plans and compares the
+    /// plan, the library's generation and the journal's sequence under the
+    /// same lock that commits the install (the window's own install takes it
+    /// too), and refuses with [`STALE_PLAN`] otherwise. A check made before
+    /// this call is advice; this one is the gate (the Heretic's WB1).
+    fn install(
+        &self,
+        option_id: &str,
+        actor: &Actor,
+        expected: &PlannedInstall,
+    ) -> Result<Done, String>;
+    /// `plan_uninstall` + `uninstall` through the journal. The answer says
+    /// whose install it removed ([`Done::removed`]).
     fn uninstall(&self, install_id: &str, actor: &Actor) -> Result<Done, String>;
     /// Show the held Play in the window, for `run_id`.
     fn hold_play(&self, run_id: &str) -> Result<(), String>;
@@ -386,7 +401,26 @@ pub struct Done {
     /// The hands row: `installed Stature 0.2.0 · 7 files`.
     pub summary: String,
     pub data: Value,
+    /// For an uninstall: the install it removed, as the journal recorded it
+    /// at that moment. An option id can be installed again by someone else,
+    /// so whose it was is captured here, never inferred later (WB4).
+    pub removed: Option<Removed>,
 }
+
+/// The install an uninstall removed: who placed it, and its journal `seq`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Removed {
+    pub actor: Actor,
+    pub seq: u64,
+}
+
+/// The stale plan's refusal, the same sentence wherever it is found.
+pub const STALE_PLAN: &str =
+    "stalePlan: the library or the game changed since that plan. Call plan_install again.";
+
+/// The refusal while the run's ledger cannot be written.
+pub const LEDGER_DOWN: &str = "The stone could not write Tamsin's ledger, so it changed nothing. It will not change your game for her until the ledger can be written; tell the Arisen.";
 
 /// The plan token: a hash of the plan, the library's generation, the
 /// journal's sequence and the run. `install` refuses `stalePlan` unless the
@@ -423,6 +457,9 @@ pub struct LedgerOp {
     pub at: String,
     /// What was answered, so a replayed id gets these exact bytes again.
     pub answer: Answer,
+    /// For an uninstall that was done: whose install it removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removed: Option<Removed>,
 }
 
 /// One summoning's ledger.
@@ -457,6 +494,15 @@ struct BrokerState {
     retiring: bool,
     /// Calls that found their id in flight and waited for it.
     joined: usize,
+    /// The sink refused a write: no further mutation is started (WB2).
+    ledger_down: bool,
+}
+
+/// A retired run: its closed ledger, and whether the sink kept every write.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Retired {
+    pub ledger: RunLedger,
+    pub persisted: bool,
 }
 
 /// Where a run's ledger is kept before each mutation's answer: the spine
@@ -504,6 +550,7 @@ impl<'a> Broker<'a> {
                 in_flight: 0,
                 retiring: false,
                 joined: 0,
+                ledger_down: false,
             }),
             settled: Condvar::new(),
         }
@@ -586,19 +633,47 @@ impl<'a> Broker<'a> {
                 None => break,
             }
         }
+        let mutates = request.tool.mutates();
+        if mutates {
+            // The intent is on disk before the mutation starts: a crash or a
+            // lost answer leaves `unknown` in the ledger, never nothing. A
+            // sink that refuses stops the mutation before it begins.
+            let intent = self.intent(&request);
+            state.ledger.ops.push(intent);
+            if state.ledger_down || self.sink.record(&state.ledger).is_err() {
+                state.ledger_down = true;
+                state.ledger.ops.pop();
+                return Some(Handled {
+                    answer: Answer::refused(&request.id, LEDGER_DOWN),
+                    tool: Some(request.tool.name().into()),
+                    repeated: false,
+                    install_id: None,
+                });
+            }
+        }
         state.slots.insert(request.id.clone(), Slot::InFlight);
         state.in_flight += 1;
         drop(state);
 
-        let (answer, op) = self.act(&request);
+        let (mut answer, op) = self.act(&request);
 
         let mut state = self.lock();
         if let Some(op) = op {
-            state.ledger.ops.push(op);
-            // Written before the answer is: a mutation's true outcome is
-            // always in the ledger, whatever happens to the answer file.
-            if let Err(err) = self.sink.record(&state.ledger) {
-                log::warn!("the pawn's run ledger could not be written: {err}");
+            if let Some(slot) = state.ledger.ops.iter_mut().rev().find(|o| o.id == op.id) {
+                *slot = op;
+            }
+            // Written before the answer is. If it cannot be, the mutation
+            // stands but its record does not: the answer says so, and no
+            // further mutation starts.
+            if self.sink.record(&state.ledger).is_err() {
+                state.ledger_down = true;
+                if answer.outcome == Outcome::Done {
+                    answer.outcome = Outcome::Unknown;
+                    answer.text = format!(
+                        "unknown: the stone {} but could not record it. Call list_installed to see the world as it is.",
+                        answer.text
+                    );
+                }
             }
         }
         state
@@ -671,24 +746,25 @@ impl<'a> Broker<'a> {
             } => {
                 let answer = match self.errands.plan_install(option_id) {
                     Err(sentence) => Answer::refused(id, sentence),
-                    Ok(fresh) if plan_token(&fresh, &self.run_id) != *token => Answer::refused(
-                        id,
-                        "stalePlan: the library or the game changed since that plan. Call plan_install again.",
-                    ),
-                    Ok(_) => match self.errands.install(option_id, &actor) {
-                        Ok(done) => done_answer(id, done, option_id, None),
+                    Ok(fresh) if plan_token(&fresh, &self.run_id) != *token => {
+                        Answer::refused(id, STALE_PLAN)
+                    }
+                    // The plan the token names is handed to the install,
+                    // which checks it again where it commits.
+                    Ok(fresh) => match self.errands.install(option_id, &actor, &fresh) {
+                        Ok(done) => done_answer(id, done, option_id, None).0,
                         Err(sentence) => Answer::refused(id, sentence),
                     },
                 };
-                let op = self.op(request, &answer, Some(option_id.clone()));
+                let op = self.op(request, &answer, Some(option_id.clone()), None);
                 (answer, Some(op))
             }
             Tool::Uninstall { install_id } => {
-                let answer = match self.errands.uninstall(install_id, &actor) {
+                let (answer, removed) = match self.errands.uninstall(install_id, &actor) {
                     Ok(done) => done_answer(id, done, "", Some(install_id)),
-                    Err(sentence) => Answer::refused(id, sentence),
+                    Err(sentence) => (Answer::refused(id, sentence), None),
                 };
-                let op = self.op(request, &answer, None);
+                let op = self.op(request, &answer, None, removed);
                 (answer, Some(op))
             }
             Tool::Play => {
@@ -713,7 +789,28 @@ impl<'a> Broker<'a> {
         }
     }
 
-    fn op(&self, request: &Request, answer: &Answer, option_id: Option<String>) -> LedgerOp {
+    /// A mutation as the ledger holds it before it starts: `unknown`.
+    fn intent(&self, request: &Request) -> LedgerOp {
+        let started = Answer {
+            id: request.id.clone(),
+            outcome: Outcome::Unknown,
+            text: "started".into(),
+            data: Value::Null,
+        };
+        let option_id = match &request.tool {
+            Tool::Install { option_id, .. } => Some(option_id.clone()),
+            _ => None,
+        };
+        self.op(request, &started, option_id, None)
+    }
+
+    fn op(
+        &self,
+        request: &Request,
+        answer: &Answer,
+        option_id: Option<String>,
+        removed: Option<Removed>,
+    ) -> LedgerOp {
         let field = |key: &str| {
             answer
                 .data
@@ -732,13 +829,16 @@ impl<'a> Broker<'a> {
             outcome: answer.outcome,
             at: (self.clock)(),
             answer: answer.clone(),
+            removed,
         }
     }
 
     /// Retire the run (BUILD-SPEC § v0.7, runs): take no new calls, wait for
     /// every call already started to be recorded, drop a held Play, and close
-    /// the ledger. Returns the closed ledger.
-    pub fn retire(&self) -> RunLedger {
+    /// the ledger. `persisted` is false when any write of this run's ledger
+    /// failed, the closing one included: the window says so, and the ledger
+    /// on disk is not complete.
+    pub fn retire(&self) -> Retired {
         let mut state = self.lock();
         state.retiring = true;
         while state.in_flight > 0 {
@@ -751,12 +851,21 @@ impl<'a> Broker<'a> {
         state.ledger.ended_at = Some((self.clock)());
         if let Err(err) = self.sink.record(&state.ledger) {
             log::warn!("the pawn's run ledger could not be closed: {err}");
+            state.ledger_down = true;
         }
-        state.ledger.clone()
+        Retired {
+            ledger: state.ledger.clone(),
+            persisted: !state.ledger_down,
+        }
     }
 }
 
-fn done_answer(id: &str, done: Done, option_id: &str, install_id: Option<&str>) -> Answer {
+fn done_answer(
+    id: &str,
+    done: Done,
+    option_id: &str,
+    install_id: Option<&str>,
+) -> (Answer, Option<Removed>) {
     let mut data = match done.data {
         Value::Object(map) => map,
         Value::Null => serde_json::Map::new(),
@@ -776,12 +885,13 @@ fn done_answer(id: &str, done: Done, option_id: &str, install_id: Option<&str>) 
     if let Some(option_id) = option_id {
         data.insert("optionId".into(), Value::String(option_id));
     }
-    Answer {
+    let answer = Answer {
         id: id.to_string(),
         outcome: Outcome::Done,
         text: done.summary,
         data: Value::Object(data),
-    }
+    };
+    (answer, done.removed)
 }
 
 /// `pawn-runs.json`: the last [`KEPT_RUNS`] runs, newest last. A run's entry is
@@ -797,16 +907,6 @@ pub fn merge_ledger(kept: &mut Vec<RunLedger>, ledger: &RunLedger) {
         let extra = kept.len() - KEPT_RUNS;
         kept.drain(..extra);
     }
-}
-
-/// The installs a run made and still owns, for Put back: by install id.
-pub fn run_installs(ledger: &RunLedger) -> BTreeMap<String, String> {
-    ledger
-        .ops
-        .iter()
-        .filter(|op| op.tool == "install" && op.outcome == Outcome::Done)
-        .filter_map(|op| Some((op.install_id.clone()?, op.option_id.clone()?)))
-        .collect()
 }
 
 #[cfg(test)]
@@ -842,6 +942,13 @@ mod tests {
         dropped: Mutex<Vec<String>>,
         /// Slows install so a duplicate can arrive while it runs.
         gate: Mutex<Option<Arc<std::sync::Barrier>>>,
+        /// Runs after the broker's token check and before the install's own
+        /// gate: something else changing the world in between.
+        meanwhile: Mutex<Option<fn(&Stone)>>,
+        /// The one lock the install's check and commit share.
+        commit: Mutex<()>,
+        /// Whose install the next uninstall removes.
+        removes: Mutex<Option<Removed>>,
     }
 
     impl Errands for Stone {
@@ -861,7 +968,12 @@ mod tests {
                 journal_seq: self.seq.load(Ordering::SeqCst) as u64,
             })
         }
-        fn install(&self, option_id: &str, actor: &Actor) -> Result<Done, String> {
+        fn install(
+            &self,
+            option_id: &str,
+            actor: &Actor,
+            expected: &PlannedInstall,
+        ) -> Result<Done, String> {
             assert_eq!(actor, &Actor::Pawn { run_id: RUN.into() });
             if option_id.contains("vanilla") {
                 return Err("refused: that would write over a file the game shipped with.".into());
@@ -871,6 +983,13 @@ mod tests {
                 barrier.wait();
                 barrier.wait();
             }
+            if let Some(meanwhile) = *self.meanwhile.lock().unwrap() {
+                meanwhile(self);
+            }
+            let _commit = self.commit.lock().unwrap();
+            if self.plan_install(option_id)? != *expected {
+                return Err(STALE_PLAN.into());
+            }
             let n = self.installs.fetch_add(1, Ordering::SeqCst) + 1;
             self.seq.fetch_add(1, Ordering::SeqCst);
             Ok(Done {
@@ -878,6 +997,7 @@ mod tests {
                 option_id: Some(option_id.into()),
                 summary: "installed Stature 0.2.0 · 7 files".into(),
                 data: Value::Null,
+                removed: None,
             })
         }
         fn uninstall(&self, install_id: &str, _actor: &Actor) -> Result<Done, String> {
@@ -887,6 +1007,7 @@ mod tests {
                 option_id: Some("00000000000000aa#Glow".into()),
                 summary: "uninstalled Lantern Glow".into(),
                 data: Value::Null,
+                removed: self.removes.lock().unwrap().clone(),
             })
         }
         fn hold_play(&self, run_id: &str) -> Result<(), String> {
@@ -901,13 +1022,30 @@ mod tests {
         }
     }
 
+    /// The ledger as written, in order; it refuses every write from the
+    /// `fail_from`-th on (counting from 0) when that is set.
     #[derive(Default)]
-    struct Sink(Mutex<Vec<RunLedger>>);
+    struct Sink(Mutex<Vec<RunLedger>>, Mutex<Option<usize>>);
 
     impl LedgerSink for Sink {
         fn record(&self, ledger: &RunLedger) -> Result<(), String> {
-            self.0.lock().unwrap().push(ledger.clone());
+            let mut written = self.0.lock().unwrap();
+            if self
+                .1
+                .lock()
+                .unwrap()
+                .is_some_and(|from| written.len() >= from)
+            {
+                return Err("the disk is full".into());
+            }
+            written.push(ledger.clone());
             Ok(())
+        }
+    }
+
+    impl Sink {
+        fn failing_from(from: usize) -> Self {
+            Self(Mutex::default(), Mutex::new(Some(from)))
         }
     }
 
@@ -1113,9 +1251,10 @@ mod tests {
         let last = ledger.ops.last().unwrap();
         assert_eq!(last.install_id.as_deref(), Some("install-1"));
         assert_eq!(last.option_id.as_deref(), Some("00000000000000ab#Stature"));
-        // Every mutation (refused ones included) is recorded before its answer.
+        // Every mutation (refused ones included) is recorded twice: its
+        // intent before it starts, its outcome before its answer.
         assert_eq!(ledger.ops.len(), 3);
-        assert_eq!(sink.0.lock().unwrap().len(), 3);
+        assert_eq!(sink.0.lock().unwrap().len(), 6);
     }
 
     #[test]
@@ -1211,7 +1350,7 @@ mod tests {
         let option = "00000000000000ab#Stature";
         let token = planned_token(&stone, option);
         let request = install_request(ID, option, &token);
-        let ledger = std::thread::scope(|scope| {
+        let retired = std::thread::scope(|scope| {
             let install = scope.spawn(|| broker.handle(&name(ID), &request).unwrap());
             barrier.wait(); // install is running
             let retire = scope.spawn(|| broker.retire());
@@ -1228,12 +1367,171 @@ mod tests {
             install.join().unwrap();
             retire.join().unwrap()
         });
+        assert!(retired.persisted);
+        let ledger = retired.ledger;
         assert_eq!(stone.installs.load(Ordering::SeqCst), 1);
         assert_eq!(ledger.ops.len(), 1, "the mutation in flight was recorded");
         assert_eq!(ledger.ops[0].outcome, Outcome::Done);
         assert_eq!(ledger.ended_at.as_deref(), Some("2026-10-28T12:00:00Z"));
         assert_eq!(stone.dropped.lock().unwrap().as_slice(), [RUN]);
         assert_eq!(sink.0.lock().unwrap().last().unwrap(), &ledger);
+    }
+
+    #[test]
+    fn a_world_that_moves_between_the_check_and_the_commit_refuses_stale() {
+        // The Heretic's WB1: the broker's token check is advice; the install
+        // re-checks the plan it was handed where it commits.
+        let stone = Stone::default();
+        *stone.meanwhile.lock().unwrap() = Some(|stone: &Stone| {
+            stone.seq.fetch_add(1, Ordering::SeqCst);
+        });
+        let sink = Sink::default();
+        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let option = "00000000000000ab#Stature";
+        let token = planned_token(&stone, option);
+        let handled = broker
+            .handle(&name(ID), &install_request(ID, option, &token))
+            .unwrap();
+        assert_eq!(handled.answer.outcome, Outcome::Refused);
+        assert_eq!(handled.answer.text, STALE_PLAN);
+        assert_eq!(
+            stone.installs.load(Ordering::SeqCst),
+            0,
+            "nothing installed"
+        );
+        assert_eq!(broker.ledger().ops[0].outcome, Outcome::Refused);
+    }
+
+    #[test]
+    fn the_intent_is_on_disk_before_the_mutation_starts() {
+        let stone = Stone::default();
+        let sink = Sink::default();
+        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let option = "00000000000000ab#Stature";
+        let token = planned_token(&stone, option);
+        broker
+            .handle(&name(ID), &install_request(ID, option, &token))
+            .unwrap();
+        let written = sink.0.lock().unwrap();
+        assert_eq!(written[0].ops[0].outcome, Outcome::Unknown, "the intent");
+        assert_eq!(written[0].ops[0].option_id.as_deref(), Some(option));
+        assert_eq!(
+            written[1].ops[0].outcome,
+            Outcome::Done,
+            "the outcome, in place"
+        );
+        assert_eq!(written[1].ops.len(), 1);
+    }
+
+    #[test]
+    fn a_ledger_that_cannot_be_written_stops_every_mutation_before_it_starts() {
+        // The Heretic's WB2, first half: a sink that refuses the intent.
+        let stone = Stone::default();
+        let sink = Sink::failing_from(0);
+        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let option = "00000000000000ab#Stature";
+        let token = planned_token(&stone, option);
+        let first = broker
+            .handle(&name(ID), &install_request(ID, option, &token))
+            .unwrap();
+        assert_eq!(first.answer.outcome, Outcome::Refused);
+        assert_eq!(first.answer.text, LEDGER_DOWN);
+        assert_eq!(stone.installs.load(Ordering::SeqCst), 0);
+        // The sink recovers; the run stays stopped (its ledger is not whole).
+        *sink.1.lock().unwrap() = None;
+        let uninstall_id = "22222222-2222-4333-8444-555555555555";
+        let second = broker
+            .handle(
+                &name(uninstall_id),
+                &body(serde_json::json!({ "id": uninstall_id,
+                "tool": "uninstall", "args": { "installId": "aa#Glow" } })),
+            )
+            .unwrap();
+        assert_eq!(second.answer.text, LEDGER_DOWN);
+        assert_eq!(stone.uninstalls.load(Ordering::SeqCst), 0);
+        // Reading tools still answer.
+        let read_id = "33333333-2222-4333-8444-555555555555";
+        let read = broker
+            .handle(
+                &name(read_id),
+                &body(serde_json::json!({ "id": read_id,
+                "tool": "list_installed", "args": {} })),
+            )
+            .unwrap();
+        assert_eq!(read.answer.outcome, Outcome::Done);
+        assert!(!broker.retire().persisted);
+    }
+
+    #[test]
+    fn a_done_mutation_whose_outcome_cannot_be_written_answers_unknown() {
+        // The Heretic's WB2, second half: the intent was written, the
+        // mutation was made, the outcome could not be recorded.
+        let stone = Stone::default();
+        let sink = Sink::failing_from(1);
+        let broker = Broker::new(RUN, &stone, &sink, clock);
+        let option = "00000000000000ab#Stature";
+        let token = planned_token(&stone, option);
+        let handled = broker
+            .handle(&name(ID), &install_request(ID, option, &token))
+            .unwrap();
+        assert_eq!(stone.installs.load(Ordering::SeqCst), 1, "it was made");
+        assert_eq!(
+            handled.answer.outcome,
+            Outcome::Unknown,
+            "and never claimed as recorded"
+        );
+        assert!(handled.answer.text.starts_with("unknown:"));
+        assert_eq!(
+            sink.0.lock().unwrap()[0].ops[0].outcome,
+            Outcome::Unknown,
+            "the disk says it may have happened"
+        );
+        // A replay gets the same honest answer, and nothing more is started.
+        let again = broker
+            .handle(&name(ID), &install_request(ID, option, &token))
+            .unwrap();
+        assert_eq!(again.answer, handled.answer);
+        let next_id = "44444444-2222-4333-8444-555555555555";
+        let next = broker
+            .handle(
+                &name(next_id),
+                &install_request(next_id, option, &planned_token(&stone, option)),
+            )
+            .unwrap();
+        assert_eq!(next.answer.text, LEDGER_DOWN);
+        assert_eq!(stone.installs.load(Ordering::SeqCst), 1);
+        assert!(!broker.retire().persisted);
+    }
+
+    #[test]
+    fn an_uninstall_records_whose_install_it_removed() {
+        let stone = Stone::default();
+        *stone.removes.lock().unwrap() = Some(Removed {
+            actor: Actor::Player,
+            seq: 7,
+        });
+        let sink = Sink::default();
+        let broker = Broker::new(RUN, &stone, &sink, clock);
+        broker
+            .handle(
+                &name(ID),
+                &body(serde_json::json!({ "id": ID, "tool": "uninstall",
+                "args": { "installId": "aa#Glow" } })),
+            )
+            .unwrap();
+        let op = &broker.ledger().ops[0];
+        assert_eq!(
+            op.removed,
+            Some(Removed {
+                actor: Actor::Player,
+                seq: 7
+            })
+        );
+        let json = serde_json::to_value(op).unwrap();
+        assert_eq!(
+            json["removed"],
+            serde_json::json!({ "actor": { "kind": "player" }, "seq": 7 })
+        );
     }
 
     #[test]
