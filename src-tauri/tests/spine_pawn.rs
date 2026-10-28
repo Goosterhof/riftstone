@@ -609,3 +609,46 @@ fn bench_summon_natively_through_wsl() {
     );
     println!("BENCH fence processes left in WSL (minus the asking shell): {left}");
 }
+
+/// A bench aid, by hand, on either host: run the fence's real probe
+/// (`RIFT_BENCH_PROBE_ROOT` = a folder on a Windows drive; on the Linux bench
+/// `/mnt/c/…`, on Windows `C:\…`), with the mods folder and the app data
+/// under it, as the stone's are. Prints each step and the chip.
+#[test]
+#[ignore = "a bench aid: runs the real probe through the real fence"]
+fn bench_run_the_real_probe() {
+    use riftstone_lib::pawn::desk::Desk;
+    let root = std::path::PathBuf::from(
+        std::env::var("RIFT_BENCH_PROBE_ROOT").expect("RIFT_BENCH_PROBE_ROOT"),
+    );
+    let _ = fs::remove_dir_all(&root);
+    let bench = Bench::new();
+    let dirs = DataDirs::under(&root.join("data"));
+    let mut config = bench.config(dirs.clone());
+    config.library_dir = root.join("mods");
+    fs::create_dir_all(&config.library_dir).unwrap();
+    let (state, _events) = bench.open(config);
+    let desk = Desk::new(&dirs.data);
+    let view = desk.run_probe(&state).expect("the probe ran");
+    for step in &view.steps {
+        println!(
+            "BENCH step {:>2} {:?} {:?} — {}",
+            step.step, step.expected, step.verdict, step.observed
+        );
+    }
+    println!(
+        "BENCH chip={} changed={:?} ground={:?}",
+        view.chip,
+        view.changed,
+        view.ground
+            .as_ref()
+            .map(|g| (&g.distro, &g.claude_version, &g.kernel))
+    );
+    let record = desk.record().unwrap();
+    println!(
+        "BENCH control={} holds={} breached={}",
+        record.control,
+        record.holds(),
+        record.breached()
+    );
+}

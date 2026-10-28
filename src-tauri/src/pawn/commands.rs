@@ -11,7 +11,7 @@ use serde::Serialize;
 use crate::commands::{deploy, off_runtime, Spine};
 use crate::dto::{UninstallPlanView, UninstallResultView};
 use crate::pawn::bring::{self, BringOutcome, BringPlan, Conflict};
-use crate::pawn::desk::{workshop_dir, Desk, PawnStateView, WORKSHOP_CHANGED};
+use crate::pawn::desk::{workshop_dir, Desk, FenceView, PawnStateView, WORKSHOP_CHANGED};
 use crate::pawn::mailbox::RunLedger;
 use crate::pawn::persona::Voice;
 use crate::pawn::put_back::{self, PutBack};
@@ -47,29 +47,6 @@ pub struct ArtifactView {
     /// `missing`, `unreadable` or `mismatch`.
     pub receipt_problem: Option<&'static str>,
     pub in_library: bool,
-}
-
-/// `FenceView`: the chip is `unprobed` until the probe stands.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FenceView {
-    pub chip: &'static str,
-    pub ground: Option<serde_json::Value>,
-    pub proved_at: Option<String>,
-    pub steps: Vec<serde_json::Value>,
-    pub changed: Option<String>,
-}
-
-impl FenceView {
-    pub fn unprobed() -> Self {
-        Self {
-            chip: "unprobed",
-            ground: None,
-            proved_at: None,
-            steps: Vec::new(),
-            changed: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -136,7 +113,7 @@ pub fn get_workshop_impl(state: &AppState, desk: &Desk) -> Result<WorkshopView, 
         },
         artifacts: artifacts(&workshop, state.library_dir()),
         pawn: desk.pawn_state(),
-        fence: FenceView::unprobed(),
+        fence: desk.fence_view(state),
         voice: settings.voice,
         inputs: settings.inputs,
     })
@@ -302,8 +279,8 @@ pub async fn answer_pawn_play(
 }
 
 #[tauri::command]
-pub async fn get_fence() -> Result<FenceView, RiftError> {
-    Ok(FenceView::unprobed())
+pub async fn get_fence(spine: Spine<'_>, desk: DeskState<'_>) -> Result<FenceView, RiftError> {
+    with_desk(&spine, &desk, |state, desk| Ok(desk.fence_view(state))).await
 }
 
 #[tauri::command]
@@ -425,9 +402,9 @@ pub const COMMANDS: [&str; 15] = [
 ];
 
 #[tauri::command]
-pub async fn run_fence_probe() -> Result<FenceView, RiftError> {
-    Err(RiftError::pawn(
-        PawnReason::NoFence,
-        "The fence's probe is not built yet in this version of the stone.",
-    ))
+pub async fn run_fence_probe(
+    spine: Spine<'_>,
+    desk: DeskState<'_>,
+) -> Result<FenceView, RiftError> {
+    with_desk(&spine, &desk, |state, desk| desk.run_probe(state)).await
 }

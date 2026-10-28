@@ -1019,13 +1019,13 @@ Types live in `src/types/workshop.ts`. Design: #00015 §20.
 
 | Command (invoke name) | Args (JS, camelCase) | Returns | Notes |
 |---|---|---|---|
-| `get_workshop` | — | `WorkshopView` | The folder (made or not yet), the built artifacts with the stone's digests, the pawn's state, the fence and the voice. Cheap; the window calls it on entering the room and on `rift://workshop-changed`. |
+| `get_workshop` | — | `WorkshopView` | The folder (made or not yet), the built artifacts with the stone's digests, the pawn's state, the fence and the voice. The fence is judged against the ground now, which costs one `wsl.exe` survey; the window calls it on entering the room and on `rift://workshop-changed`. |
 | `summon_pawn` | `cols: number, rows: number` | `void` | Makes the workshop folder, the mailbox and Tamsin's config dir on first use, writes the relay, settings and persona for the current voice, and starts the PTY. Refuses `pawn` `alreadyHere`, `breached` or `noFence` (the missing piece named: the WSL distro, `bwrap`, `socat`, or `claude` in that distro). Output arrives as `rift://pawn-output`. |
 | `pawn_write` | `data: string` | `void` | Keystrokes and pastes, UTF-8, to the PTY. Refuses `notHere`. |
 | `pawn_resize` | `cols: number, rows: number` | `void` | Called on fit; ignored when no pawn is here. |
 | `depart_pawn` | — | `void` | Ends the session: SIGTERM to the fence, then a kill after 3 s. A held Play is dropped. The pawn's installs stay (see `plan_put_back`). |
 | `answer_pawn_play` | `runId: string, heldRequestId: string, accept: boolean` | `{ decision: "played" \| "declined", persisted: boolean }` | The held Play request the window was shown, by its run and id. `true` runs `plan_launch` and `launch_game` exactly as the Play slab does, with the same warnings and refusals. `played` is recorded only once `launch_game` has started the launch: `DD2.exe` started, or Steam accepted the request. Whether the game then came up is the game watcher's to say, never this decision's (the Heretic's WD6). `persisted: false` says the decision stands but did not reach the run's ledger on disk; the window says so (WD5). A refusal, a failure or a cancel at a warning records nothing, and the request stays waiting with the refusal shown. `false` records `declined`. The decision reaches Tamsin through her next `list_installed` or a new `play` call (BUILD-SPEC § v0.7, *The held Play's decision*), and the held call's own answer stays `held`. Refuses `nothingHeld`, and `staleHeld` when the run and id are not the live run's waiting request, both when the press arrives and right before the game starts. |
-| `get_fence` | — | `FenceView` | The last probe record judged against the current ground. |
+| `get_fence` | — | `FenceView` | The last probe record judged against the ground now: the host surveyed again and the plan a summon would get (BUILD-SPEC § v0.7, the probe). |
 | `run_fence_probe` | — | `FenceView` | The deterministic probe (BUILD-SPEC § v0.7, no model, about 10 s). Refuses `pawn` `pawnHere` while a pawn is summoned. |
 | `plan_bring_through` | `artifact: string` | `BringThroughPlan` | `artifact` is a file name in the workshop's `dist\`. The plan carries the digest **frozen now**. That digest is what the press refers to. |
 | `bring_through` | `artifact: string, sha256: string` | `BringThroughResult` | RS-2's second exception: copy to a partial, hash the copy, land only on equality, never over a file. Rejects `bring` (below). |
@@ -1089,8 +1089,13 @@ the investor's own and may be shown.
   (`installed Stature 0.2.0 · 7 files`). `refusal` is the stone's own sentence, verbatim.
 - `FenceView`: `{ chip: "contained" | "unprobed" | "breached", ground: { distro, claudeVersion,
   kernel, digest } | null, provedAt: string | null, steps: FenceStep[], changed: string | null }`.
-  `changed` is the sentence for a stale record (`proved on claude 2.1.312; this is 2.1.320`).
-  `FenceStep` is `{ step, expected: "land" | "notLand" | "fail" | "succeed", observed, ok }`.
+  `changed` is the sentence for a record that does not make the chip `contained`: one proved on
+  another ground (`proved on claude 2.1.312; this is 2.1.320`), one that could not show a row
+  (`the last probe could not show step 3`), one from an earlier probe, or a host the stone could
+  not check now.
+  `FenceStep` is `{ step, expected: "land" | "notLand" | "fail" | "succeed", observed, ok,
+  verdict: "held" | "breached" | "inconclusive" }`. `steps` lists rows 1–12, then the broker
+  checks `B1` and `B2`. `ok` is `verdict === "held"`.
 - `BringThroughPlan`: `{ artifact, bytes, sha256, landsAs: string, receipt: ReceiptView | null,
   conflict: "none" | "alreadyHad" | "nameTaken" }`.
 - `BringThroughResult`: `{ outcome: "landed" | "alreadyHad" }`. The landed zip is named as a
