@@ -836,7 +836,7 @@ impl Desk {
             // What landed on the real disk, read outside the fence; a file
             // that landed where it must not is the stone's own, removed now.
             let landed_at = |path: &Path| -> Option<bool> {
-                let landed = path.symlink_metadata().is_ok();
+                let landed = looked(path)?;
                 if landed {
                     let _ = std::fs::remove_file(path);
                 }
@@ -855,16 +855,24 @@ impl Desk {
                 ),
                 // The investor's own ~/.claude, looked at through the distro:
                 // a look that fails sees nothing, and proves nothing.
+                // `absent` only from a folder the look could read; any other
+                // answer is no look at all.
                 "5" => match prepared.shell.run(
                     &format!(
-                        "test -d {0} && echo there; test -e {1} && rm -f {1} && echo landed",
+                        "test -d {0} && echo there; if [ -e {1} ] || [ -L {1} ]; then rm -f {1} && echo landed; elif [ -r {0} ] && [ -x {0} ]; then echo absent; fi",
                         sh_quote(&home_claude),
                         sh_quote(&home_file)
                     ),
                     b"",
                 ) {
                     Ok(out) => (
-                        Some(out.stdout.contains("landed")),
+                        if out.stdout.contains("landed") {
+                            Some(true)
+                        } else if out.stdout.contains("absent") {
+                            Some(false)
+                        } else {
+                            None
+                        },
                         ready.and(need(
                             out.stdout.contains("there"),
                             "the distro user has no ~/.claude to aim at",
@@ -874,10 +882,9 @@ impl Desk {
                 },
                 "6" | "7" => (landed_at(&pe_file), ready),
                 "11" => (
-                    Some(
-                        answers.join("x.json").symlink_metadata().is_ok()
-                            || answers.join("y.json").symlink_metadata().is_ok(),
-                    ),
+                    looked(&answers.join("x.json"))
+                        .zip(looked(&answers.join("y.json")))
+                        .map(|(x, y)| x || y),
                     ready,
                 ),
                 _ => (None, ready),
@@ -1297,6 +1304,17 @@ fn broker_checks(
     vec![b1, b2]
 }
 
+/// Is there anything at `path`, looked at from outside without following a
+/// link? `None` when the look itself failed: only `NotFound` says absent
+/// (the Heretic's cea51c4 follow-up).
+fn looked(path: &Path) -> Option<bool> {
+    match path.symlink_metadata() {
+        Ok(_) => Some(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(false),
+        Err(_) => None,
+    }
+}
+
 /// The fence's plan from the pawn's settings and the surveyed host, each
 /// input checked against the protected roots by its final path.
 fn plan_of(
@@ -1687,6 +1705,25 @@ mod tests {
             &crate::pawn::host::LocalSh,
         );
         assert_eq!(checks[0].verdict(), probe::Verdict::Inconclusive);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_look_that_fails_is_no_look() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let shut = dir.path().join("shut");
+        std::fs::create_dir(&shut).unwrap();
+        std::fs::write(shut.join("probe.txt"), "x").unwrap();
+        assert_eq!(looked(&shut.join("probe.txt")), Some(true));
+        assert_eq!(looked(&shut.join("other.txt")), Some(false));
+        std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let blind = looked(&shut.join("probe.txt"));
+        std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Root sees through a shut folder; anyone else cannot look.
+        if unsafe { libc::geteuid() } != 0 {
+            assert_eq!(blind, None, "PermissionDenied is not absence");
+        }
     }
 
     #[test]
