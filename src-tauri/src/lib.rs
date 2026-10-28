@@ -42,6 +42,8 @@ pub mod migrate;
 pub mod muster;
 pub mod nexus;
 pub mod nxm;
+#[cfg(feature = "pawn")]
+pub mod pawn;
 pub mod persist;
 pub mod play;
 pub mod protocol;

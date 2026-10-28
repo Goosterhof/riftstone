@@ -66,8 +66,8 @@ use crate::fsops::{
 use crate::game::GameInstall;
 use crate::guard;
 use crate::journal::{
-    Below, BelowOwner, DeployKind, DeployedFile, InstalledOption, Intent, IntentAction, IntentStep,
-    Journal, Leftover, Origin, ParkedBackup,
+    Actor, Below, BelowOwner, DeployKind, DeployedFile, InstalledOption, Intent, IntentAction,
+    IntentStep, Journal, Leftover, Origin, ParkedBackup,
 };
 use crate::paks;
 use crate::plan::{
@@ -86,6 +86,8 @@ pub struct DeployContext<'a> {
     pub ref_status: &'a RefStatus,
     /// Is DD2.exe running? ([`is_game_running`])
     pub game_running: bool,
+    /// Who an install made under this context is recorded as (v0.7).
+    pub actor: &'a Actor,
 }
 
 /// Is Dragon's Dogma 2 running? (`DD2.exe` in the Windows process list;
@@ -1006,6 +1008,7 @@ fn build_record(
         game_build: ctx.game.build_id.clone(),
         origin: Origin::Riftstone,
         files: deployed,
+        actor: ctx.actor.clone(),
     })
 }
 

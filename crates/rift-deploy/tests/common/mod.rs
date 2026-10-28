@@ -75,6 +75,7 @@ impl Bench {
             state_dir: self.state_dir.path(),
             ref_status: &self.reframework,
             game_running: running,
+            actor: &rift_deploy::PLAYER,
         }
     }
 
@@ -486,6 +487,7 @@ pub fn adopted(
         version: None,
         installed_at: "2026-10-01T08:00:00Z".into(),
         game_build: Some("25290080".into()),
+        actor: rift_deploy::Actor::Player,
         origin: Origin::Adopted {
             label: label.into(),
         },

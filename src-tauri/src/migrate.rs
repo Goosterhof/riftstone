@@ -334,6 +334,7 @@ mod tests {
             installed_at: "2026-10-16T10:00:00Z".into(),
             game_build: None,
             origin: Origin::Riftstone,
+            actor: rift_deploy::Actor::Player,
             files: vec![DeployedFile {
                 game_path: HOOD_MESH.into(),
                 kind: DeployKind::Loose,

@@ -76,8 +76,8 @@ pub use game::{
     GameSource, DD2_STEAM_APP_ID,
 };
 pub use journal::{
-    journal_path, Below, BelowOwner, DeployKind, DeployedFile, InstalledOption, Intent,
-    IntentAction, IntentStep, Journal, Leftover, Origin, ParkedBackup, JOURNAL_SCHEMA,
+    journal_path, Actor, Below, BelowOwner, DeployKind, DeployedFile, InstalledOption, Intent,
+    IntentAction, IntentStep, Journal, Leftover, Origin, ParkedBackup, JOURNAL_SCHEMA, PLAYER,
 };
 pub use launch::{launch_route, plan_launch, start_exe, LaunchPlan, LaunchRoute, LaunchWarning};
 pub use plan::{

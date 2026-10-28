@@ -130,6 +130,29 @@ jobs:
       - name: Test (every [GATE] criterion, fixtures built at run time)
         run: cargo test --workspace
 
+      # RS-10: THE WORKSHOP (Tamsin, her fence, her tools) is compiled only with the
+      # `pawn` feature, which the public build never switches on. The graph is its own
+      # denominator, as RS-8's is, and the positive control proves the grep can see the
+      # feature when it is on, so the check cannot pass by being wrong.
+      - name: RS-10 (the public graph carries no pawn; the investor's does)
+        run: |
+          tree=$(cargo tree -p riftstone -e normal,build --prefix none -f '{p} {f}')
+          line=$(grep '^riftstone ' <<<"$tree") || { echo "::error::cargo tree listed no riftstone"; exit 1; }
+          if grep -qw pawn <<<"$line"; then
+            echo "::error::the default build of riftstone switches on the pawn feature (RS-10)"
+            exit 1
+          fi
+          pawned=$(cargo tree -p riftstone --features pawn -e normal,build --prefix none -f '{p} {f}')
+          grep '^riftstone ' <<<"$pawned" | grep -qw pawn || { echo "::error::the positive control saw no pawn feature"; exit 1; }
+
+      # The pawn's code compiles nowhere in the default build, so it is linted and
+      # tested on its own, warnings denied.
+      - name: Clippy with the pawn (warnings denied)
+        run: cargo clippy -p riftstone --all-targets --features pawn -- -D warnings
+
+      - name: Test with the pawn (the fence, the mailbox, the runs, bring-through)
+        run: cargo test -p riftstone --features pawn
+
   privacy:
     name: Privacy — The Sweep's Own Checks
     runs-on: ubuntu-latest

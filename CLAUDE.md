@@ -61,6 +61,7 @@ meaning faster* — and the voice lives in the frame, the states and the two sig
 - **RS-6 — Nexus is optional.** Update checks, labels, Find, browsing and a mod's files use the anonymous GraphQL v2 API and need no key. The optional personal API key adds the key's extras through v1: the account, downloads, tracking and endorsing. It lives in Windows Credential Manager, never in a file or the webview; a download URL and an nxm link's key are secrets like it (never logged, never in an error, never in the window). Every request names the Riftstone (`Application-Name`, `Application-Version`), and v1's quota headers are honoured.
 - **RS-7 — Vue 3 + UnoCSS**, `@unocss/reset` before `virtual:uno.css`, the `prefers-reduced-motion` floor.
 - **RS-8 — The saves are the player's (v0.4; backup exception, investor 2026-10-27).** The stone never changes, renames, re-signs or uploads an original save, and keeps no decrypted copy on disk. At the player's explicit **Back up all saves…** press it may copy the original encrypted files to a separate chosen destination. It verifies every copy and unchanged sources before publishing a new snapshot, refuses while the game runs and refuses a destination in Steam's saves, the game, mod library or app data. No restore is included. The local backup manifest retains account mapping for manual recovery; source paths/account numbers never enter logs, errors or events. It carries no way to encrypt a save, and neither does the rest of the repo outside test builds: the only sealer is `rift-save`'s `fixtures` code (which `rift-muster`'s fixtures build on), and only test builds compile it. The Sentinel measures that on every push: the graph the shipped exe is built from switches on no `fixtures` feature. The privacy sweep's Python opens saves and seals none. The game's pak stays read-only (RS-3).
+- **RS-9 / RS-10 and RS-2's second exception (v0.7, CONTRACTED 2026-10-28, not built).** RS-9: the pawn (THE WORKSHOP's Tamsin) is launched only in WSL, inside the stone's whole-process fence: a `bwrap` allowlist, a read-only root, and a seccomp filter refusing `AF_VSOCK` and `TIOCSTI`, a cleared environment, and mounts validated against protected roots in both directions, with Claude Code's own sandbox nested inside. The tools travel through a per-summoning mailbox the stone reads by handle. Only the deterministic probe may name what the fence holds. RS-10: the `pawn` cargo feature and `VITE_RIFT_PAWN` keep every line of it out of the public build, measured by the Sentinel. RS-2 gains *bring it through*: one built artifact, by the digest the player was shown. All three are in `docs/BUILD-SPEC.md` § v0.7 and `docs/WINDOW-CONTRACT.md` § v0.7. **Building on `feat/v0.7-workshop`:** the journal's `actor` (rift-deploy) and the fence's pure core (`src-tauri/src/pawn/fence.rs`: the argv, the 15-instruction filter, the settings, the ground and both mount validators) the mailbox's broker (`pawn/mailbox.rs`: request validation, the tool table, plan tokens, the run's idempotent ledger, and retirement), its folders by handle (`pawn/folder.rs`: `NtCreateFile` and `NtSetInformationFile` relative to the pinned folder on Windows, `openat` on Linux), bring-through (`pawn/bring.rs`) and Put back's plan (`pawn/put_back.rs`) stand and are gated. The `pawn` tests also ran natively on Windows at `8e26b6b` (39 of 39, clippy clean). That run found the Win32 rename putting an answer in the process's working folder, now fixed. The fence's argv also ran once on the homestation through `wsl.exe` against dummy folders, and every channel held. Still to come: the summon (the PTY through `wsl.exe`, the relay, the persona), the probe and its record, the commands and events, the `pawn` and `bring` error kinds, and the room.
 
 ## The DD2 Load Rules (researched 2026-10-16; constants in `crates/rift-core/src/dd2.rs`)
 
@@ -121,6 +122,9 @@ scripts/              privacy-sweep.py — the pre-push gate below; dd2_saves.py
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+# v0.7: THE WORKSHOP compiles only with the pawn feature (RS-10), so it is gated on its own
+cargo clippy -p riftstone --all-targets --features pawn -- -D warnings
+cargo test -p riftstone --features pawn
 
 # Frontend
 npm run typecheck   # vue-tsc, strict
@@ -143,6 +147,10 @@ those gates on every push to `main` and every pull request against it, in three 
   is pinned to Rust
   1.98.0, the toolchain both benches verified with, because a newer stable's lints can turn
   `-D warnings` red overnight. Moving the pin is a deliberate commit, run on both benches first.
+  RS-10's step (v0.7) reads the same graph and fails when the default build of `riftstone`
+  switches on `pawn`, with a positive control that must see `pawn` under `--features pawn`.
+  Clippy and the tests then run again with the feature on, since the pawn's code compiles in no
+  default build.
 - *Privacy*: the sweep's `--self-test`.
 
 CI never sees the library, the journal, the saves or the game, so the full sweep stays a bench

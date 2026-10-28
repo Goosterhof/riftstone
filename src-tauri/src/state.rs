@@ -60,7 +60,7 @@ use std::time::Instant;
 
 use rift_catalog::{Catalog, CatalogCache, ScanProgress};
 use rift_core::{OptionId, PackageId, RiftError};
-use rift_deploy::{DeployContext, GameInstall, GameSource, GameState, Journal, RefStatus};
+use rift_deploy::{Actor, DeployContext, GameInstall, GameSource, GameState, Journal, RefStatus};
 use rift_nexus::NexusClient;
 
 use crate::account::{AccountWord, StandingsCache};
@@ -232,6 +232,9 @@ pub struct Scene {
     pub game: GameInstall,
     pub ref_status: RefStatus,
     pub running: bool,
+    /// Who the operation's installs are recorded as: the player, unless a
+    /// pawn's tool asked (v0.7).
+    pub actor: Actor,
 }
 
 impl Scene {
@@ -241,6 +244,7 @@ impl Scene {
             state_dir,
             ref_status: &self.ref_status,
             game_running: self.running,
+            actor: &self.actor,
         }
     }
 }
@@ -1281,6 +1285,7 @@ impl AppState {
                     state_dir: self.config.dirs.state_dir(),
                     ref_status: &ref_status,
                     game_running: running,
+                    actor: &rift_deploy::PLAYER,
                 };
                 let game_state = rift_deploy::read_game_state(&ctx, journal);
                 let layers = conflicts::game_layers(&game.root, journal, &game_state, &self.paks);
@@ -1316,6 +1321,7 @@ impl AppState {
             ref_status: rift_deploy::read_status(&game.root),
             running: self.observe_game(),
             game,
+            actor: Actor::Player,
         })
     }
 

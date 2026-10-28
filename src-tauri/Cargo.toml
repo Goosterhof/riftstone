@@ -78,3 +78,14 @@ filetime.workspace = true
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+# THE WORKSHOP (v0.7, RS-10): Tamsin, her fence and her tools. Off by default,
+# so the public build carries none of it; the investor's installer is built
+# with `npm run tauri build -- --features pawn`. The Sentinel measures both.
+# On Windows the mailbox reads requests relative to a pinned folder handle
+# (NtCreateFile with RootDirectory): those windows-sys features come only with it.
+pawn = [
+  "windows-sys/Wdk_Foundation",
+  "windows-sys/Wdk_Storage_FileSystem",
+  "windows-sys/Win32_Security",
+  "windows-sys/Win32_System_IO",
+]
