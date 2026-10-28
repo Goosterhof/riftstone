@@ -3011,7 +3011,19 @@ the build checks on the homestation, and the contract changes if one fails:
 - the fence's process tree dying when the window closes, and when `wsl.exe` is killed from the
   Windows side (`--die-with-parent` across the `wsl.exe` boundary);
 - that the PTY is the pawn's alone: no shell of the investor's sits behind it to return to;
-- the environment that actually reaches `bwrap` through `wsl.exe` before `--clearenv`.
+- the environment that actually reaches `bwrap` through `wsl.exe` before `--clearenv`;
+- **the interval between final-path validation and the bind** (the Heretic's review of PR #9,
+  answer b): the stone resolves every mounted Windows folder by its final path and then hands
+  the path to `bwrap`, which binds it by path. Validation narrows that interval but does not
+  prove it safe. A deliberate native swap (a junction planted in a validated folder's place
+  after validation and before the bind) must be shown to fail, or to be caught, before the chip
+  may claim more than the probe's own steps.
+
+Measured since (Goosterhof/riftstone#9 and the probe PR, the lab's spike runs K–M): the TUI in a
+PTY inside the fence; the Windows stone's ConPTY through `wsl.exe`, which waits on the cursor
+query `ESC[6n` that xterm.js answers; the tree's death across `wsl.exe` on departure and on
+process exit; the environment at the fence (only the nine names, no `WSLENV` secret); and the
+probe itself, natively on the homestation, `contained`.
 
 ### The tools: a mailbox, not a socket
 
