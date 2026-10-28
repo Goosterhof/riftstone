@@ -10,6 +10,8 @@
 //!   validators (RS-9). Pure.
 //! - [`mailbox`]: what the stone does with a request: validation, the tool
 //!   table, the run's idempotent ledger and its retirement.
+//! - [`persona`]: Tamsin's appended system prompt from the voice dial, the
+//!   relay (`resources/pawn/relay.py`) and the workshop's starter.
 //! - [`put_back`]: the Gift, narrowed: what a press can honestly undo of one
 //!   summoning, and what it only lists.
 //! - [`folder`]: the run's two mailbox folders, by handle: no link, reparse
@@ -20,4 +22,5 @@ pub mod errands;
 pub mod fence;
 pub mod folder;
 pub mod mailbox;
+pub mod persona;
 pub mod put_back;
