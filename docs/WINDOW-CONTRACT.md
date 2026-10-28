@@ -1024,7 +1024,7 @@ Types live in `src/types/workshop.ts`. Design: #00015 §20.
 | `pawn_write` | `data: string` | `void` | Keystrokes and pastes, UTF-8, to the PTY. Refuses `notHere`. |
 | `pawn_resize` | `cols: number, rows: number` | `void` | Called on fit; ignored when no pawn is here. |
 | `depart_pawn` | — | `void` | Ends the session: SIGTERM to the fence, then a kill after 3 s. A held Play is dropped. The pawn's installs stay (see `plan_put_back`). |
-| `answer_pawn_play` | `runId: string, heldRequestId: string, accept: boolean` | `void` | The held Play request the window was shown, by its run and id. `true` runs `plan_launch` and `launch_game` exactly as the Play slab does, with the same warnings and refusals. `played` is recorded only once the game has started. A refusal, a failure or a cancel at a warning records nothing, and the request stays waiting with the refusal shown. `false` records `declined`. The decision reaches Tamsin through her next `list_installed` or a new `play` call (BUILD-SPEC § v0.7, *The held Play's decision*), and the held call's own answer stays `held`. Refuses `nothingHeld`, and `staleHeld` when the run and id are not the live run's waiting request, both when the press arrives and right before the game starts. |
+| `answer_pawn_play` | `runId: string, heldRequestId: string, accept: boolean` | `{ decision: "played" \| "declined", persisted: boolean }` | The held Play request the window was shown, by its run and id. `true` runs `plan_launch` and `launch_game` exactly as the Play slab does, with the same warnings and refusals. `played` is recorded only once `launch_game` has started the launch: `DD2.exe` started, or Steam accepted the request. Whether the game then came up is the game watcher's to say, never this decision's (the Heretic's WD6). `persisted: false` says the decision stands but did not reach the run's ledger on disk; the window says so (WD5). A refusal, a failure or a cancel at a warning records nothing, and the request stays waiting with the refusal shown. `false` records `declined`. The decision reaches Tamsin through her next `list_installed` or a new `play` call (BUILD-SPEC § v0.7, *The held Play's decision*), and the held call's own answer stays `held`. Refuses `nothingHeld`, and `staleHeld` when the run and id are not the live run's waiting request, both when the press arrives and right before the game starts. |
 | `get_fence` | — | `FenceView` | The last probe record judged against the current ground. |
 | `run_fence_probe` | — | `FenceView` | The deterministic probe (BUILD-SPEC § v0.7, no model, about 10 s). Refuses `pawn` `pawnHere` while a pawn is summoned. |
 | `plan_bring_through` | `artifact: string` | `BringThroughPlan` | `artifact` is a file name in the workshop's `dist\`. The plan carries the digest **frozen now**. That digest is what the press refers to. |
@@ -1032,13 +1032,18 @@ Types live in `src/types/workshop.ts`. Design: #00015 §20.
 | `plan_put_back` | `runId: string` | `PutBackPlan` | The Gift, narrowed (BUILD-SPEC § v0.7, the run ledger). `remove`: that run's own installs still installed and unchanged, newest first, as THE RETURN's plans. `review`: what that run uninstalled that was not its own, each with its Undo when the journal still allows it. It never claims to restore the world as it was. |
 | `put_back` | `runId: string, installIds: string[]` | `UninstallResultView[]` | Uninstalls exactly the `remove` items named, newest first, each through the journal. An id that is not that run's own still-installed install is refused, not skipped. `review` items are never acted on here. |
 | `open_workshop_folder` | — | `void` | Explorer, Rust-side. |
-| `set_pawn_voice` | `voice: "full" \| "sparing" \| "plain"` | `void` | Saved in settings; takes effect at the next summon (the window says so while a pawn is here). |
+| `set_pawn_voice` | `voice: "full" \| "sparing" \| "plain"` | `void` | Saved in `pawn.json`; takes effect at the next summon (the window says so while a pawn is here). |
+| `set_pawn_inputs` | `inputs: string[]` | `void` | Saved in `pawn.json` after each folder passes the protected-root check (below); refuses `pawn` `inputRefused`, naming the root, and saves nothing. |
 
-`get_settings` / `set_settings` gain `pawnInputs: string[]`: Windows folders mounted read-only at
-`/inputs/<n>` (for example a pinned vanilla extract). On set, and again at every summon, the stone
+The pawn's own settings live in the stone's app data as `pawn.json` (the voice, the inputs, the
+distro), never in `get_settings` / `set_settings`, so the public `Settings` carries nothing of the
+pawn (RS-10; ruled with the Heretic's review of PR #9). `set_pawn_inputs(inputs: string[])` sets the
+Windows folders mounted read-only at `/inputs/<n>` (for example a pinned vanilla extract), and
+`get_workshop` returns them. On set, and again at every summon, the stone
 resolves each folder's final path and refuses any that **overlaps a protected root in either
 direction** (BUILD-SPEC § v0.7, RS-9.2): Steam, the game, the mods folder and its siblings, the
-stone's app data, the investor's profile and `.claude`, and save-backup destinations. The refusal
+stone's app data, the investor's profile and `.claude`, and every registered save-backup folder
+(BUILD-SPEC § v0.7, RS-9.2: registered before each backup, read strictly). The refusal
 is `pawn` `inputRefused`, naming the root it overlaps, never a path under `userdata`.
 
 ### Events
@@ -1088,7 +1093,8 @@ the investor's own and may be shown.
   `FenceStep` is `{ step, expected: "land" | "notLand" | "fail" | "succeed", observed, ok }`.
 - `BringThroughPlan`: `{ artifact, bytes, sha256, landsAs: string, receipt: ReceiptView | null,
   conflict: "none" | "alreadyHad" | "nameTaken" }`.
-- `BringThroughResult`: `{ outcome: "landed" | "alreadyHad", packageId: string }`.
+- `BringThroughResult`: `{ outcome: "landed" | "alreadyHad" }`. The landed zip is named as a
+  package by the scan the press requests; the window reads it from `rift://library-changed`.
 - `PutBackPlan`: `{ runId, remove: UninstallPlanView[], review: { installId, optionId, name,
   at, undo: "available" | "reinstallFromRift", known: "yours" | "anotherSummoning" | "uncertain"
   }[], sentence }`. `known` is what the ledger can say: done and the player's, done and another

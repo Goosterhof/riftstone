@@ -4,6 +4,10 @@
 //!
 //! - [`bring`]: RS-2's second exception, one built artifact into the mods
 //!   folder by the digest the player was shown.
+//! - [`commands`]: the room's commands (WINDOW-CONTRACT § v0.7), registered
+//!   only in this build.
+//! - [`desk`]: the Workshop's desk: the live summoning, `pawn.json`, the
+//!   room's events and the commands' work.
 //! - [`errands`]: the stone's own operations behind her tools, the install
 //!   checked inside its committing turn, and `pawn-runs.json`.
 //! - [`fence`]: the fence's argv, filter, settings and ground, and the mount
@@ -22,6 +26,8 @@
 //!   point or non-regular file is ever read, and no answer replaces a file.
 
 pub mod bring;
+pub mod commands;
+pub mod desk;
 pub mod errands;
 pub mod fence;
 pub mod folder;

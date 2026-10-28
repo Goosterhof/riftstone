@@ -28,6 +28,14 @@ pub fn backup_saves_impl(
     if let Some(install) = state.config.exe.parent() {
         protected.push(install.to_path_buf());
     }
+    // The pawn's fence keeps every backup destination out of reach (RS-9.2):
+    // the investor's build registers the folder BEFORE writing into it, and
+    // makes no backup it could not register.
+    #[cfg(feature = "pawn")]
+    crate::pawn::desk::remember_backup_destination(
+        &state.config.dirs.data,
+        Path::new(destination),
+    )?;
     crate::save_backup::create(&folders, Path::new(destination), &protected, || {
         state.observe_game()
     })

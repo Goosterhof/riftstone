@@ -2894,8 +2894,17 @@ what it holds.** Rules, each a test or a Sentinel step:
    The protected roots are Steam's install folder (and so `userdata` and the saves), the game
    folder, the mods folder and its `(older versions)` and `(workshop)` siblings (the workshop is
    mounted on its own, never as an input), the stone's app data (Roaming and Local), the
-   investor's `%USERPROFILE%\.claude`, `%USERPROFILE%` itself, and every save-backup destination
-   the stone has written. A link *inside* a mounted input resolves in the namespace's own view:
+   investor's `%USERPROFILE%\.claude`, `%USERPROFILE%` itself, and every save-backup folder the
+   investor's build has registered. **The backup inventory** (`save-backup-destinations.json`, the
+   Heretic's WD3) is a record, not a cache: a folder is registered durably BEFORE a backup is
+   written into it, and a backup whose folder cannot be registered is not made. No file is an
+   empty list. A file that cannot be read or parsed refuses every summon and input change, and is
+   left exactly as it is (never set aside, never overwritten), so registered coverage is never
+   lost silently. One writer at a time. **Coverage begins with the investor's v0.7 build:** a
+   backup made by v0.6.2, or by any build without the pawn, registered nothing. Such a folder is
+   protected only when it lies under another protected root. A backup made into it once from
+   this build registers it. Steam's install is every root the stone's own discovery knows (the
+   registry, the environment) and the default one. A link *inside* a mounted input resolves in the namespace's own view:
    an NTFS junction appears to WSL as a link to `/mnt/c/…`, which is not mounted, so it dangles.
    The probe measures that (step 9). A source whose target changed since the last summon is
    validated again; validation is never cached. **The check governs every mounted Windows
@@ -3076,11 +3085,14 @@ the waiting request's id in `data.heldRequestId`. At most one Play is held per r
 departure drops it unanswered (`lastDecision` stays as it was).
 
 Three rules close the edges (the Heretic's review of `d1dee4e`, P1 and P2):
-- **Only a game that started is `played`** (P1). The Arisen's *Play* runs `plan_launch` and
-  `launch_game` as the slab does. If either refuses, fails, or the Arisen cancels at one of its
-  warnings, **no decision is recorded and the request stays waiting**. The window shows the
-  stone's refusal under the held card, and the Arisen can press *Play* again or *Not now*.
-  `played` is recorded only once `launch_game` has started the game.
+- **Only a launch the stone started is `played`** (P1, narrowed by the Heretic's WD6). The
+  Arisen's *Play* runs `plan_launch` and `launch_game` as the slab does. If either refuses,
+  fails, or the Arisen cancels at one of its warnings, **no decision is recorded and the request
+  stays waiting**. The window shows the stone's refusal under the held card, and the Arisen can
+  press *Play* again or *Not now*. `played` is recorded once `launch_game` has started the
+  launch: `DD2.exe` started, or Steam accepted the request. It never claims the game came up;
+  the game watcher says that. The words Tamsin receives say the same: *the stone started the
+  launch; read the REFramework log once the game is up*.
 - **The press names what it answers** (P2). `answer_pawn_play` carries the `runId` and
   `heldRequestId` the window was shown. The stone acts only when they are the live run and its
   waiting request, checked under the decision's lock when the press arrives, and again after any

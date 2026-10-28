@@ -62,6 +62,16 @@ pub enum RiftError {
     #[error("{detail}")]
     Save { detail: String, reason: SaveReason },
 
+    /// v0.7: THE WORKSHOP refused something about the pawn (WINDOW-CONTRACT
+    /// § v0.7, Errors). Produced only by a build with the `pawn` feature.
+    #[error("{detail}")]
+    Pawn { detail: String, reason: PawnReason },
+
+    /// v0.7: a build could not be brought through into the library (RS-2's
+    /// second exception). Produced only by a build with the `pawn` feature.
+    #[error("{detail}")]
+    Bring { detail: String, reason: BringReason },
+
     /// Any other filesystem failure while writing.
     #[error("{detail}")]
     Io { detail: String },
@@ -91,6 +101,57 @@ impl RiftError {
     pub fn refused(reason: impl Into<String>) -> Self {
         RiftError::Refused {
             reason: reason.into(),
+        }
+    }
+}
+
+/// Why THE WORKSHOP refused (v0.7), for the window to voice by code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PawnReason {
+    /// The fence cannot be built here; the sentence names the missing piece
+    /// and the command that installs it.
+    NoFence,
+    /// The fence's last probe on this ground let something through.
+    Breached,
+    AlreadyHere,
+    NotHere,
+    /// The probe cannot run while a pawn is summoned.
+    PawnHere,
+    NothingHeld,
+    /// A Play press for a run or request that is not the one waiting now.
+    StaleHeld,
+    /// The run's ledger cannot be written, which stops every change in it.
+    LedgerDown,
+    /// A read-only input overlaps a protected root; the sentence names the root.
+    InputRefused,
+    /// A Put back id that is not that run's own still-installed install.
+    NotThisRun,
+}
+
+/// Why a build could not be brought through (v0.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BringReason {
+    NameTaken,
+    BytesChanged,
+    NoReceipt,
+    ReceiptMismatch,
+    NotInDist,
+}
+
+impl RiftError {
+    pub fn pawn(reason: PawnReason, detail: impl Into<String>) -> Self {
+        RiftError::Pawn {
+            detail: detail.into(),
+            reason,
+        }
+    }
+
+    pub fn bring(reason: BringReason, detail: impl Into<String>) -> Self {
+        RiftError::Bring {
+            detail: detail.into(),
+            reason,
         }
     }
 }
@@ -176,6 +237,22 @@ pub type RiftResult<T> = Result<T, RiftError>;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_workshops_two_kinds_cross_the_bridge_with_their_reason() {
+        let json = serde_json::to_value(RiftError::pawn(
+            PawnReason::NoFence,
+            "socat is missing in WSL.",
+        ))
+        .unwrap();
+        assert_eq!(json["kind"], "pawn");
+        assert_eq!(json["detail"]["reason"], "noFence");
+        assert_eq!(json["detail"]["detail"], "socat is missing in WSL.");
+        let json =
+            serde_json::to_value(RiftError::bring(BringReason::BytesChanged, "changed")).unwrap();
+        assert_eq!(json["kind"], "bring");
+        assert_eq!(json["detail"]["reason"], "bytesChanged");
+    }
+
     use super::*;
 
     #[test]

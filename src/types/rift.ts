@@ -133,9 +133,13 @@ export interface RiftError {
     | "journal"
     | "nexus"
     | "save"
+    | "pawn"
+    | "bring"
     | "io";
   /** For kind "nexus" (v0.3): `{ detail: <sentence>, reason?: NexusReason }`.
    *  For kind "save" (v0.4): `{ detail: <sentence>, reason: SaveReason }`.
+   *  For kinds "pawn" and "bring" (v0.7, THE WORKSHOP; only the investor's
+   *  build produces them): `{ detail: <sentence>, reason }`.
    *  The window voices by `reason` first and reads the sentence only as a fallback. */
   detail?: Record<string, string>;
 }

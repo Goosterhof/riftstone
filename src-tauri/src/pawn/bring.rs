@@ -27,15 +27,7 @@ use crate::pawn::folder::MailFolder;
 pub const MAX_RECEIPT_BYTES: u64 = 64 * 1024;
 
 /// Why a bring-through was refused (WINDOW-CONTRACT § v0.7, `bring`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum BringReason {
-    NameTaken,
-    BytesChanged,
-    NoReceipt,
-    ReceiptMismatch,
-    NotInDist,
-}
+pub use rift_core::BringReason;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BringRefusal {
@@ -43,6 +35,12 @@ pub struct BringRefusal {
     /// One sentence, in the stone's voice. Workshop names are the
     /// investor's own and may be shown.
     pub detail: String,
+}
+
+impl From<BringRefusal> for rift_core::RiftError {
+    fn from(refusal: BringRefusal) -> Self {
+        rift_core::RiftError::bring(refusal.reason, refusal.detail)
+    }
 }
 
 fn refuse(reason: BringReason, detail: impl Into<String>) -> BringRefusal {
@@ -205,6 +203,29 @@ fn read_receipt(dist: &MailFolder, artifact: &str) -> Result<Receipt, BringRefus
         ));
     }
     Ok(receipt)
+}
+
+/// One built zip in `dist\`, read only through the pinned handle: its name,
+/// size and digest. A `dist` that is a link or reparse point lists nothing,
+/// and a zip that is a link is left out (the Heretic's WD4: the Workshop's
+/// listing keeps bring-through's own boundary).
+pub fn pinned_builds(workshop: &Path) -> Vec<(String, u64, String)> {
+    let Ok(dist) = dist(workshop) else {
+        return Vec::new();
+    };
+    let mut builds: Vec<(String, u64, String)> = dist
+        .names()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|name| name.to_ascii_lowercase().ends_with(".zip"))
+        .filter_map(|name| {
+            let mut file = open_artifact(&dist, &name).ok()?;
+            let (sha, bytes) = digest(&mut file).ok()?;
+            Some((name, bytes, sha))
+        })
+        .collect();
+    builds.sort();
+    builds
 }
 
 /// Is `name` in the mods folder (compared as Windows compares names), and

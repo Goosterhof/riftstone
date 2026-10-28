@@ -767,6 +767,18 @@ function musterOther(base: Voiced): Voiced {
   return { ...base, inscription: MUSTER_UNREAD, empathy: READ_ONLY, recovery: [READ_AGAIN, COPY] };
 }
 
+/** v0.7: the investor's build only. The stone's own sentence, verbatim; the
+ *  room that raises these voices them by reason itself. */
+function stoneSentence(kind: "pawn" | "bring", d: Detail): Voiced {
+  return {
+    kind,
+    inscription: null,
+    voice: pick(d, "detail") ?? "The stone refused.",
+    empathy: "Nothing else changed.",
+    recovery: [DISMISS],
+  };
+}
+
 type Handler = (detail: Detail, context: VoiceContext) => Voiced;
 
 const HANDLERS: Record<RiftError["kind"], Handler> = {
@@ -781,6 +793,8 @@ const HANDLERS: Record<RiftError["kind"], Handler> = {
   journal: journalFailure,
   nexus: nexusFailure,
   save: (d) => saveFailure(d),
+  pawn: (d) => stoneSentence("pawn", d),
+  bring: (d) => stoneSentence("bring", d),
   io: (d, context) => (context === "parked" ? parkedIo(d) : ioFailure(d, context)),
 };
 
