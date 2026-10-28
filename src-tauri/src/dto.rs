@@ -4974,6 +4974,14 @@ mod tests {
                 detail: text(),
                 reason: SaveReason::Damaged,
             },
+            RiftError::Pawn {
+                detail: text(),
+                reason: rift_core::PawnReason::NoFence,
+            },
+            RiftError::Bring {
+                detail: text(),
+                reason: rift_core::BringReason::NameTaken,
+            },
             RiftError::Io { detail: text() },
         ];
         for err in &all {
@@ -4989,6 +4997,8 @@ mod tests {
                 | RiftError::Journal { .. }
                 | RiftError::Nexus { .. }
                 | RiftError::Save { .. }
+                | RiftError::Pawn { .. }
+                | RiftError::Bring { .. }
                 | RiftError::Io { .. } => {}
             }
         }

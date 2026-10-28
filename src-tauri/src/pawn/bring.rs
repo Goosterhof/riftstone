@@ -27,15 +27,7 @@ use crate::pawn::folder::MailFolder;
 pub const MAX_RECEIPT_BYTES: u64 = 64 * 1024;
 
 /// Why a bring-through was refused (WINDOW-CONTRACT § v0.7, `bring`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum BringReason {
-    NameTaken,
-    BytesChanged,
-    NoReceipt,
-    ReceiptMismatch,
-    NotInDist,
-}
+pub use rift_core::BringReason;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BringRefusal {
@@ -43,6 +35,12 @@ pub struct BringRefusal {
     /// One sentence, in the stone's voice. Workshop names are the
     /// investor's own and may be shown.
     pub detail: String,
+}
+
+impl From<BringRefusal> for rift_core::RiftError {
+    fn from(refusal: BringRefusal) -> Self {
+        rift_core::RiftError::bring(refusal.reason, refusal.detail)
+    }
 }
 
 fn refuse(reason: BringReason, detail: impl Into<String>) -> BringRefusal {
