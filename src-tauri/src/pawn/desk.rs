@@ -82,6 +82,15 @@ impl PawnStateView {
     }
 }
 
+/// What `answer_pawn_play` did: the decision, and whether it reached the
+/// run's ledger on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayAnsweredView {
+    pub decision: crate::pawn::mailbox::Decision,
+    pub persisted: bool,
+}
+
 /// `PawnHand` (WINDOW-CONTRACT § v0.7, Types): one answered call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -258,6 +267,26 @@ fn no_fence(detail: impl Into<String>) -> RiftError {
     RiftError::pawn(PawnReason::NoFence, detail)
 }
 
+/// Where the stone keeps the save-backup destinations it has written to.
+fn backup_destinations_file(data_dir: &Path) -> PathBuf {
+    data_dir.join("save-backup-destinations.json")
+}
+
+/// Remember a folder a save backup was written into: a protected root for
+/// the pawn's fence from then on.
+pub fn remember_backup_destination(data_dir: &Path, destination: &Path) {
+    let file = backup_destinations_file(data_dir);
+    let mut known: Vec<String> = persist::read_json(&file).unwrap_or_default();
+    let text =
+        final_path(destination).unwrap_or_else(|_| destination.to_string_lossy().into_owned());
+    if !known.contains(&text) {
+        known.push(text);
+        if let Err(err) = persist::write_json(&file, &known, true) {
+            log::warn!("the save backup's destination could not be remembered: {err}");
+        }
+    }
+}
+
 /// The roots no input may overlap, by their final paths where they exist
 /// (RS-9.2): Steam's install (and so `userdata`), the game, the mods folder
 /// and its siblings, the stone's app data, the profile and its `.claude`.
@@ -285,10 +314,20 @@ pub fn protected_roots(state: &AppState) -> Vec<ProtectedRoot> {
             .map(Path::to_path_buf)
     });
     add("Steam's library", steam);
+    // Every Steam install the stone's own discovery knows (the registry, the
+    // environment), and the default one (the Heretic's WD3).
+    for root in rift_deploy::steam_roots() {
+        add("Steam", Some(root));
+    }
     add(
         "Steam",
         std::env::var_os("ProgramFiles(x86)").map(|p| PathBuf::from(p).join("Steam")),
     );
+    let remembered: Vec<String> =
+        persist::read_json(&backup_destinations_file(&state.config.dirs.data)).unwrap_or_default();
+    for destination in remembered {
+        add("a save backup folder", Some(PathBuf::from(destination)));
+    }
     add("the game folder", game);
     add(
         "the older versions folder",
@@ -518,7 +557,13 @@ impl Desk {
     /// `depart_pawn`: the summoning ends and its run retires. Her installs
     /// stay (Put back offers them).
     pub fn depart(&self, events: &dyn EventSink) -> Result<PawnStateView, RiftError> {
-        let pawn = self.here()?;
+        // Taken out of `live` first, so the process's own end (which runs as
+        // the kill lands) finds nothing left to depart.
+        let pawn = lock(&self.state)
+            .live
+            .take()
+            .map(|live| live.summoning)
+            .ok_or_else(|| RiftError::pawn(PawnReason::NotHere, "Tamsin is not here."))?;
         let retired = pawn.depart();
         let view = PawnStateView {
             run_id: Some(pawn.run_id().to_string()),
@@ -548,7 +593,7 @@ impl Desk {
         run_id: &str,
         held_request_id: &str,
         accept: bool,
-    ) -> Result<(), RiftError> {
+    ) -> Result<PlayAnsweredView, RiftError> {
         let pawn = self
             .here()
             .map_err(|_| RiftError::pawn(PawnReason::StaleHeld, "Tamsin's summoning has ended."))?;
@@ -568,7 +613,11 @@ impl Desk {
                 if !answered.persisted {
                     log::warn!("the Arisen's answer to a held Play could not be recorded");
                 }
-                Ok(())
+                // The window says when the decision is not on disk (WD5).
+                Ok(PlayAnsweredView {
+                    decision: answered.decision,
+                    persisted: answered.persisted,
+                })
             }
             Err(PlayRefusal::NothingHeld) => Err(RiftError::pawn(
                 PawnReason::NothingHeld,
@@ -610,15 +659,29 @@ impl Desk {
         }
     }
 
+    /// The pawn's process ended by itself (she exited, or the terminal
+    /// closed): the summoning is taken out of `live` and departed in full, so
+    /// intake closes, calls already taken finish, and the run retires (the
+    /// Heretic's WD2). Its final state stays readable.
     fn ended(&self, run_id: &str, exit_code: Option<u32>) -> Option<PawnStateView> {
-        let mut desk = lock(&self.state);
-        let ours = desk
-            .live
-            .as_ref()
-            .is_some_and(|live| live.summoning.run_id() == run_id);
-        if !ours {
-            return None; // a departure already recorded it
+        let pawn = {
+            let mut desk = lock(&self.state);
+            let ours = desk
+                .live
+                .as_ref()
+                .is_some_and(|live| live.summoning.run_id() == run_id);
+            if !ours {
+                return None; // a departure already recorded it
+            }
+            desk.live.take().map(|live| live.summoning)
+        };
+        if let Some(pawn) = pawn {
+            let retired = pawn.depart();
+            if !retired.persisted {
+                log::warn!("the ended run's ledger is not whole on disk");
+            }
         }
+        let mut desk = lock(&self.state);
         let view = PawnStateView {
             run_id: Some(run_id.to_string()),
             state: if exit_code == Some(0) {
@@ -756,5 +819,121 @@ mod tests {
         let again = Desk::new(dir.path());
         assert_eq!(again.settings().voice, Voice::Full, "saved in pawn.json");
         assert_eq!(again.pawn_state().state, "absent");
+    }
+
+    /// The Heretic's WD2: a pawn whose process exits by itself is departed
+    /// in full. Intake closes, the run retires, and a request first posted
+    /// after the exit is never acted on.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_pawn_that_exits_by_itself_is_departed_and_its_run_retired() {
+        use crate::pawn::mailbox::{Done, Errands, PlannedInstall};
+        use crate::pawn::summon::Launch;
+        use rift_deploy::Actor;
+        use serde_json::Value;
+
+        #[derive(Default)]
+        struct Counting(std::sync::atomic::AtomicUsize);
+        impl Errands for Counting {
+            fn search_library(&self, _: &str, _: u64) -> Result<Value, String> {
+                Ok(Value::Null)
+            }
+            fn get_option(&self, _: &str) -> Result<Value, String> {
+                Ok(Value::Null)
+            }
+            fn list_installed(&self) -> Result<Value, String> {
+                Ok(Value::Null)
+            }
+            fn plan_install(&self, _: &str) -> Result<PlannedInstall, String> {
+                Err("no".into())
+            }
+            fn install(&self, _: &str, _: &Actor, _: &PlannedInstall) -> Result<Done, String> {
+                Err("no".into())
+            }
+            fn uninstall(&self, _: &str, _: &Actor) -> Result<Done, String> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Err("no".into())
+            }
+            fn hold_play(&self, _: &str, _: &str) -> Result<(), String> {
+                Ok(())
+            }
+            fn drop_held_play(&self, _: &str) {}
+            fn read_reframework_log(&self, _: u64) -> Result<Value, String> {
+                Ok(Value::Null)
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let desk = Desk::new(dir.path());
+        let run_id = new_run_id();
+        let run_dir = dir.path().join("run");
+        for folder in ["requests", "answers"] {
+            std::fs::create_dir_all(run_dir.join(folder)).unwrap();
+        }
+        let errands = Arc::new(Counting::default());
+        let broker = Arc::new(Broker::new(&run_id, errands.clone(), desk.runs(), now));
+        let events: Arc<dyn EventSink> = Arc::new(crate::events::RecordedEvents::default());
+        let ears = Arc::new(Ears {
+            desk: Arc::downgrade(&desk),
+            events,
+            run_id: run_id.clone(),
+        });
+        // A pawn that waits a moment, then leaves by itself, cleanly.
+        let launch = Launch {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 0.3; exit 0".into()],
+            env: Vec::new(),
+        };
+        let summoning = summon(
+            &launch,
+            (80, 24),
+            broker,
+            &RunFolders {
+                run_id: run_id.clone(),
+                requests: run_dir.join("requests"),
+                answers: run_dir.join("answers"),
+            },
+            ears,
+        )
+        .unwrap();
+        lock(&desk.state).live = Some(Live {
+            summoning: Arc::new(summoning),
+            host: Host {
+                distro: "bench".into(),
+                claude_version: "0".into(),
+                kernel: "0".into(),
+            },
+            since: now(),
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while desk.pawn_state().state != "departed" {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never departed: {:?}",
+                desk.pawn_state()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(desk.pawn_state().exit_code, Some(0));
+        assert!(desk.live().is_none(), "nothing is left live");
+        let ledger = desk
+            .runs()
+            .runs()
+            .into_iter()
+            .find(|r| r.run_id == run_id)
+            .unwrap();
+        assert!(ledger.ended_at.is_some(), "the run retired");
+        // A request first posted after the exit stays unread and unacted.
+        let id = "55555555-2222-4333-8444-555555555555";
+        let request = run_dir.join("requests").join(format!("{id}.json"));
+        std::fs::write(
+            &request,
+            serde_json::json!({ "id": id, "tool": "uninstall", "args": { "installId": "a#b" } })
+                .to_string(),
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        assert!(request.exists(), "never taken");
+        assert_eq!(errands.0.load(Ordering::SeqCst), 0, "never acted on");
     }
 }

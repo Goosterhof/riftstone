@@ -205,6 +205,29 @@ fn read_receipt(dist: &MailFolder, artifact: &str) -> Result<Receipt, BringRefus
     Ok(receipt)
 }
 
+/// One built zip in `dist\`, read only through the pinned handle: its name,
+/// size and digest. A `dist` that is a link or reparse point lists nothing,
+/// and a zip that is a link is left out (the Heretic's WD4: the Workshop's
+/// listing keeps bring-through's own boundary).
+pub fn pinned_builds(workshop: &Path) -> Vec<(String, u64, String)> {
+    let Ok(dist) = dist(workshop) else {
+        return Vec::new();
+    };
+    let mut builds: Vec<(String, u64, String)> = dist
+        .names()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|name| name.to_ascii_lowercase().ends_with(".zip"))
+        .filter_map(|name| {
+            let mut file = open_artifact(&dist, &name).ok()?;
+            let (sha, bytes) = digest(&mut file).ok()?;
+            Some((name, bytes, sha))
+        })
+        .collect();
+    builds.sort();
+    builds
+}
+
 /// Is `name` in the mods folder (compared as Windows compares names), and
 /// does it hold `sha256`?
 fn conflict(mods: &Path, name: &str, sha256: &str) -> io::Result<Conflict> {

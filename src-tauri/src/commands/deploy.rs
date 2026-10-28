@@ -218,8 +218,24 @@ pub fn uninstall_recorded(
     state: &AppState,
     option_id: &str,
 ) -> Result<(UninstallResultView, Option<(Actor, u64)>), RiftError> {
+    uninstall_checked(state, option_id, None)
+}
+
+/// The check an uninstall makes inside its own turn, before the first byte
+/// moves (v0.7: Put back's, that the install is still hers).
+pub type UninstallCheck<'a> = &'a dyn Fn(&Journal) -> Result<(), RiftError>;
+
+/// [`uninstall_recorded`], refused by `check` inside the turn that commits.
+pub fn uninstall_checked(
+    state: &AppState,
+    option_id: &str,
+    check: Option<UninstallCheck<'_>>,
+) -> Result<(UninstallResultView, Option<(Actor, u64)>), RiftError> {
     let id = OptionId(option_id.to_string());
     let (report, removed) = state.deploy(|ctx, journal| {
+        if let Some(check) = check {
+            check(journal)?;
+        }
         let removed = journal
             .installs
             .iter()

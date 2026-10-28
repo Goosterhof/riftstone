@@ -941,9 +941,10 @@ impl Broker {
         if let Some(index) = state.ledger.decisions.iter().position(|d| !d.delivered) {
             let decision = state.ledger.decisions[index].clone();
             let text = match decision.decision {
-                Decision::Played => {
-                    format!("played at {}: the Arisen started the game", decision.at)
-                }
+                Decision::Played => format!(
+                    "played at {}: the Arisen pressed Play and the stone started the launch. Read the REFramework log once the game is up.",
+                    decision.at
+                ),
                 Decision::Declined => "declined: the Arisen said not now".to_string(),
             };
             let answer = Answer {
@@ -1916,7 +1917,7 @@ mod tests {
         assert!(launched);
         assert_eq!(
             play(&broker, H2).text,
-            "played at 2026-10-28T12:00:00Z: the Arisen started the game"
+            "played at 2026-10-28T12:00:00Z: the Arisen pressed Play and the stone started the launch. Read the REFramework log once the game is up."
         );
     }
 

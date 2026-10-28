@@ -344,6 +344,55 @@ mod desk {
     }
 
     #[test]
+    fn put_back_never_removes_a_reinstall_made_after_its_plan() {
+        // The Heretic's WD1: the uninstall re-checks, in its own turn, that
+        // the install is still hers at the seq the press was planned on.
+        let (_bench, _dirs, state) = opened();
+        let errands = StoneErrands::new(Arc::clone(&state));
+        let lantern = option_named(&state, "Lantern Glow Recolor");
+        let planned = errands.plan_install(&lantern).unwrap();
+        errands.install(&lantern, &pawn(), &planned).unwrap();
+        let seq_then = state
+            .world()
+            .journal
+            .ready()
+            .unwrap()
+            .installs
+            .iter()
+            .find(|i| i.option_id.0 == lantern)
+            .unwrap()
+            .seq;
+        // The player takes it over: uninstalled and installed again.
+        deploy::uninstall_impl(&state, &lantern).unwrap();
+        deploy::install_impl(&state, &lantern).unwrap();
+        let check = |journal: &rift_deploy::Journal| {
+            if riftstone_lib::pawn::put_back::still_hers(RUN, journal, &lantern, seq_then) {
+                Ok(())
+            } else {
+                Err(RiftError::pawn(PawnReason::NotThisRun, "changed"))
+            }
+        };
+        let refused = deploy::uninstall_checked(&state, &lantern, Some(&check)).unwrap_err();
+        assert_eq!(reason(refused), PawnReason::NotThisRun);
+        assert!(installed(&state, &lantern), "the player's reinstall stays");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_linked_dist_lists_nothing_of_what_it_points_at() {
+        // The Heretic's WD4: the listing keeps bring-through's boundary.
+        let (_bench, dirs, state) = opened();
+        let desk = Desk::new(&dirs.data);
+        let workshop = workshop_dir(state.library_dir()).unwrap();
+        fs::create_dir_all(&workshop).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("Canary.zip"), b"outside canary").unwrap();
+        std::os::unix::fs::symlink(outside.path(), workshop.join("dist")).unwrap();
+        let view = get_workshop_impl(&state, &desk).unwrap();
+        assert!(view.artifacts.is_empty(), "{:?}", view.artifacts);
+    }
+
+    #[test]
     fn put_back_names_only_a_run_in_her_ledger() {
         let (_bench, dirs, state) = opened();
         let desk = Desk::new(&dirs.data);

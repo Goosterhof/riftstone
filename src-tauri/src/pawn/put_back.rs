@@ -197,14 +197,17 @@ pub fn plan_put_back(
     }
 }
 
-/// The ids a `put_back` press may act on, newest first: every one must be the
-/// run's own still-installed install, or the whole press is refused
-/// (`notThisRun`) naming the first that is not.
+/// The ids a `put_back` press may act on, newest first, each with the
+/// journal `seq` of the install it names: every one must be the run's own
+/// still-installed install, or the whole press is refused (`notThisRun`)
+/// naming the first that is not. The seq is checked again in each
+/// uninstall's own turn (the Heretic's WD1): a player's reinstall of the
+/// same option in between is a different install, and is left.
 pub fn checked_put_back(
     run_id: &str,
     journal: &Journal,
     install_ids: &[String],
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<(String, u64)>, String> {
     let actor = Actor::Pawn {
         run_id: run_id.to_string(),
     };
@@ -220,7 +223,18 @@ pub fn checked_put_back(
         }
     }
     chosen.sort_by_key(|(seq, _)| std::cmp::Reverse(*seq));
-    Ok(chosen.into_iter().map(|(_, id)| id).collect())
+    Ok(chosen.into_iter().map(|(seq, id)| (id, seq)).collect())
+}
+
+/// Is `install_id` still that run's own install, at the very `seq` the press
+/// was planned on?
+pub fn still_hers(run_id: &str, journal: &Journal, install_id: &str, seq: u64) -> bool {
+    let actor = Actor::Pawn {
+        run_id: run_id.to_string(),
+    };
+    journal.installs.iter().any(|install| {
+        install.option_id.0 == install_id && install.actor == actor && install.seq == seq
+    })
 }
 
 #[cfg(test)]
@@ -496,7 +510,7 @@ mod tests {
         let ids = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(
             checked_put_back(RUN, &world, &ids(&["ab#Stature", "ad#Fray"])).unwrap(),
-            ["ad#Fray", "ab#Stature"]
+            [("ad#Fray".to_string(), 4), ("ab#Stature".to_string(), 2)]
         );
         assert_eq!(
             checked_put_back(RUN, &world, &ids(&["ab#Stature", "aa#Glow"])),
@@ -512,7 +526,7 @@ mod tests {
         );
         assert_eq!(
             checked_put_back(RUN, &world, &ids(&["ab#Stature", "ab#Stature"])).unwrap(),
-            ["ab#Stature"],
+            [("ab#Stature".to_string(), 2)],
             "a repeated id is acted on once"
         );
     }

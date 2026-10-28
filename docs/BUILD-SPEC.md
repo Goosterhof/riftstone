@@ -3076,11 +3076,14 @@ the waiting request's id in `data.heldRequestId`. At most one Play is held per r
 departure drops it unanswered (`lastDecision` stays as it was).
 
 Three rules close the edges (the Heretic's review of `d1dee4e`, P1 and P2):
-- **Only a game that started is `played`** (P1). The Arisen's *Play* runs `plan_launch` and
-  `launch_game` as the slab does. If either refuses, fails, or the Arisen cancels at one of its
-  warnings, **no decision is recorded and the request stays waiting**. The window shows the
-  stone's refusal under the held card, and the Arisen can press *Play* again or *Not now*.
-  `played` is recorded only once `launch_game` has started the game.
+- **Only a launch the stone started is `played`** (P1, narrowed by the Heretic's WD6). The
+  Arisen's *Play* runs `plan_launch` and `launch_game` as the slab does. If either refuses,
+  fails, or the Arisen cancels at one of its warnings, **no decision is recorded and the request
+  stays waiting**. The window shows the stone's refusal under the held card, and the Arisen can
+  press *Play* again or *Not now*. `played` is recorded once `launch_game` has started the
+  launch: `DD2.exe` started, or Steam accepted the request. It never claims the game came up;
+  the game watcher says that. The words Tamsin receives say the same: *the stone started the
+  launch; read the REFramework log once the game is up*.
 - **The press names what it answers** (P2). `answer_pawn_play` carries the `runId` and
   `heldRequestId` the window was shown. The stone acts only when they are the live run and its
   waiting request, checked under the decision's lock when the press arrives, and again after any

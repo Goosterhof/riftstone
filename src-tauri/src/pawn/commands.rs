@@ -86,19 +86,12 @@ pub struct WorkshopView {
 /// The built zips in the workshop's `dist\`, each with the stone's own
 /// digest and what its receipt says.
 fn artifacts(workshop: &Path, mods: &Path) -> Vec<ArtifactView> {
-    let Ok(entries) = std::fs::read_dir(workshop.join("dist")) else {
-        return Vec::new();
-    };
-    let mut views: Vec<ArtifactView> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let meta = entry.metadata().ok()?;
-            (meta.is_file() && name.to_ascii_lowercase().ends_with(".zip"))
-                .then_some((name, meta.len()))
-        })
+    // Every name, size and digest through the pinned dist handle; the card's
+    // plan reads the receipt the same way.
+    bring::pinned_builds(workshop)
+        .into_iter()
         .map(
-            |(name, bytes)| match bring::plan_bring_through(workshop, mods, &name) {
+            |(name, bytes, sha)| match bring::plan_bring_through(workshop, mods, &name) {
                 Ok(plan) => ArtifactView {
                     name,
                     bytes: plan.bytes,
@@ -108,11 +101,9 @@ fn artifacts(workshop: &Path, mods: &Path) -> Vec<ArtifactView> {
                     in_library: plan.conflict == Conflict::AlreadyHad,
                 },
                 Err(refusal) => ArtifactView {
-                    sha256: bring::digest_file(&workshop.join("dist").join(&name))
-                        .ok()
-                        .map(|(sha, _)| sha),
                     name,
                     bytes,
+                    sha256: Some(sha),
                     receipt: None,
                     receipt_problem: Some(match refusal.reason {
                         rift_core::BringReason::ReceiptMismatch => "mismatch",
@@ -123,9 +114,7 @@ fn artifacts(workshop: &Path, mods: &Path) -> Vec<ArtifactView> {
                 },
             },
         )
-        .collect();
-    views.sort_by(|a, b| a.name.cmp(&b.name));
-    views
+        .collect()
 }
 
 fn workshop_of(state: &AppState) -> Result<std::path::PathBuf, RiftError> {
@@ -223,7 +212,19 @@ pub fn put_back_impl(
     })?;
     ordered
         .iter()
-        .map(|id| deploy::uninstall_impl(state, id))
+        .map(|(id, seq)| {
+            let check = |journal: &rift_deploy::Journal| {
+                if put_back::still_hers(run_id, journal, id, *seq) {
+                    Ok(())
+                } else {
+                    Err(RiftError::pawn(
+                        PawnReason::NotThisRun,
+                        format!("{id} changed since Put back was planned, so it is left as it is."),
+                    ))
+                }
+            };
+            deploy::uninstall_checked(state, id, Some(&check)).map(|(view, _)| view)
+        })
         .collect()
 }
 
@@ -293,7 +294,7 @@ pub async fn answer_pawn_play(
     run_id: String,
     held_request_id: String,
     accept: bool,
-) -> Result<(), RiftError> {
+) -> Result<crate::pawn::desk::PlayAnsweredView, RiftError> {
     with_desk(&spine, &desk, move |state, desk| {
         desk.answer_play(state, &run_id, &held_request_id, accept)
     })

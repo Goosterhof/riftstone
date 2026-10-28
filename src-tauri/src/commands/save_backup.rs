@@ -28,9 +28,14 @@ pub fn backup_saves_impl(
     if let Some(install) = state.config.exe.parent() {
         protected.push(install.to_path_buf());
     }
-    crate::save_backup::create(&folders, Path::new(destination), &protected, || {
+    let report = crate::save_backup::create(&folders, Path::new(destination), &protected, || {
         state.observe_game()
-    })
+    })?;
+    // The pawn's fence keeps every backup destination out of reach (RS-9.2),
+    // so the investor's build remembers where it wrote one.
+    #[cfg(feature = "pawn")]
+    crate::pawn::desk::remember_backup_destination(&state.config.dirs.data, Path::new(destination));
+    Ok(report)
 }
 
 #[tauri::command]
