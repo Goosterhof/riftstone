@@ -67,6 +67,22 @@ jobs:
       - name: Build
         run: npm run build
 
+      # RS-10: the room is imported only under VITE_RIFT_PAWN=1, and Vite drops the
+      # dead branch, so the public dist/ carries none of it. Its inscription and its
+      # first command are strings only the room carries. The flagged build is the
+      # positive control: the same grep must find them there, so it cannot pass by
+      # being wrong.
+      - name: RS-10 (the public window carries no workshop; the investor's does)
+        run: |
+          if grep -rlE 'THE WORKSHOP|summon_pawn' dist/; then
+            echo "::error::the public window's dist/ carries THE WORKSHOP (RS-10)"
+            exit 1
+          fi
+          rm -rf dist
+          VITE_RIFT_PAWN=1 npx vite build
+          grep -rqE 'THE WORKSHOP' dist/ || { echo "::error::the positive control found no THE WORKSHOP in the flagged build"; exit 1; }
+          grep -rqE 'summon_pawn' dist/ || { echo "::error::the positive control found no summon_pawn in the flagged build"; exit 1; }
+
   crates:
     name: Crates — Fmt + Clippy + Test
     runs-on: ubuntu-latest

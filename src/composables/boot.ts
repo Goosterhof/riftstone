@@ -2,6 +2,7 @@
 // and routes each one to the composables that care. The only module that
 // knows every composable — none of them import it, so no cycles.
 
+import { loadExtraRooms } from "./useRooms";
 import { nextTick } from "vue";
 import {
   EVENTS,
@@ -197,6 +198,7 @@ export async function wakeRiftstone(): Promise<void> {
     useFarWorld().load(),
     useLabels().load(),
     useDownloads().load(),
+    loadExtraRooms(),
   ]);
 }
 

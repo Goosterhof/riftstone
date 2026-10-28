@@ -172,7 +172,7 @@
         // headless render harness, vitest): one long factory over fixture data.
         // It ships as a lazily-loaded chunk the real spine never calls.
         {
-            "files": ["src/services/mock/**"],
+            "files": ["src/services/mock/**", "src/workshop/mock.ts"],
             "rules": {
                 "complexity": "off",
                 "max-lines-per-function": "off",

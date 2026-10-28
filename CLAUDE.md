@@ -139,7 +139,10 @@ python3 -I scripts/privacy-sweep.py --self-test
 
 **The Sentinel** (`.github/workflows/sentinel.yml`, armed with the first push on 2026-10-18) runs
 those gates on every push to `main` and every pull request against it, in three jobs:
-- *Window*: `npm ci`, then typecheck, lint, test, format:check and build.
+- *Window*: `npm ci`, then typecheck, lint, test, format:check and build. RS-10's window step
+  (v0.7) greps the public `dist/` for `THE WORKSHOP` and `summon_pawn` and fails on a hit; then
+  it builds again with `VITE_RIFT_PAWN=1` and fails unless the same grep finds both (the
+  positive control).
 - *Crates*: fmt, clippy with warnings denied, RS-8 measured, and the workspace's tests. RS-8's
   step reads `cargo tree -p riftstone -e normal,build` and fails when any `fixtures` feature
   reaches the graph the shipped exe is built from. The graph is its own denominator: the step

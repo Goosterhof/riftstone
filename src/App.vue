@@ -10,6 +10,7 @@ import { useSearch } from "@/composables/useSearch";
 import { useWorld } from "@/composables/useWorld";
 import { useHotkeys } from "@/composables/useHotkeys";
 import { useLibrary } from "@/composables/useLibrary";
+import { useRooms } from "@/composables/useRooms";
 import RiftstonePillar from "@/components/RiftstonePillar.vue";
 import WakeScreen from "@/components/WakeScreen.vue";
 import ToastShelf from "@/components/ToastShelf.vue";
@@ -33,6 +34,11 @@ const musterAwake = computed(() => nav.page.value === "muster" && stone.phase.va
 useHotkeys();
 
 const library = useLibrary();
+
+/** v0.7: the gated rooms (the investor's build only). They stay mounted once loaded,
+ *  so THE WORKSHOP's terminal keeps its conversation while other rooms show (§20.12). */
+const rooms = useRooms();
+const inExtraRoom = computed(() => rooms.extra.value.some((r) => r.id === nav.page.value));
 
 /** ↓ from the well: into the library tree when the Rift is idle (§16.1),
  *  else into the answers. */
@@ -70,8 +76,14 @@ onBeforeUnmount(() => sleepRiftstone());
       <InstalledPage v-else-if="nav.page.value === 'world'" />
       <NexusPage v-else-if="nav.page.value === 'nexus'" />
       <MusterPage v-else-if="nav.page.value === 'muster'" />
-      <PreflightPage v-else />
+      <PreflightPage v-else-if="!inExtraRoom" />
     </template>
+    <component
+      :is="r.page"
+      v-for="r in rooms.extra.value"
+      v-show="stone.phase.value === 'ready' && !musterAwake && nav.page.value === r.id"
+      :key="r.id"
+    />
     <ToastShelf />
     <RiftLightbox />
   </div>

@@ -9,6 +9,7 @@ import { useSearch, type StateFacet } from "@/composables/useSearch";
 import { useStone } from "@/composables/useStone";
 import { useNavigation, type Page } from "@/composables/useNavigation";
 import { useFarWorld } from "@/composables/useFarWorld";
+import { useRooms } from "@/composables/useRooms";
 import RiftSearchWell from "./RiftSearchWell.vue";
 import PlayStone from "./PlayStone.vue";
 import FarWorldLabels from "./FarWorldLabels.vue";
@@ -44,13 +45,18 @@ const STATES: { id: StateFacet; label: string }[] = [
   { id: "update", label: "Update" },
 ];
 
-const NAV: { id: Page; label: string; hint: string; key: string }[] = [
+const BASE_NAV: { id: Page; label: string; hint: string; key: string }[] = [
   { id: "rift", label: "THE RIFT", hint: "Mod library", key: "1" },
   { id: "world", label: "YOUR WORLD", hint: "Installed mods & load order", key: "2" },
   { id: "nexus", label: "NEXUS", hint: "Browse, download & update", key: "3" },
   { id: "preflight", label: "PREFLIGHT", hint: "Game checks & settings", key: "4" },
   { id: "muster", label: "THE MUSTER", hint: "Characters & saves", key: "5" },
 ];
+
+/** v0.7: the gated rooms join after THE MUSTER (R20.1); the public build has none. */
+const rooms = useRooms();
+const NAV = computed(() => [...BASE_NAV, ...rooms.extra.value]);
+const suffixOf = (id: Page) => rooms.extra.value.find((r) => r.id === id)?.suffix.value ?? null;
 
 const seamState = computed(() => (stone.scanning.value ? "scanning" : search.seam.value));
 
@@ -74,7 +80,7 @@ function roomLive(id: Page): boolean {
   if (stone.phase.value !== "nogame") return false;
   return id === "muster" || (id === "rift" && nav.page.value === "muster");
 }
-const navLive = computed(() => NAV.some((n) => roomLive(n.id)));
+const navLive = computed(() => NAV.value.some((n) => roomLive(n.id)));
 
 const carvedCount = computed(() => {
   if (stone.phase.value === "nogame") return "NO WORLD";
@@ -93,6 +99,7 @@ const navCount = computed<Record<Page, string | null>>(() => ({
   nexus: farWorld.updateCount.value ? String(farWorld.updateCount.value) : null,
   preflight: null,
   muster: null,
+  workshop: null,
 }));
 
 function onType(value: string): void {
@@ -201,7 +208,11 @@ defineExpose({ focusSearch: () => well.value?.focus() });
         @click="nav.go(n.id)"
       >
         <span class="navlink__words"
-          ><span>{{ n.label }}</span
+          ><span
+            >{{ n.label
+            }}<span v-if="suffixOf(n.id)" class="navlink__suffix" :class="`is-${suffixOf(n.id)?.tone}`">{{
+              ` · ${suffixOf(n.id)?.text}`
+            }}</span></span
           ><span class="navlink__hint">{{ n.hint }}</span></span
         >
         <span class="navlink__meta">
@@ -427,6 +438,17 @@ defineExpose({ focusSearch: () => well.value?.focus() });
 }
 .navlink__words {
   min-width: 0;
+}
+/* R20.1: a place, not a pulse — `· HERE` in rift, `· ASKS` in warn. */
+.navlink__suffix {
+  font: 400 12px / 1 var(--rs-font-mono);
+  letter-spacing: 0;
+}
+.navlink__suffix.is-rift {
+  color: var(--rs-rift);
+}
+.navlink__suffix.is-warn {
+  color: var(--rs-warn);
 }
 .navlink__hint {
   display: block;

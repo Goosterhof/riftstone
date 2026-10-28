@@ -11,6 +11,7 @@ import { useSearch } from "./useSearch";
 import { useWorld } from "./useWorld";
 import { useLibrary } from "./useLibrary";
 import { useMuster } from "./useMuster";
+import { useRooms } from "./useRooms";
 
 const ROOMS: Partial<Record<string, Page>> = {
   "1": "rift",
@@ -108,7 +109,7 @@ function escape(): boolean {
 }
 
 function plainKey(event: KeyboardEvent): boolean {
-  const room = ROOMS[event.key];
+  const room = ROOMS[event.key] ?? useRooms().extra.value.find((r) => r.key === event.key)?.id;
   if (room) {
     // R17.27: entering THE MUSTER by its key puts the focus on the picked slot
     if (room === "muster") useMuster().summon();
