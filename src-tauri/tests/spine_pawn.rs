@@ -392,6 +392,86 @@ mod desk {
         assert!(view.artifacts.is_empty(), "{:?}", view.artifacts);
     }
 
+    /// Invented raw saves for one account, and an existing destination.
+    fn saves(bench: &Bench, state: &AppState) -> std::path::PathBuf {
+        let source = bench.dir.path().join("saves");
+        let destination = bench.dir.path().join("Save Backups");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("data00-1.bin"), b"invented system data").unwrap();
+        state.fix_save_folders(vec![rift_muster::saves::SaveFolder {
+            account_id: 17,
+            path: source,
+        }]);
+        destination
+    }
+
+    fn backup_roots(state: &AppState) -> Result<usize, RiftError> {
+        Ok(riftstone_lib::pawn::desk::protected_roots(state)?
+            .iter()
+            .filter(|root| root.name == "a save backup folder")
+            .count())
+    }
+
+    #[test]
+    fn a_backup_that_cannot_be_registered_is_not_made() {
+        // The Heretic's WD3, first control: the inventory cannot be written.
+        let (bench, dirs, state) = opened();
+        let destination = saves(&bench, &state);
+        fs::create_dir_all(dirs.data.join("save-backup-destinations.json")).unwrap();
+        let refused = riftstone_lib::commands::save_backup::backup_saves_impl(
+            &state,
+            destination.to_str().unwrap(),
+        );
+        assert!(refused.is_err(), "no backup without its registration");
+        assert_eq!(
+            fs::read_dir(&destination).unwrap().count(),
+            0,
+            "nothing was published"
+        );
+    }
+
+    #[test]
+    fn a_damaged_inventory_refuses_instead_of_forgetting() {
+        // The Heretic's WD3, second control: registered coverage is never
+        // silently lost to a damaged file.
+        let (bench, dirs, state) = opened();
+        let destination = saves(&bench, &state);
+        riftstone_lib::commands::save_backup::backup_saves_impl(
+            &state,
+            destination.to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            backup_roots(&state).unwrap(),
+            1,
+            "registered before it was written"
+        );
+        let inventory = dirs.data.join("save-backup-destinations.json");
+        fs::write(&inventory, b"{ not a list").unwrap();
+        assert_eq!(
+            reason(backup_roots(&state).unwrap_err()),
+            PawnReason::NoFence
+        );
+        let desk = Desk::new(&dirs.data);
+        assert!(desk
+            .set_inputs(&state, vec!["C:\\Elsewhere".into()])
+            .is_err());
+        let second = bench.dir.path().join("Second Backups");
+        fs::create_dir_all(&second).unwrap();
+        assert!(riftstone_lib::commands::save_backup::backup_saves_impl(
+            &state,
+            second.to_str().unwrap()
+        )
+        .is_err());
+        assert_eq!(
+            fs::read(&inventory).unwrap(),
+            b"{ not a list",
+            "left exactly as it was"
+        );
+        assert_eq!(fs::read_dir(&second).unwrap().count(), 0);
+    }
+
     #[test]
     fn put_back_names_only_a_run_in_her_ledger() {
         let (_bench, dirs, state) = opened();

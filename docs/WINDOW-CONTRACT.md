@@ -1042,7 +1042,8 @@ Windows folders mounted read-only at `/inputs/<n>` (for example a pinned vanilla
 `get_workshop` returns them. On set, and again at every summon, the stone
 resolves each folder's final path and refuses any that **overlaps a protected root in either
 direction** (BUILD-SPEC § v0.7, RS-9.2): Steam, the game, the mods folder and its siblings, the
-stone's app data, the investor's profile and `.claude`, and save-backup destinations. The refusal
+stone's app data, the investor's profile and `.claude`, and every registered save-backup folder
+(BUILD-SPEC § v0.7, RS-9.2: registered before each backup, read strictly). The refusal
 is `pawn` `inputRefused`, naming the root it overlaps, never a path under `userdata`.
 
 ### Events

@@ -272,25 +272,57 @@ fn backup_destinations_file(data_dir: &Path) -> PathBuf {
     data_dir.join("save-backup-destinations.json")
 }
 
-/// Remember a folder a save backup was written into: a protected root for
-/// the pawn's fence from then on.
-pub fn remember_backup_destination(data_dir: &Path, destination: &Path) {
+/// One writer of the backup inventory at a time, in this process.
+static INVENTORY: Mutex<()> = Mutex::new(());
+
+/// The save-backup folders the fence keeps out of reach, read with
+/// integrity, never as a cache (the Heretic's WD3): no file is an empty
+/// list, but a file that cannot be read or parsed refuses (it is left as it
+/// is, never set aside or overwritten), so known coverage is never lost
+/// silently.
+pub fn backup_destinations(data_dir: &Path) -> Result<Vec<String>, RiftError> {
     let file = backup_destinations_file(data_dir);
-    let mut known: Vec<String> = persist::read_json(&file).unwrap_or_default();
+    match std::fs::read(&file) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(err) => Err(no_fence(format!(
+            "The list of save backup folders ({}) could not be read ({err}), so Tamsin's fence cannot be sure of them. Fix or restore that file.",
+            file.display()
+        ))),
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
+            no_fence(format!(
+                "The list of save backup folders ({}) is damaged, so Tamsin's fence cannot be sure of them. Fix or restore that file; the stone leaves it as it is.",
+                file.display()
+            ))
+        }),
+    }
+}
+
+/// Register a folder a save backup is about to be written into, durably,
+/// BEFORE the backup is made: a destination that cannot be registered is no
+/// destination (the backup refuses), so every backup the pawn's build makes
+/// is a protected root from its first byte.
+pub fn remember_backup_destination(data_dir: &Path, destination: &Path) -> Result<(), RiftError> {
+    let _one = lock(&INVENTORY);
+    let mut known = backup_destinations(data_dir)?;
     let text =
         final_path(destination).unwrap_or_else(|_| destination.to_string_lossy().into_owned());
     if !known.contains(&text) {
         known.push(text);
-        if let Err(err) = persist::write_json(&file, &known, true) {
-            log::warn!("the save backup's destination could not be remembered: {err}");
-        }
+        persist::write_json(&backup_destinations_file(data_dir), &known, true).map_err(|err| {
+            RiftError::refused(format!(
+                "The backup folder could not be recorded for Tamsin's fence ({err}), so no backup was made."
+            ))
+        })?;
     }
+    Ok(())
 }
 
 /// The roots no input may overlap, by their final paths where they exist
 /// (RS-9.2): Steam's install (and so `userdata`), the game, the mods folder
-/// and its siblings, the stone's app data, the profile and its `.claude`.
-pub fn protected_roots(state: &AppState) -> Vec<ProtectedRoot> {
+/// and its siblings, the stone's app data, the profile and its `.claude`, and
+/// every save-backup folder registered (an unreadable list refuses).
+pub fn protected_roots(state: &AppState) -> Result<Vec<ProtectedRoot>, RiftError> {
+    let remembered = backup_destinations(&state.config.dirs.data)?;
     let mut roots = Vec::new();
     let mut add = |name: &str, path: Option<PathBuf>| {
         if let Some(path) = path {
@@ -323,8 +355,6 @@ pub fn protected_roots(state: &AppState) -> Vec<ProtectedRoot> {
         "Steam",
         std::env::var_os("ProgramFiles(x86)").map(|p| PathBuf::from(p).join("Steam")),
     );
-    let remembered: Vec<String> =
-        persist::read_json(&backup_destinations_file(&state.config.dirs.data)).unwrap_or_default();
     for destination in remembered {
         add("a save backup folder", Some(PathBuf::from(destination)));
     }
@@ -342,7 +372,7 @@ pub fn protected_roots(state: &AppState) -> Vec<ProtectedRoot> {
         .map(PathBuf::from);
     add("your .claude", profile.as_ref().map(|p| p.join(".claude")));
     add("your profile", profile);
-    roots
+    Ok(roots)
 }
 
 impl Desk {
@@ -380,7 +410,7 @@ impl Desk {
     /// The read-only inputs, each refused when it overlaps a protected root
     /// in either direction (`inputRefused`, naming the root).
     pub fn set_inputs(&self, state: &AppState, inputs: Vec<String>) -> Result<(), RiftError> {
-        let roots = protected_roots(state);
+        let roots = protected_roots(state)?;
         for input in &inputs {
             validate_input(input, &roots)?;
         }
@@ -473,7 +503,7 @@ impl Desk {
         }
 
         // Every mounted Windows object, by its final path (RS-9.2).
-        let roots = protected_roots(state);
+        let roots = protected_roots(state)?;
         // A trusted mount must resolve to exactly the folder the stone made:
         // a junction or link in its place is refused.
         let trusted = |name: &str, path: &Path| -> Result<String, RiftError> {

@@ -2894,8 +2894,17 @@ what it holds.** Rules, each a test or a Sentinel step:
    The protected roots are Steam's install folder (and so `userdata` and the saves), the game
    folder, the mods folder and its `(older versions)` and `(workshop)` siblings (the workshop is
    mounted on its own, never as an input), the stone's app data (Roaming and Local), the
-   investor's `%USERPROFILE%\.claude`, `%USERPROFILE%` itself, and every save-backup destination
-   the stone has written. A link *inside* a mounted input resolves in the namespace's own view:
+   investor's `%USERPROFILE%\.claude`, `%USERPROFILE%` itself, and every save-backup folder the
+   investor's build has registered. **The backup inventory** (`save-backup-destinations.json`, the
+   Heretic's WD3) is a record, not a cache: a folder is registered durably BEFORE a backup is
+   written into it, and a backup whose folder cannot be registered is not made. No file is an
+   empty list. A file that cannot be read or parsed refuses every summon and input change, and is
+   left exactly as it is (never set aside, never overwritten), so registered coverage is never
+   lost silently. One writer at a time. **Coverage begins with the investor's v0.7 build:** a
+   backup made by v0.6.2, or by any build without the pawn, registered nothing. Such a folder is
+   protected only when it lies under another protected root. A backup made into it once from
+   this build registers it. Steam's install is every root the stone's own discovery knows (the
+   registry, the environment) and the default one. A link *inside* a mounted input resolves in the namespace's own view:
    an NTFS junction appears to WSL as a link to `/mnt/c/…`, which is not mounted, so it dangles.
    The probe measures that (step 9). A source whose target changed since the last summon is
    validated again; validation is never cached. **The check governs every mounted Windows
