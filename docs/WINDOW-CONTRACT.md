@@ -1005,3 +1005,87 @@ ids never cross the bridge or appear in errors/logs. THE MUSTER reports verified
 file/account counts and offers **Show backup** using the existing reveal action.
 A refused/failed attempt keeps an actionable inline error; repeated presses are
 held until the picker and backup finish. This is RS-8's explicit backup exception.
+
+## v0.7 — THE WORKSHOP (investor build only)
+
+A sixth room, `THE WORKSHOP` (key `6`), where the investor works with **Tamsin**: a Claude Code
+session the stone launches in WSL inside its fence (BUILD-SPEC § v0.7, RS-9), working in
+`<mods folder> (workshop)`. Everything in this section exists only in a build with the `pawn`
+feature and `VITE_RIFT_PAWN=1` (RS-10). In the public build none of these commands is
+registered, none of these events is emitted, and the room, its nav row and its key do not exist.
+Types live in `src/types/workshop.ts`. Design: #00015 §20.
+
+### Commands
+
+| Command (invoke name) | Args (JS, camelCase) | Returns | Notes |
+|---|---|---|---|
+| `get_workshop` | — | `WorkshopView` | The folder (made or not yet), the built artifacts with the stone's digests, the pawn's state, the fence and the voice. Cheap; the window calls it on entering the room and on `rift://workshop-changed`. |
+| `summon_pawn` | `cols: number, rows: number` | `void` | Makes the workshop folder, the mailbox and Tamsin's config dir on first use, writes the relay, settings and persona for the current voice, and starts the PTY. Refuses `pawn` `alreadyHere`, `breached` or `noFence` (the missing piece named: the WSL distro, `bwrap`, `socat`, or `claude` in that distro). Output arrives as `rift://pawn-output`. |
+| `pawn_write` | `data: string` | `void` | Keystrokes and pastes, UTF-8, to the PTY. Refuses `notHere`. |
+| `pawn_resize` | `cols: number, rows: number` | `void` | Called on fit; ignored when no pawn is here. |
+| `depart_pawn` | — | `void` | Ends the session: SIGTERM to the fence, then a kill after 3 s. A held Play is dropped. The pawn's installs stay (see `plan_put_back`). |
+| `answer_pawn_play` | `accept: boolean` | `void` | The held Play request. `true` runs `plan_launch` and `launch_game` exactly as the Play slab does, with the same warnings and refusals. `false` answers the pawn `declined`. Refuses `nothingHeld`. |
+| `get_fence` | — | `FenceView` | The last probe record judged against the current ground. |
+| `run_fence_probe` | — | `FenceView` | The deterministic probe (BUILD-SPEC § v0.7, no model, about 10 s). Refuses `pawn` `pawnHere` while a pawn is summoned. |
+| `plan_bring_through` | `artifact: string` | `BringThroughPlan` | `artifact` is a file name in the workshop's `dist\`. The plan carries the digest **frozen now**. That digest is what the press refers to. |
+| `bring_through` | `artifact: string, sha256: string` | `BringThroughResult` | RS-2's second exception: copy to a partial, hash the copy, land only on equality, never over a file. Rejects `bring` (below). |
+| `plan_put_back` | — | `UninstallPlanView[]` | The Gift: every install whose `actor` is `pawn` from the current or last session that is still installed, newest first, as the plans THE RETURN shows. |
+| `put_back` | `installIds: string[]` | `UninstallResultView[]` | Uninstalls those, newest first, each through the journal. Each install's own Undo still works afterwards. |
+| `open_workshop_folder` | — | `void` | Explorer, Rust-side. |
+| `set_pawn_voice` | `voice: "full" \| "sparing" \| "plain"` | `void` | Saved in settings; takes effect at the next summon (the window says so while a pawn is here). |
+
+`get_settings` / `set_settings` gain `pawnInputs: string[]`: Windows folders mounted read-only at
+`/inputs/<n>` (for example a pinned vanilla extract). The stone refuses a folder inside Steam's
+`userdata`, the saves, the mods folder or its own app data.
+
+### Events
+
+| Event | Payload | When |
+|---|---|---|
+| `rift://pawn-output` | `{ seq: number, data: string }` (base64 bytes) | Each read of the PTY. `seq` rises by one; the window drops nothing and writes in order. |
+| `rift://pawn-state` | `PawnStateView` | Summoning, here (first bytes), departed (clean, exit 0), torn (non-zero exit or PTY closed). |
+| `rift://pawn-hands` | `PawnHand` | Every tool call the stone answered, refused calls included. |
+| `rift://workshop-changed` | `{}` | The workshop's `dist\` changed (debounced 500 ms). The window refetches `get_workshop`; a digest in flight shows as `hashing`. |
+
+### Errors
+
+`RiftError` gains two kinds.
+- `pawn`, with `{ detail, reason }`, `reason` ∈ `noFence` (detail names the missing piece and the
+  command that installs it, e.g. `sudo apt install socat`), `breached`, `alreadyHere`, `notHere`,
+  `pawnHere`, `nothingHeld`.
+- `bring`, with `{ detail, reason }`, `reason` ∈ `nameTaken` (a different file has the name),
+  `bytesChanged` (detail carries both digests' first 16 hex), `noReceipt`, `receiptMismatch` (the
+  receipt names other bytes), `notInDist`.
+
+No detail carries a path under `userdata`, the saves or the investor's home. Workshop paths are
+the investor's own and may be shown.
+
+### Types (`src/types/workshop.ts`)
+
+- `WorkshopView`: `{ folder: { made: boolean, path: string }, artifacts: ArtifactView[],
+  pawn: PawnStateView, fence: FenceView, voice: Voice, inputs: string[] }`.
+- `ArtifactView`: `{ name, bytes, sha256: string | null` (null while hashing), `receipt:
+  ReceiptView | null, receiptProblem: "missing" | "unreadable" | "mismatch" | null, inLibrary:
+  boolean }`. `inLibrary` is true when a file with these exact bytes is in the mods folder.
+- `ReceiptView`: the receipt's own fields (BUILD-SPEC § v0.7), passed through as the pawn wrote
+  them, for display under `THE RECEIPT SAYS`.
+- `PawnStateView`: `{ state: "absent" | "summoning" | "here" | "departed" | "torn", since: string
+  | null, exitCode: number | null, host: { distro, claudeVersion } | null, held: "play" | null }`.
+- `PawnHand`: `{ seq, at, tool, outcome: "done" | "refused" | "held" | "declined", summary,
+  installId: string | null, refusal: string | null }`. `summary` is the row's text
+  (`installed Stature 0.2.0 · 7 files`). `refusal` is the stone's own sentence, verbatim.
+- `FenceView`: `{ chip: "contained" | "unprobed" | "breached", ground: { distro, claudeVersion,
+  kernel, digest } | null, provedAt: string | null, steps: FenceStep[], changed: string | null }`.
+  `changed` is the sentence for a stale record (`proved on claude 2.1.312; this is 2.1.320`).
+  `FenceStep` is `{ step, expected: "land" | "notLand" | "fail" | "succeed", observed, ok }`.
+- `BringThroughPlan`: `{ artifact, bytes, sha256, landsAs: string, receipt: ReceiptView | null,
+  conflict: "none" | "alreadyHad" | "nameTaken" }`.
+- `BringThroughResult`: `{ outcome: "landed" | "alreadyHad", packageId: string }`.
+- `Voice`: `"full" | "sparing" | "plain"` (default `sparing`).
+
+### What the window may not do
+
+It never writes the workshop, never starts the PTY itself and never sees the fence's argv. It
+never offers bring-through without a plan opened in this session, and it never shows a chip
+the stone did not send. The terminal stays mounted while the investor visits other rooms, and
+`rift://pawn-output` keeps writing into it.

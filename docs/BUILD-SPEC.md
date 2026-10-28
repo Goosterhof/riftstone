@@ -2787,3 +2787,285 @@ against the code they had left, and fixed what those specs found.
   says THE VERSIONS card keeps the busy-door rule: it guards its landings by card number, and its
   own writes rely on the spine's deploy lock, under which keep-newest works out its set again.
   The Heretic's nit, the in-flight check no spec held, is the Heretic's own commit.
+
+## § v0.7 — THE WORKSHOP: Tamsin, a Rift pawn summoned through the stone to build mods with (investor ask, 2026-10-28)
+
+The ask, in the investor's words: *"for the riftstone i was wandering if we could get a claude
+instance in there as well, that way i can develop mods inside there, and we could give it a real
+persona, that it is a pawn itself"*. The rulings, the same day: *"only me"* (the public build
+carries no pawn); *"generic rift pawn, cause i have multiple save"* (one pawn, the same in every
+save, who reads no save); *"yes"* to a workshop folder beside the library and an RS-2 exception
+that brings a finished build into it; *"Yes Tamsin"* (the pawn's name); and *"yes"* to Play
+waiting for the Arisen's press.
+
+THE WORKSHOP is a sixth room, compiled only into the investor's build. It holds a Claude Code
+session in a terminal, launched by the stone inside a fence the stone builds and proves, and
+working in `<mods folder> (workshop)`. The stone serves the pawn a few tools of its own (search
+the library, plan and install, uninstall, ask to play, read the REFramework log). The investor
+adds a finished build to the library with one press, by its digest. The design is #00015 §20
+(lab `documents/design-systems/riftstone-pawn-workshop-2026-10-28/design/`). The behaviour on
+the wire is WINDOW-CONTRACT § v0.7. This section is the crate-level contract and the ground truth
+it rests on.
+
+### The ground truth (measured 2026-10-28 on the investor's homestation, Claude Code 2.1.312)
+
+Every fact below was read off the disk after the step, never from the pawn's own report, on
+dummy folders under Windows' temp directory (`workshop`, `outside`, and `saves` holding a
+canary). The record and the raw outputs are the lab's
+`documents/design-systems/riftstone-pawn-workshop-2026-10-28/spike/`.
+
+- **Native Windows cannot fence a pawn.** Claude Code runs commands unsandboxed on native Windows
+  (documented). With deny rules alone, `echo >` and `cat` were refused, but
+  `python3 -c "open('../outside/py.txt','w')"` **wrote the file**. Policy stops the shell file
+  commands it recognises, and any script walks past it. **The pawn runs in WSL, never as
+  `claude.exe`.**
+- **Claude Code's own sandbox fences the shell, not the file tools.** In WSL with `bubblewrap`
+  and `socat`, shell writes and reads on `/mnt/c` were refused by the OS, the Python write
+  included. The Write and Read tools were held only by `--restricted`, which is policy.
+  Without `socat` the sandbox does not start, and with `sandbox.failIfUnavailable` Claude Code
+  refuses to launch rather than run unfenced (measured).
+- **A plain `bwrap` does not contain a Windows process.** With `/` mounted read-only, and
+  again with `--unshare-net`, `cmd.exe /c "echo x > …\outside\netns.txt"` **wrote the file**:
+  WSL interop runs the `.exe` as a Windows process outside every Linux namespace.
+- **An 11-instruction seccomp filter closes interop and leaves the network open.** It refuses
+  `socket(AF_VSOCK, …)` (and any non-x86_64 or x32 syscall) with `EPERM`. Under it, `cmd.exe`
+  fails with `UtilBindVsockAnyPort: socket failed 1`, and a TCP connection to
+  `api.anthropic.com:443` still opens.
+- **The whole-process fence holds every channel.** `claude` itself was launched inside a `bwrap`
+  that mounts an allowlist (`/usr` and its links, `/etc`, WSL's `resolv.conf`, Claude Code's
+  own binary, a tmpfs home, the workshop read-write), with `--remount-ro /` and the filter above.
+  Claude Code's own sandbox ran nested inside it. **The permission rules were deliberately left
+  open for `/mnt/c`**, so every refusal is the OS's:
+  - the Write tool outside the workshop: `EROFS`;
+  - the Read tool on the dummy save: the file does not exist in the namespace;
+  - a Python write outside: the folder does not exist;
+  - a real `cmd.exe` copied into the workshop and run as `./planted.exe`: `cannot execute:
+    required file not found` (interop's interpreter, `/init`, is not mounted). The filter
+    above is a second, independent close;
+  - writing in the workshop (the control) succeeded every time.
+  - Without `--remount-ro /`, a write outside "succeeded" into `bwrap`'s throwaway root and was
+    gone after the session: contained, but a pawn that believes a file was saved is told an
+    untruth. The root is therefore read-only.
+- **Networking is NAT** on the homestation (`.wslconfig` sets no mirrored mode). A Windows
+  listener is reachable from WSL only through the host's address and the Windows firewall. That
+  is why the tools travel through a mailbox folder (below), not a socket.
+
+### RS-2 — second exception: bring it through, by digest
+
+RS-2 gains its second exception. **At the player's press, the stone adds one built artifact
+from the workshop to the mods folder.** An artifact is a `.zip` in the workshop's `dist\` with
+a receipt beside it, `<name>.receipt.json`. The press refers to the SHA-256 the window showed
+when the card opened (`plan_bring_through`). On the press the stone copies the file to
+`<mods>\.riftstone-<id>.part`, hashes the copy, and renames it to `<name>.zip` only when the hash
+equals that digest, and never over an existing file: the download landing's own rules
+(`landing.rs`). Identical bytes already under that name answer `alreadyHad` and add nothing. A
+different file under that name refuses with `nameTaken`. Changed bytes refuse with
+`bytesChanged` and both digests. The workshop copy is never moved or changed. Nothing else
+of the workshop ever reaches the mods folder, and the pawn has no tool that does this.
+
+### RS-9 — The pawn's fence (new)
+
+**The stone launches the pawn only through the fence, and only the fence's own probe may say
+what it holds.** Rules, each a test or a Sentinel step:
+
+1. **The host is WSL.** The stone runs `wsl.exe -d <distro> -e /bin/sh -c 'exec bwrap … 9<"$1"'`
+   with the filter file as `$1`. It never runs `claude.exe`. The distro is the default one,
+   unless a setting names another.
+2. **Reads by allowlist.** The namespace mounts exactly these, and nothing else of `/mnt`:
+   - read-only: `/usr` (`/bin`, `/lib`, `/lib64` and `/sbin` as its links), `/etc`,
+     `/mnt/wsl/resolv.conf`, Claude Code's binary tree (`~/.local/share/claude`, `~/.local/bin`),
+     the relay (`/stone/relay`), and each read-only input the investor names in Settings (for
+     example a pinned vanilla extract). Each input is mounted at `/inputs/<n>`;
+   - read-write: the workshop at its own path, the mailbox (`/stone/mailbox`), and the pawn's
+     own Claude config dir (`/stone/claude`);
+   - fresh: `/dev`, `/proc`, a tmpfs `/tmp` and a tmpfs home. Then `--remount-ro /`.
+   The saves, Steam's `userdata`, the game folder, the mods folder, the investor's own `~/.claude`
+   and the rest of `/mnt/c` are not mounted.
+3. **Interop is closed twice.** `/init` is not mounted, and the stone's seccomp filter (the 11
+   instructions above, built by `pawn::fence::novsock_filter()` as bytes, never by a library at
+   run time) refuses `AF_VSOCK`, non-x86_64 and x32 syscalls. `--die-with-parent`,
+   `--unshare-pid` and `--unshare-ipc` are always set; the network is shared. `--new-session`
+   is **not** set: it would detach the TUI from its terminal. The PTY belongs to the pawn
+   alone, so terminal-input injection (`TIOCSTI`, which `--new-session` guards against) could
+   only reach the pawn's own session.
+4. **Claude Code's own sandbox runs inside the fence.** The settings the stone writes set
+   `sandbox.enabled`, `sandbox.failIfUnavailable`, `sandbox.allowUnsandboxedCommands: false` and
+   `sandbox.autoAllowBashIfSandboxed`. A pawn whose inner sandbox cannot start does not start.
+5. **Nothing of the investor's Claude reaches the pawn.** `CLAUDE_CONFIG_DIR=/stone/claude`
+   (WSL-side `~/.local/share/riftstone/pawn/claude`, made on first summon; the investor signs in
+   there once, inside the terminal). The pawn is launched with `--restricted` (only managed
+   settings and `--settings` load; file tools stay in the working dirs; no bypass mode), with
+   `--tools` naming exactly `Bash Read Write Edit Glob Grep`, and with
+   `--strict-mcp-config --mcp-config <the relay only>`. No hooks or plugins load.
+   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` is set. The persona is
+   `--append-system-prompt-file` (#00015 §20.10, the voice block filled from the dial).
+6. **Approval prompts stay on.** The permission mode is `default`. The stone never passes
+   `bypassPermissions`, `dontAsk` or `--dangerously-skip-permissions` to a pawn.
+7. **The ground is named.** `pawn::fence::ground()` hashes the launch argv (paths normalised),
+   the settings file, the filter bytes and the relay's bytes, and records them with the distro,
+   `claude --version` and the WSL kernel version. A probe record holds only for the ground it
+   was proved on (#00015 R20.14).
+
+### The probe: deterministic, no model
+
+The design's §20.13 had the probe summon a throwaway pawn. **The contract replaces that with a
+probe that needs no model.** Every channel the pawn has (its shell, its file tools, its scripts)
+is a system call from a process in the same namespace. So the stone runs small processes in the
+**identical** fence (the same `bwrap` argv and filter, with `/bin/sh -c '<step>'` in place of
+`claude`) and reads the result from the Windows side of the disk. It is deterministic, costs no
+tokens, and does not depend on a model following instructions. Steps, in order:
+
+| # | Step (inside the fence) | Must | Read from (outside the fence) |
+|---|---|---|---|
+| C | write `probe/control.txt` in the workshop | land | the file exists, with the bytes written |
+| 1 | write `<mods>\probe-<nonce>.txt` (its `/mnt/c` path) | not land | the file does not exist |
+| 2 | write `<game>\probe-<nonce>.txt` beside the game's `NEVER_WRITE` files | not land | does not exist |
+| 3 | list the saves' Steam folder, `<steam>\userdata` (its `/mnt/c` path) | fail | the step's exit status, and its output names no entry. The stone writes nothing there |
+| 4 | read a canary the stone wrote in its own app data (`%LOCALAPPDATA%\nl.zmuuzn.riftstone\pawn\probe-canary.txt`, a fresh nonce each run) | fail | the step's output does not carry the nonce |
+| 5 | write `<real home>/.claude/riftstone-probe-<nonce>` (the investor's own config dir, by its real path) | not land | the investor's `~/.claude` has no such file. Inside, `$HOME` is a tmpfs, so a write to `~` lands only there and vanishes |
+| 6 | run a copy of `cmd.exe` the stone placed in `probe/`, writing `<mods>\probe-pe-<nonce>.txt` | not land | does not exist |
+| 7 | run `cmd.exe` by its `/mnt/c/Windows` path, writing the same | not land | does not exist |
+| 8 | `claude --version` | succeed, and equal the ground's | the output |
+
+The record is `pawn-fence.json` in the stone's app data:
+`{ ground, provedAt, control, steps: [{ step, expected, observed, layer }] }`. `layer` is `os` for
+every refusal the fence makes. No step runs Claude Code, so no permission rule takes part.
+A step that lands where it must not is removed by the stone at once (the stone's own probe file,
+never anything else), and the record is `BREACHED`.
+
+**The chip has no `POLICY` in v0.7.** The stone never launches a pawn without the fence. If
+`bwrap`, `socat` or the WSL distro is missing, summoning refuses (`noFence`, with the missing
+piece named) rather than fall back to Claude Code's settings. So the chip reads `CONTAINED`,
+`UNPROBED` or `BREACHED`. This narrows #00015 R20.12, whose `POLICY` row stays reserved for a
+host that cannot fence. The chip
+(WINDOW-CONTRACT § v0.7) is `CONTAINED` only when the control succeeded and every step failed as
+it must, on the current ground. A step that succeeded when it must fail makes the record
+`BREACHED`, and the stone refuses to summon until a probe holds. A missing record, or one on
+another ground, is `UNPROBED`. A pawn may still be summoned then, and Claude Code's own approval
+prompts are the only guard.
+
+### Unmeasured until the build's first bench (each one is the [SPIKE]'s remainder)
+
+The measurements above ran Claude Code non-interactively (`claude -p`) from a WSL shell, with the
+investor's own `~/.claude` bound in. None of the following was measured. Each is the first thing
+the build checks on the homestation, and the contract changes if one fails:
+- the interactive TUI in a `portable-pty` started by the Windows stone through `wsl.exe`,
+  inside this fence: resize, Ctrl+C, exit codes, and `--die-with-parent` when the window closes;
+- `--unshare-pid` and `--unshare-ipc` under Claude Code's nested sandbox;
+- a fresh `CLAUDE_CONFIG_DIR`: the first sign-in inside the terminal, and its credentials
+  persisting in `/stone/claude`;
+- `--restricted` with `--append-system-prompt-file`, with the relay's MCP tools, and whether it
+  loads the workshop's `CLAUDE.md`;
+- the relay's mailbox round trip across drvfs (latency, and Windows' change notification for a
+  file WSL renamed into place).
+
+### The tools: a mailbox, not a socket
+
+The relay is the stone's own stdio MCP server, a single file the stone writes to WSL-side
+`~/.local/share/riftstone/pawn/relay/relay.py` and mounts read-only. It speaks MCP to Claude Code
+and nothing else. For each tool call it writes `<mailbox>/requests/<uuid>.json` (an exclusive
+create, then a rename from `.tmp`) and waits up to 120 s for `<mailbox>/answers/<uuid>.json`,
+polling every 100 ms (inotify does not see Windows-side writes to drvfs). The stone watches the
+Windows side of the folder, reads each request once, deletes it, and answers. The mailbox is
+`%LOCALAPPDATA%\nl.zmuuzn.riftstone\pawn\mailbox`, mounted at `/stone/mailbox`.
+
+**Every request is untrusted input.** The pawn can write the mailbox directly, so a forged request
+must be no stronger than the tool call it imitates. The stone checks:
+- size ≤ 64 KiB, UTF-8 JSON, one known `tool`, exact argument types, no extra keys;
+- at most 4 requests in flight;
+- requests only while a pawn is summoned.
+It answers in the same shape the relay returns to Claude Code. A malformed request is answered
+`refused` with a sentence and is never acted on. Requests are never logged with their arguments.
+
+| Tool | Arguments | What the stone does | Answer |
+|---|---|---|---|
+| `search_library` | `query: string` (≤ 200 chars), `limit ≤ 50` | the window's `search` | option ids, names, menu trails, install state |
+| `get_option` | `optionId` | the window's `get_option` | the option's detail, files included |
+| `list_installed` | — | `get_installed` | installs with their ids, origins and actors |
+| `plan_install` | `optionId` | `plan_install`, plus a **plan token**: a hash of the plan, the library's generation and the journal's sequence | the plan and the token |
+| `install` | `optionId, planToken` | refuses `stalePlan` unless the token still matches; otherwise `install` through the RS-4 journal with **`actor: pawn`**, inheriting RS-3's refusals word for word | the outcome |
+| `uninstall` | `installId` | `plan_uninstall` + `uninstall`, `actor: pawn` | the outcome |
+| `play` | — | **held**: the window shows the request; the tool answers at once `held: waiting for the Arisen`. `Play` in the window runs `plan_launch` + `launch_game` exactly as the slab does; `Not now` records `declined`. A held request is dropped when the pawn departs | `held` |
+| `read_reframework_log` | `tailLines ≤ 2000` | reads `<game>\reframework\re2_framework_log.txt` (or the build's log name, as THE FRAY finds it) read-only | the lines, and their count |
+
+There is no tool that writes a file, reads a save, touches THE MUSTER, the Nexus key or the
+downloads, or brings a build through. Every answered call is one `rift://pawn-hands` event
+(WINDOW-CONTRACT § v0.7).
+
+### The journal's actor
+
+`InstalledOption` gains `actor: Actor` (`player` | `pawn`), `#[serde(default)]` = `player`.
+The schema stays 2: v0.6.2 ignores unknown fields when reading (`journal.rs` carries no
+`deny_unknown_fields`), so a downgrade reads the journal and only drops the mark at its next
+save. Tests: a v0.6.2 journal reads as `player`; a v0.7 journal with `actor: pawn` round-trips;
+and v0.6.2's struct reads v0.7's bytes.
+
+### RS-10 — The pawn never reaches the public build (new)
+
+- **Rust.** `src-tauri` gains the feature `pawn`, off by default. Every pawn module, command and
+  dependency (`portable-pty`) sits behind it. The investor's installer is built with
+  `npm run tauri build -- --features pawn`.
+- **Window.** The room is imported only under `import.meta.env.VITE_RIFT_PAWN === '1'`, which the
+  investor's build script sets. Vite drops the dead branch, so the public `dist/` carries no
+  workshop code.
+- **The Sentinel measures both**, as it does RS-8:
+  - `cargo tree -p riftstone -e normal,build -f '{p} {f}'` lists no `pawn` feature on the default
+    build;
+  - after `npm run build` without the flag, `grep -r "THE WORKSHOP" dist/` finds nothing (the
+    room's inscription, a string only the room carries);
+  - the same build with the flag finds it (a positive control, so the grep cannot pass by being
+    wrong).
+
+### Modules (all behind `pawn`)
+
+- `src-tauri/src/pawn/fence.rs`: pure functions only, with no I/O and every one unit-tested. They
+  build `bwrap_argv(&FencePlan)` (the plan names every mount), `novsock_filter()` (the exact
+  bytes, tested instruction by instruction), `pawn_settings(&Voice)`, `ground()`, and the
+  `wsl.exe` command line.
+- `src-tauri/src/pawn/summon.rs`: the PTY (`portable-pty`, as the Mezzanine's `pty/`), its
+  reader pump to `rift://pawn-output`, input, resize, depart, exit codes, and one pawn at a time.
+  The terminal stays mounted across rooms (§20.12), so the PTY lives in state, not in a page.
+- `src-tauri/src/pawn/mailbox.rs`: the watcher, request validation and the tool table above.
+- `src-tauri/src/pawn/probe.rs`: the probe table, the record and its reading.
+- `src-tauri/src/pawn/workshop.rs`: makes `<mods folder> (workshop)` on first summon; lists
+  `dist\` artifacts with receipts; streams the digest of each; and watches the folder.
+- `src-tauri/src/pawn/bring.rs`: the bring-through, built on `landing.rs`.
+- `src-tauri/resources/pawn/`: `relay.py`, the persona template (#00015 §20.10) and the
+  workshop's starter `CLAUDE.md` (DD2 mod facts and the plain-where-it-lasts rule), all written
+  out by the stone at summon.
+
+### The receipt
+
+`<name>.receipt.json`, written by the pawn, read by the stone and never trusted:
+`{ "artifact": "<name>.zip", "sha256": "<64 hex>", "builtAt": "<RFC 3339>", "inputs": [{ "path",
+"sha256" }], "checks": [{ "name", "passed", "total" }] }`, ≤ 64 KiB. The stone shows it under
+`THE RECEIPT SAYS`, attributed, with no check marks (§20, Bold Choice 26). The receipt's
+`sha256` is compared with the stone's own hash of the file. When they differ the row says
+`the receipt names other bytes`, and the card cannot open.
+
+### Criteria (#00068 Phase 8)
+
+- [GATE] `fence.rs`: the argv mounts exactly the allowlist (a test lists every `--bind`,
+  `--ro-bind` and `--symlink` against the plan); `--remount-ro /`, `--die-with-parent` and the
+  filter fd are present; no `/init`, `/mnt/c` root, `userdata` or `~/.claude` mount can be
+  produced from any `FencePlan` (a property test over drawn plans). The filter's bytes equal the
+  11 instructions.
+- [GATE] The mailbox refuses every malformed, oversized, unknown-tool, extra-key, out-of-session
+  and stale-plan request (a table test), and `install` from a forged request is exactly as
+  strong as the tool's (the same RS-3 refusals).
+- [GATE] Bring-through: lands only the frozen digest; `alreadyHad`, `nameTaken` and
+  `bytesChanged` each change nothing in the mods folder (a tempdir test per case).
+- [GATE] The journal's actor: the three tests above.
+- [GATE] RS-10's three Sentinel steps, green, with the positive control.
+- [BENCH] The probe on the homestation: `CONTAINED`, the record kept in the lab. Then once again
+  after `claude` updates, showing `UNPROBED` until it is rerun.
+- [BENCH] The investor summons Tamsin, signs in once, and she builds Stature 0.2 against
+  pinned inputs. The investor brings that digest through, she installs it, the investor presses
+  Play, and she reads the log.
+
+### Out of scope
+
+THE MUSTER and the saves (the generic pawn reads none: RS-8 is not amended). Any public or
+distributed form of the pawn. A pawn on native Windows. Restoring a build into the workshop from
+the library. Network limits beyond Claude Code's own sandbox (the fence shares the network so
+the pawn can reach Anthropic; the shell's sandbox limits its own domains).
