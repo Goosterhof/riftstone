@@ -330,6 +330,20 @@ impl Summoning {
     }
 }
 
+/// A summoning dropped without `depart` (the stone closing, a test ending)
+/// never leaves its pawn running: admission closes and the process is
+/// killed. The run is not retired here; the next start finds its ledger as
+/// it was last written.
+impl Drop for Summoning {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if self.is_here() {
+            let _ = lock(&self.killer).kill();
+            let _ = lock(&self.child).kill();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // The live tests drive a PTY with /bin/sh, so they and their stand-ins

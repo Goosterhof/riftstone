@@ -312,10 +312,18 @@ mod desk {
 
     #[test]
     fn a_summon_the_fence_cannot_hold_is_refused_and_nothing_runs() {
-        // On this bench the mods folder is a temp folder, not a Windows
-        // drive, so the fence refuses its plan (and on a bench without
-        // bubblewrap or socat the survey refuses first): noFence either way.
+        // A distro that does not exist: on Windows `wsl.exe -d` fails the
+        // survey; on the Linux bench (which runs /bin/sh itself) the temp
+        // mods folder is no Windows drive and the fence refuses its plan.
+        // noFence either way. (The first native run of this test, with no
+        // distro named, summoned Tamsin for real through wsl.exe.)
         let (_bench, dirs, state) = opened();
+        fs::create_dir_all(&dirs.data).unwrap();
+        fs::write(
+            dirs.data.join("pawn.json"),
+            br#"{ "distro": "no-such-distro-riftstone" }"#,
+        )
+        .unwrap();
         let desk = Desk::new(&dirs.data);
         let events: Arc<dyn EventSink> = Arc::new(riftstone_lib::events::RecordedEvents::default());
         let refused = desk.summon(&state, events, 80, 24).unwrap_err();
@@ -365,4 +373,76 @@ mod desk {
         assert_eq!(reason(refused), PawnReason::InputRefused);
         assert!(desk.settings().inputs.is_empty(), "nothing saved");
     }
+}
+
+/// A bench aid for the Windows host, by hand
+/// (`RIFT_BENCH_NATIVE_SUMMON=1 cargo test -p riftstone --features pawn
+/// --test spine_pawn bench_ -- --ignored --nocapture`): the desk summons
+/// Tamsin for real through wsl.exe in a ConPTY, exactly as the app will, on
+/// a bench whose mods folder is under Windows' temp. It prints her
+/// terminal's first seconds, departs, and asks WSL whether any of the
+/// fence's processes outlived the departure.
+#[cfg(windows)]
+#[test]
+#[ignore = "a bench aid: summons the real fence through wsl.exe"]
+fn bench_summon_natively_through_wsl() {
+    use base64::Engine;
+    use riftstone_lib::events::EventSink;
+    use riftstone_lib::pawn::desk::{Desk, PAWN_OUTPUT, PAWN_STATE};
+    assert!(std::env::var_os("RIFT_BENCH_NATIVE_SUMMON").is_some());
+    let bench = Bench::new();
+    let dirs = DataDirs::under(&bench.data_home());
+    let (state, events) = bench.open(bench.config(dirs.clone()));
+    assert!(state.scan_blocking());
+    let desk = Desk::new(&dirs.data);
+    let sink: Arc<dyn EventSink> = events.clone();
+    let summoned = desk.summon(&state, sink, 100, 30).expect("summoned");
+    println!("BENCH summoned: {summoned:?}");
+    std::thread::sleep(std::time::Duration::from_secs(10));
+    let here = desk.pawn_state();
+    let mut shown = Vec::new();
+    for event in events.named(PAWN_OUTPUT) {
+        let data = event["data"].as_str().unwrap_or_default();
+        shown.extend(
+            base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .unwrap_or_default(),
+        );
+    }
+    let began = std::time::Instant::now();
+    let departed = desk.depart(events.as_ref()).expect("departed");
+    let took = began.elapsed();
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    let left = std::process::Command::new("wsl.exe")
+        .args([
+            "-e",
+            "/bin/sh",
+            "-c",
+            "pgrep -f riftstone/pawn/relay | wc -l",
+        ])
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .unwrap_or_else(|err| format!("could not ask: {err}"));
+    let text: String = String::from_utf8_lossy(&shown)
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n')
+        .collect();
+    println!("BENCH state after 10 s: {} {:?}", here.state, here.host);
+    println!(
+        "BENCH output events: {}, bytes: {}",
+        events.named(PAWN_OUTPUT).len(),
+        shown.len()
+    );
+    println!(
+        "BENCH words seen: welcome={} started={}",
+        text.contains("Welcome"),
+        text.contains("started")
+    );
+    println!(
+        "BENCH departed: {} in {:?}; state events: {}",
+        departed.state,
+        took,
+        events.named(PAWN_STATE).len()
+    );
+    println!("BENCH fence processes left in WSL (minus the asking shell): {left}");
 }
