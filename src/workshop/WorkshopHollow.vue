@@ -5,11 +5,16 @@
 // xterm answers ConPTY's cursor query (ESC[6n) itself and the real summon waits
 // on that answer. The terminal stays mounted while other rooms show (§20.12):
 // it refits when its box changes size and is on screen, never while hidden, so
-// a room switch alone never repaints the conversation.
+// a room switch alone never repaints the conversation. The player's hands on it
+// (copy, paste, Ctrl+click on a link) are in hollowHands.ts.
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
+import { useToasts } from "@/composables/useToasts";
+import { rift } from "@/services/rift";
+import { linkHint, makeHollowKeyHandler, makeHollowLinkActivate } from "./hollowHands";
 import { useWorkshop } from "./useWorkshop";
 import { TERMINAL_THEME } from "./words";
 
@@ -47,6 +52,29 @@ function focus(): void {
   term?.focus();
 }
 
+const activateLink = makeHollowLinkActivate({
+  open: async (url) => (await rift()).openUrl(url),
+  opened: (host) => useToasts().push("rift", `Opened ${host} in your browser.`),
+  // the sign-in URL is hard-wrapped on screen, so a selection of it copies broken lines
+  failed: (url) =>
+    void navigator.clipboard.writeText(url).then(
+      () =>
+        useToasts().push(
+          "warn",
+          "The stone could not open that link, so it is on your clipboard. Paste it into your browser.",
+        ),
+      () => useToasts().push("warn", "The stone could neither open that link nor copy it."),
+    ),
+});
+
+function hover(_event: MouseEvent, text: string): void {
+  if (screen.value) screen.value.title = linkHint(text);
+}
+
+function leave(): void {
+  if (screen.value) screen.value.title = "";
+}
+
 async function open(): Promise<void> {
   // the cell is measured at open: measure it on JetBrains Mono, not the fallback
   await Promise.all([
@@ -65,9 +93,26 @@ async function open(): Promise<void> {
     cursorStyle: "block",
     disableStdin: !live,
     theme: { ...TERMINAL_THEME },
+    // OSC 8 links (a name over a URL) take the same Ctrl+click as plain ones
+    linkHandler: { activate: activateLink, hover, leave, allowNonHttpProtocols: false },
   });
   fit = new FitAddon();
   term.loadAddon(fit);
+  term.loadAddon(new WebLinksAddon(activateLink, { hover, leave }));
+  const t = term;
+  t.attachCustomKeyEventHandler(
+    makeHollowKeyHandler(t, {
+      copy: (text) => navigator.clipboard.writeText(text),
+      // the run on show at the keydown; writeFor sends to it only while it is here
+      armInterrupt: () => {
+        const run = w.runId.value;
+        return () => {
+          if (live && run) void w.writeFor(run, "\u0003");
+        };
+      },
+      copyFailed: () => useToasts().push("warn", "The clipboard refused the selection."),
+    }),
+  );
   term.open(screen.value);
   refit();
   term.onData((data) => void w.write(data));

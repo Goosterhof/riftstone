@@ -2,7 +2,7 @@
 // workshop, in memory, on real timers. It never fetches and never names a real
 // mod. The scenario comes from the page's query string, `?workshop=<name>`:
 //   contained (default) | unprobed | stale | inconclusive | breached | nofence | first |
-//   departed | torn | unpersisted | nametaken
+//   departed | torn | unpersisted | nametaken | signin
 // - unprobed: no probe record; stale: a record proved on another claude;
 //   inconclusive: a whole record whose step 3 could not show its refusal.
 // - breached: the last probe reached a place the fence should close; summoning refuses.
@@ -12,6 +12,8 @@
 //   leaving two of its installs in the world (the Gift's Put back).
 // - unpersisted: a Play answer stands but does not reach the run's ledger.
 // - nametaken: the mods folder holds a different file under the build's name.
+// - signin: her first sign-in, drawn as Claude Code 2.1.312 draws it: one OSC 8
+//   link (an invented URL) over text hard-wrapped at the width, and a code to paste.
 // A summon runs a short scripted session: the greeting, then the pawn's hands
 // (a plan, an install, a refusal, the log, and a held request to play).
 
@@ -45,7 +47,8 @@ export type WorkshopScenario =
   | "departed"
   | "torn"
   | "unpersisted"
-  | "nametaken";
+  | "nametaken"
+  | "signin";
 
 const SCENARIOS: readonly WorkshopScenario[] = [
   "contained",
@@ -59,7 +62,26 @@ const SCENARIOS: readonly WorkshopScenario[] = [
   "torn",
   "unpersisted",
   "nametaken",
+  "signin",
 ];
+
+/** An invented sign-in URL, the shape of Claude Code's: https on claude.com, long enough to wrap. */
+export const MOCK_SIGN_IN_URL =
+  "https://claude.com/cai/oauth/authorize?code=true&client_id=invented-client-for-the-mock" +
+  "&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback" +
+  "&scope=user%3Ainference&code_challenge=invented-challenge-for-the-mock&state=invented-state-for-the-mock";
+
+/** The sign-in screen: each wrapped line of the URL carries the same OSC 8 link. */
+function signInScreen(cols: number): string {
+  const width = Math.max(20, cols - 4);
+  const lines: string[] = [];
+  for (let i = 0; i < MOCK_SIGN_IN_URL.length; i += width) lines.push(MOCK_SIGN_IN_URL.slice(i, i + width));
+  const link = (text: string) => `\x1b]8;;${MOCK_SIGN_IN_URL}\x07${text}\x1b]8;;\x07`;
+  const head = "\x1b[1mClaude Code\x1b[0m 2.1.312\r\n\r\n";
+  const ask = " Browser didn't open? Use the url below to sign in (c to copy)\r\n\r\n";
+  const url = lines.map((l) => ` ${link(l)}`).join("\r\n");
+  return `${head}${ask}${url}\r\n\r\n Paste code here if prompted > `;
+}
 
 export interface MockWorkshopOptions {
   scenario?: WorkshopScenario;
@@ -254,6 +276,7 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
   let inputs: string[] = [];
   /** The last chunk's seq; the spine's pump numbers each run's chunks from 0. */
   let outSeq = -1;
+  let termCols = 80;
   let handSeq = 0;
   let runCount = 0;
   // The journal keys an install by its option id, so the two are one id here.
@@ -349,6 +372,10 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
   }
 
   function playSession(): void {
+    if (scenario === "signin") {
+      controls.emitOutput(signInScreen(termCols));
+      return;
+    }
     const greet =
       voice === "plain"
         ? "\x1b[1mClaude Code\x1b[0m 2.1.312 · in the workshop\r\n\r\n> "
@@ -408,6 +435,7 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
     },
     summonPawn: (cols, rows) => {
       call("summon_pawn", cols, rows);
+      termCols = cols;
       if (pawn.state === "summoning" || pawn.state === "here") {
         return Promise.reject(pawnRefused("alreadyHere", "Tamsin is already here."));
       }
@@ -446,7 +474,9 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
         return Promise.reject(pawnRefused("notHere", "That summoning is over, so its keystrokes were not sent."));
       }
       // A local echo, as the TUI would draw it; Enter gets one plain line back.
-      if (data === "\r") controls.emitOutput("\r\n  Understood. Rebuilding.\r\n\r\n> ");
+      if (data === "\r" && scenario === "signin")
+        controls.emitOutput("\r\n\r\n  Signed in. Welcome, Arisen.\r\n\r\n> ");
+      else if (data === "\r") controls.emitOutput("\r\n  Understood. Rebuilding.\r\n\r\n> ");
       else controls.emitOutput(data);
       return Promise.resolve();
     },

@@ -226,6 +226,13 @@ function hereNow(run: string): boolean {
   return runId.value === run && here.value;
 }
 
+/** A write that belongs to one run (the hollow's late ^C, the Heretic's HH1):
+ *  it goes only while that run is on show and here, never to its successor. */
+async function writeFor(run: string, data: string): Promise<void> {
+  if (!hereNow(run)) return;
+  await (await workshop()).pawnWrite(run, data).catch(() => undefined);
+}
+
 /** The run is here: what its terminal said while it was summoned goes now, in
  *  order, each send re-checked against the run on show (the Heretic's WR8). */
 async function flushPendingWrites(run: string): Promise<void> {
@@ -442,6 +449,7 @@ export function useWorkshop() {
     attach,
     summon,
     write,
+    writeFor,
     resize,
     depart,
     runProbe,
