@@ -461,6 +461,10 @@ change executable source.
   into a FAT32 or exFAT folder; uninstall with the switch on; an upgrade over an installed v0.3
   (BUILD-SPEC § v0.3 § src-tauri, Open, lists each press in full).
 - No profiles yet.
+- THE WORKSHOP's terminal (0.7.1) opens only an `https` link the player Ctrl+clicks and copies,
+  pastes and interrupts by the chords in `src/workshop/hollowHands.ts` (WINDOW-CONTRACT § v0.7,
+  The room as built). It does not honour OSC 52, so Claude Code's `c to copy` copies nothing:
+  Ctrl+click the link instead. Native sign-in on the installed build is the first proof.
 - Conflicts cover files the game addresses by path; two REFramework scripts can still clash in behaviour.
 - **The Muster (v0.4)** shows what the levels gave, not the totals the game's own sheet shows with
   gear on: those need the game's parameter tables, a format the stone does not read yet. It shows

@@ -1138,6 +1138,16 @@ the investor's own and may be shown.
   and its result arrives as `rift://library-changed`.
 - No per-row Undo and no log viewer in the hands: the contract carries neither. Put back is
   the undo. `Resume the last conversation` (Q20.8) is not offered, since it is unmeasured.
+- **The player's hands on the terminal (0.7.1, `src/workshop/hollowHands.ts`).** The installed
+  0.7.0 could not sign Tamsin in: Ctrl+C reached her as `^C`, Ctrl+V as `^V`, and her sign-in
+  link was only text. Now Ctrl+C with a selection copies it and sends nothing (with none it
+  still interrupts her), and Ctrl+Shift+C always copies. Ctrl+V, Ctrl+Shift+V and Shift+Insert
+  go to the webview's own paste, which xterm reads and sends as one paste. Ctrl+click opens an
+  `https` link, a plain one or an OSC 8 one, in the player's browser through the opener, with
+  `Opened <host> in your browser.`; a link the stone cannot open goes on the clipboard instead.
+  Claude Code 2.1.312 prints its sign-in URL as one OSC 8 link (465 characters, measured in a
+  PTY on 2026-10-29) over text it hard-wraps at the width, so a selection of it copies broken
+  lines and the link handler is the way to it.
 
 ### What the window may not do
 
@@ -1145,3 +1155,7 @@ It never writes the workshop, never starts the PTY itself and never sees the fen
 never offers bring-through without a plan opened in this session, and it never shows a chip
 the stone did not send. The terminal stays mounted while the investor visits other rooms, and
 `rift://pawn-output` keeps writing into it.
+
+It never opens anything from her screen but an `https` link the player Ctrl+clicked, and never
+a plain click. It does not honour OSC 52: her `c to copy` writes nothing, because honouring it
+would let her set the player's clipboard without a press of theirs.
