@@ -103,9 +103,12 @@ async function open(): Promise<void> {
   t.attachCustomKeyEventHandler(
     makeHollowKeyHandler(t, {
       copy: (text) => navigator.clipboard.writeText(text),
-      // only while she is here: this ^C goes around disableStdin
-      interrupt: () => {
-        if (live) void w.write("\u0003");
+      // the run on show at the keydown; writeFor sends to it only while it is here
+      armInterrupt: () => {
+        const run = w.runId.value;
+        return () => {
+          if (live && run) void w.writeFor(run, "\u0003");
+        };
       },
       copyFailed: () => useToasts().push("warn", "The clipboard refused the selection."),
     }),

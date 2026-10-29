@@ -314,3 +314,27 @@ describe("the Heretic's review of the room (PR #11)", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 });
+
+/** The Heretic's HH1: the hollow's late ^C (a copy the clipboard refused after
+ *  she departed) belongs to the run that was on show at the keydown. */
+describe("a write that belongs to one run", () => {
+  it("should never reach the next summoning once its own run has departed", async () => {
+    const w = await bench();
+    await summoned(w);
+    const first = w.runId.value;
+    expect(first).toBe("run-mock-1");
+    await w.depart();
+    await summoned(w);
+    expect(w.runId.value).toBe("run-mock-2");
+    await w.writeFor(first ?? "", "\u0003");
+    expect(mock.controls.calls.filter((c) => c.cmd === "pawn_write")).toStrictEqual([]);
+  });
+
+  it("should reach its own run while that run is here", async () => {
+    const w = await bench();
+    await summoned(w);
+    await w.writeFor("run-mock-1", "\u0003");
+    const writes = mock.controls.calls.filter((c) => c.cmd === "pawn_write").map((c) => c.args);
+    expect(writes).toStrictEqual([["run-mock-1", "\u0003"]]);
+  });
+});

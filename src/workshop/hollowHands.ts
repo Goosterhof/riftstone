@@ -29,8 +29,10 @@ export interface HollowSelection {
 export interface HollowKeyHooks {
   /** Write the selection to the clipboard; reject on failure. */
   copy: (text: string) => Promise<void>;
-  /** A plain Ctrl+C whose copy failed still interrupts her: send the ^C by hand. */
-  interrupt: () => void;
+  /** A plain Ctrl+C whose copy fails still interrupts her. Called at the keydown, it
+   *  returns the ^C for the run on show then: the refusal can come after she has
+   *  departed and another was summoned, and that one must never get it (HH1). */
+  armInterrupt: () => () => void;
   /** The copy failed; tell the player. */
   copyFailed: () => void;
 }
@@ -55,12 +57,13 @@ export function makeHollowKeyHandler(term: HollowSelection, hooks: HollowKeyHook
     if (!chord(ev) || ev.key.toLowerCase() !== "c") return true;
     const alwaysCopy = ev.shiftKey;
     if (!term.hasSelection()) return !alwaysCopy;
+    const interrupt = alwaysCopy ? null : hooks.armInterrupt();
     void hooks
       .copy(term.getSelection())
       .then(() => term.clearSelection())
       .catch(() => {
         hooks.copyFailed();
-        if (!alwaysCopy) hooks.interrupt();
+        interrupt?.();
       });
     return false;
   };

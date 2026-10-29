@@ -17,9 +17,13 @@ function selection(text: string | null) {
 }
 
 function hooks(copy: (text: string) => Promise<void> = () => Promise.resolve()) {
+  // the ^C armed at a keydown; `interrupt` is it firing
+  const interrupt = vi.fn<() => void>();
+  const armInterrupt = vi.fn<() => () => void>(() => interrupt);
   return {
     copy: vi.fn<(text: string) => Promise<void>>(copy),
-    interrupt: vi.fn<() => void>(),
+    armInterrupt,
+    interrupt,
     copyFailed: vi.fn<() => void>(),
   };
 }
@@ -61,6 +65,19 @@ describe("the copy chord", () => {
     await vi.waitFor(() => expect(h.interrupt).toHaveBeenCalledOnce());
     expect(h.copyFailed).toHaveBeenCalledOnce();
     expect(sel.clearSelection).not.toHaveBeenCalled();
+  });
+
+  it("should arm the interrupt at the keydown, before the clipboard answers (HH1)", () => {
+    const h = hooks(() => new Promise<void>(() => undefined));
+    makeHollowKeyHandler(selection("text"), h)(key("c", { ctrlKey: true }));
+    expect(h.armInterrupt).toHaveBeenCalledOnce();
+    expect(h.interrupt).not.toHaveBeenCalled();
+  });
+
+  it("should never arm an interrupt for Ctrl+Shift+C", () => {
+    const h = hooks();
+    makeHollowKeyHandler(selection("text"), h)(key("C", { ctrlKey: true, shiftKey: true }));
+    expect(h.armInterrupt).not.toHaveBeenCalled();
   });
 
   it("should never interrupt her for a refused Ctrl+Shift+C", async () => {
