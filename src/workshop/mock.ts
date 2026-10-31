@@ -24,6 +24,7 @@ import {
   type ArtifactView,
   type BringThroughPlan,
   type Chip,
+  type EarlierView,
   type FenceStep,
   type FenceView,
   type PawnHand,
@@ -31,6 +32,7 @@ import {
   type PawnStateView,
   type PutBackPlan,
   type PawnSession,
+  type UpdateResult,
   type WorkshopEvent,
   type WorkshopView,
 } from "@/types/workshop";
@@ -48,7 +50,11 @@ export type WorkshopScenario =
   | "torn"
   | "unpersisted"
   | "nametaken"
-  | "signin";
+  | "signin"
+  /** 0.8: the receipted build has an earlier build the stone brought: Update is offered. */
+  | "update"
+  /** 0.8: the same, and the swap is refused after the build lands. */
+  | "updaterefused";
 
 const SCENARIOS: readonly WorkshopScenario[] = [
   "contained",
@@ -63,6 +69,8 @@ const SCENARIOS: readonly WorkshopScenario[] = [
   "unpersisted",
   "nametaken",
   "signin",
+  "update",
+  "updaterefused",
 ];
 
 /** An invented sign-in URL, the shape of Claude Code's: https on claude.com, long enough to wrap. */
@@ -104,6 +112,8 @@ export interface MockWorkshopControls {
   emitRawState(state: PawnStateView): void;
   emitHand(hand: Omit<PawnHand, "runId" | "seq" | "at"> & { at?: string }): PawnHand;
   hold(): string;
+  /** 0.8: Tamsin asks to update to `artifact`; the digest is frozen as it is now. */
+  holdUpdate(artifact: string): string;
   /** A rebuild: the artifact's bytes, and so its digest, change on disk. */
   rebuild(name: string): void;
   tear(exitCode: number): void;
@@ -245,6 +255,7 @@ function initialArtifacts(scenario: WorkshopScenario): ArtifactView[] {
       },
       receiptProblem: null,
       inLibrary: false,
+      earlier: scenario === "update" || scenario === "updaterefused" ? "Stride-Tuner-0.1.0.zip" : null,
     },
     {
       name: "Stride-Tuner-0.1.0.zip",
@@ -253,9 +264,27 @@ function initialArtifacts(scenario: WorkshopScenario): ArtifactView[] {
       receipt: null,
       receiptProblem: "missing",
       inLibrary: false,
+      earlier: null,
     },
   ];
 }
+
+/** 0.8: what the mock's Update replaces: the stone's own earlier build of Stride Tuner. */
+export const MOCK_EARLIER: EarlierView = {
+  fileName: "Stride-Tuner-0.1.0.zip",
+  packageId: "pkg-stride-010",
+  swaps: [
+    {
+      fromOptionId: "pkg-stride-010#Stride Tuner",
+      toOptionId: "pkg-stride-020#Stride Tuner",
+      name: "Stride Tuner",
+      fromVersion: "0.1.0",
+      toVersion: "0.2.0",
+    },
+  ],
+  stays: [],
+  putsAway: true,
+};
 
 export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorkshop {
   const scenario = options.scenario ?? scenarioFromPage();
@@ -284,7 +313,15 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
   const pawnInstalls: { installId: string; name: string }[] = [];
   const timers: ReturnType<typeof setTimeout>[] = [];
 
-  let pawn: PawnStateView = { runId: null, state: "absent", since: null, exitCode: null, host: null, held: null };
+  let pawn: PawnStateView = {
+    runId: null,
+    state: "absent",
+    since: null,
+    exitCode: null,
+    host: null,
+    held: null,
+    heldUpdate: null,
+  };
   if (scenario === "departed" || scenario === "torn") {
     pawn = {
       runId: "run-mock-0",
@@ -293,6 +330,7 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
       exitCode: scenario === "torn" ? 3 : 0,
       host: HOST,
       held: null,
+      heldUpdate: null,
     };
     pawnInstalls.push(
       { installId: "opt-stride-020", name: "Stride Tuner 0.2.0" },
@@ -339,6 +377,19 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
       emit(WORKSHOP_EVENTS.pawnHands, row);
       return row;
     },
+    holdUpdate(artifact) {
+      const id = `held-update-${handSeq + 1}`;
+      const a = artifacts.find((x) => x.name === artifact);
+      controls.emitHand({
+        tool: "ask_update",
+        outcome: "held",
+        summary: `asks to update to ${artifact}`,
+        installId: null,
+        refusal: null,
+      });
+      setPawn({ heldUpdate: { heldRequestId: id, since: now(), artifact, sha256: a?.sha256 ?? "" } });
+      return id;
+    },
     hold() {
       const id = `held-${handSeq + 1}`;
       controls.emitHand({
@@ -360,6 +411,62 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
     },
     view,
   };
+
+  /** 0.8: the Update press as the spine answers it, on the mock's one earlier build. */
+  function updateOf(name: string, sha256: string, earlierPackageId: string | null): Promise<UpdateResult> {
+    const a = artifacts.find((x) => x.name === name);
+    if (!a) return Promise.reject(bringRefused("notInDist", `${name} is not in the workshop's dist folder.`));
+    if (a.sha256 !== sha256) {
+      return Promise.reject(
+        bringRefused(
+          "bytesChanged",
+          `${name} changed since it was shown (shown ${sha256.slice(0, 16)}, now ${(a.sha256 ?? "").slice(0, 16)}). Open it again to see the new build.`,
+        ),
+      );
+    }
+    const earlier = a.earlier ? MOCK_EARLIER : null;
+    if ((earlier?.packageId ?? null) !== earlierPackageId) {
+      return Promise.reject(
+        bringRefused(
+          "earlierChanged",
+          "The earlier build changed since this was shown: the stone would now replace another. Open it again.",
+        ),
+      );
+    }
+    artifacts = artifacts.map((x) => (x.name === name ? { ...x, inLibrary: true, earlier: null } : x));
+    emit(WORKSHOP_EVENTS.workshopChanged, {});
+    if (!earlier) {
+      return Promise.resolve({
+        outcome: "landed",
+        earlier: null,
+        swapped: [],
+        stays: [],
+        failed: null,
+        putAway: [],
+        putAwayFailed: null,
+      });
+    }
+    if (scenario === "updaterefused") {
+      return Promise.resolve({
+        outcome: "landed",
+        earlier: earlier.fileName,
+        swapped: [],
+        stays: [],
+        failed: "That install would write over a game file, natives\\stm\\x.pak. The stone never writes over vanilla.",
+        putAway: [],
+        putAwayFailed: null,
+      });
+    }
+    return Promise.resolve({
+      outcome: "landed",
+      earlier: earlier.fileName,
+      swapped: earlier.swaps,
+      stays: [],
+      failed: null,
+      putAway: [{ fileName: earlier.fileName, landedAs: earlier.fileName }],
+      putAwayFailed: null,
+    });
+  }
 
   function view(): WorkshopView {
     return {
@@ -551,8 +658,33 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
         landsAs: `mods\\${a.name}`,
         receipt: a.receipt,
         conflict,
+        earlier: a.earlier && conflict === "none" ? MOCK_EARLIER : null,
       };
       return Promise.resolve(plan);
+    },
+    updateBuild: (name, sha256, earlierPackageId) => {
+      call("update_build", name, sha256, earlierPackageId);
+      return updateOf(name, sha256, earlierPackageId);
+    },
+    answerPawnUpdate: (run, heldRequestId, accept, earlierPackageId) => {
+      call("answer_pawn_update", run, heldRequestId, accept, earlierPackageId);
+      const waiting = pawn.heldUpdate;
+      if (pawn.runId !== run || waiting?.heldRequestId !== heldRequestId) {
+        return Promise.reject(pawnRefused("staleHeld", "That update ask is not the one waiting now."));
+      }
+      if (!accept) {
+        setPawn({ heldUpdate: null });
+        return Promise.resolve({
+          decision: "declined",
+          result: null,
+          told: "the Arisen said not now",
+          persisted: true,
+        });
+      }
+      return updateOf(waiting.artifact, waiting.sha256, earlierPackageId).then((result) => {
+        setPawn({ heldUpdate: null });
+        return { decision: "updated", result, told: `added ${waiting.artifact}`, persisted: true };
+      });
     },
     bringThrough: (name, sha256) => {
       call("bring_through", name, sha256);
@@ -647,5 +779,10 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
       });
     },
   };
+  // `npm run dev` in a browser: the controls answer from the console as
+  // `window.workshopMock` (holdUpdate, hold, rebuild …), never in a spec
+  if (typeof window !== "undefined" && import.meta.env.MODE !== "test") {
+    (window as unknown as { workshopMock?: MockWorkshopControls }).workshopMock = controls;
+  }
   return Object.assign(backend, { controls });
 }

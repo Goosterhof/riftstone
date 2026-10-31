@@ -33,6 +33,14 @@ export interface HeldView {
   since: string;
 }
 
+/** 0.8: Tamsin's update ask waiting, with the digest frozen at her ask. */
+export interface HeldUpdateView {
+  heldRequestId: string;
+  since: string;
+  artifact: string;
+  sha256: string;
+}
+
 export interface PawnStateView {
   runId: string | null;
   state: PawnState;
@@ -41,6 +49,8 @@ export interface PawnStateView {
   host: HostView | null;
   /** The waiting Play request, so the press can carry it with `runId`. */
   held: HeldView | null;
+  /** 0.8: the waiting update ask. */
+  heldUpdate: HeldUpdateView | null;
 }
 
 export type HandOutcome = "done" | "refused" | "held" | "declined" | "repeated" | "unknown";
@@ -124,6 +134,8 @@ export interface ArtifactView {
   receiptProblem: "missing" | "unreadable" | "mismatch" | null;
   /** A file with these exact bytes is in the mods folder. */
   inLibrary: boolean;
+  /** 0.8: the earlier build an Update would replace, by file name. */
+  earlier: string | null;
 }
 
 export interface WorkshopView {
@@ -149,6 +161,53 @@ export interface BringThroughPlan {
   landsAs: string;
   receipt: ReceiptView;
   conflict: "none" | "alreadyHad" | "nameTaken";
+  /** 0.8: the earlier build an Update replaces, and what it does to its installs. */
+  earlier: EarlierView | null;
+}
+
+/** 0.8: one install the Update swaps, the earlier build's option for the new one's. */
+export interface SwapView {
+  fromOptionId: string;
+  toOptionId: string;
+  name: string;
+  fromVersion: string | null;
+  toVersion: string | null;
+}
+
+/** 0.8: an install of the earlier build that stays: the new build has no option that is the same. */
+export interface StayView {
+  optionId: string;
+  name: string;
+}
+
+export interface EarlierView {
+  fileName: string;
+  packageId: string;
+  swaps: SwapView[];
+  stays: StayView[];
+  /** The earlier zip goes to the older-versions folder. */
+  putsAway: boolean;
+}
+
+/** 0.8: what an Update press did. */
+export interface UpdateResult {
+  outcome: "landed" | "alreadyHad";
+  earlier: string | null;
+  swapped: SwapView[];
+  stays: StayView[];
+  /** The stone's sentence when a swap was refused: the build is in the mods folder, nothing more changed. */
+  failed: string | null;
+  putAway: { fileName: string; landedAs: string }[];
+  putAwayFailed: string | null;
+}
+
+/** 0.8: what the press on Tamsin's update ask did. */
+export interface UpdateAnswered {
+  decision: "updated" | "declined";
+  result: UpdateResult | null;
+  /** What Tamsin is told. */
+  told: string;
+  persisted: boolean;
 }
 
 export interface BringThroughResult {

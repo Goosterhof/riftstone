@@ -3282,3 +3282,83 @@ THE MUSTER and the saves (the generic pawn reads none: RS-8 is not amended). Any
 distributed form of the pawn. A pawn on native Windows. Restoring a build into the workshop from
 the library. Network limits beyond Claude Code's own sandbox (the fence shares the network so
 the pawn can reach Anthropic; the shell's sandbox limits its own domains).
+
+## § v0.8 — Update in its place: a build replaces its earlier build with one press (investor ask, 2026-10-31)
+
+The ask, in the investor's words: *"can we also easily update the mods from the built section? so
+i can itterate faster through mod versions?"* The rulings, the same night and the next morning:
+one press lands, swaps and puts away; lineage is the stone's own record plus the player's press;
+Tamsin may ask, held like her Play; every waiting ask is pinned under SHE ASKS, a lone Play
+included (Q20.33 = A, 2026-11-01); and her ask also adds a first build that has no earlier one.
+Design: #00015 §20.14 (lab `documents/design-systems/riftstone-pawn-workshop-2026-10-28/design/2026-10-31-artisan-workshop-update.md`).
+Built on `feat/v0.8.0-update-in-place` over the 0.7.5 stack.
+
+### RS-2's second exception, widened by one step
+
+At the player's press, a build from `dist\` lands exactly as bring-through lands it (by the digest
+shown, copy, hash, rename, never over a file). **Then, in the same press**, the stone may swap the
+installs of the build's *earlier build* for the new build's, and put the earlier zip away in
+`<mods> (older versions)` (RS-2's first exception, v0.5's put-away). Nothing else changes.
+
+### Lineage (`src-tauri/src/pawn/update.rs`)
+
+- **The record.** `pawn-brought.json` in the stone's app data keeps every build the stone brought
+  through: `{ fileName, sha256, bytes, names, at }`, `names` the `modinfo.ini` `name=` values
+  inside it, lowercased and trimmed; the last 200. A plain bring-through records too.
+- **Reading a build.** What is inside a build is read from the stone's own copy:
+  `bring::stage_build` copies it through the pinned `dist\` handle into
+  `<cache>\workshop-staging\<id>\<artifact>`, hashes the copy, and `rift_catalog`'s
+  `scan_package` reads it as the mods folder will (the same file name and size, so the same
+  package and option ids). The copy is removed; the package is cached by digest.
+- **The earlier build** of a build is the newest recorded one that (1) has another file name,
+  (2) shares a mod name with it, and (3) is in the mods folder now as an archive of the recorded
+  size and digest. A build with no `modinfo.ini` name has none. So only a build the stone
+  brought through can ever be replaced, never one of the player's own mods.
+- **A same-name rebuild** (other bytes under the name of a build in the mods folder) is
+  bring-through's `nameTaken`: both builds must sit in the mods folder at once to swap. The
+  persona says to put a new version in every build's name.
+
+### The press (`update::apply`)
+
+1. Re-read the build (staged): its digest must be the one shown, else `bring` `bytesChanged`.
+2. Find the earlier build now: it must be the one shown (or none where none was shown), else the
+   new `bring` reason **`earlierChanged`**.
+3. Land the build (bring-through), record it, `rift://workshop-changed`.
+4. No earlier build: request a scan; done.
+5. Scan (or wait for the running one), find the new package on the shelf, and read the journal.
+   For each install of the earlier build: the new build's same option (`family::matching_option`:
+   the same root, else the same name, else the one installable option each side has) is
+   installed **in place of** it, one journaled step each (`deploy::install_in_place`, a
+   replacing list beside the family's, rolled back whole on failure). An install with no same
+   option **stays**.
+6. The earlier zip is put away in the last swap's turn, once it has no install (`put_away_older`
+   with its id); with nothing installed, alone, in one turn. A swap that is refused stops there:
+   the build stays landed, the earlier build stays installed and in the mods folder, and the
+   result carries the stone's sentence.
+
+### Tamsin's ask (`mailbox.rs`)
+
+`ask_update { artifact }`: a plain `.zip` file name in `dist`, at most 255 bytes, no separator,
+colon, control or leading dot; no other argument. The broker asks the errands to read the build
+now (`check_build`: a receipt naming these bytes) and holds the call with the digest frozen
+(`HeldUpdate { heldRequestId, since, artifact, sha256 }`). Play's rules otherwise: one waits per
+run, beside one Play; a new ask while one waits names it; the Arisen's decision
+(`UpdateDecision { …, decision: updated | declined, summary, delivered }`) is read by every
+`list_installed` under `update` and delivered once by her next ask; a departure drops it.
+
+**The press does not hold the broker's lock** (unlike Play): a swap takes the game folder's turn,
+and a call of hers in flight may hold that turn while it waits to record. It marks the answer
+under way (counted in flight, so retirement waits), runs the press with the frozen digest and the
+earlier build the window showed, and records after. A second press meanwhile is refused; a
+refused press records nothing and the ask keeps waiting.
+
+The relay serves nine tools, so the probe's ground changes with this release: re-probe after
+installing it.
+
+### Tests
+
+`spine_pawn.rs § update` on the bench's fake game (the full loop: the game holds the new bytes and
+the earlier zip is in the older-versions folder; `earlierChanged` for another or no earlier
+build; `bytesChanged`; a player's own mod of the same name is never an earlier build; nothing
+installed is put away alone), seven broker tests in `mailbox.rs`, the relay's nine tools, and
+RS-10's 18-command oracle.

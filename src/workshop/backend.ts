@@ -1,6 +1,6 @@
 // THE WORKSHOP's door to the spine (WINDOW-CONTRACT § v0.7). Separate from
 // services/rift.ts so the public build, which never imports src/workshop/,
-// carries none of it (RS-10). Inside Tauri it invokes the sixteen commands;
+// carries none of it (RS-10). Inside Tauri it invokes the eighteen commands;
 // outside it serves the mock in ./mock.ts.
 
 import type { UninstallResultView } from "@/types/rift";
@@ -11,6 +11,8 @@ import type {
   PlayAnswered,
   PutBackPlan,
   PawnSession,
+  UpdateAnswered,
+  UpdateResult,
   WorkshopEvent,
   WorkshopView,
 } from "@/types/workshop";
@@ -31,6 +33,15 @@ export interface WorkshopBackend {
   runFenceProbe(): Promise<FenceView>;
   planBringThrough(artifact: string): Promise<BringThroughPlan>;
   bringThrough(artifact: string, sha256: string): Promise<BringThroughResult>;
+  /** 0.8: the Update press, by the digest shown, replacing the earlier build shown. */
+  updateBuild(artifact: string, sha256: string, earlierPackageId: string | null): Promise<UpdateResult>;
+  /** 0.8: the press on Tamsin's held update ask. */
+  answerPawnUpdate(
+    runId: string,
+    heldRequestId: string,
+    accept: boolean,
+    earlierPackageId: string | null,
+  ): Promise<UpdateAnswered>;
   planPutBack(runId: string): Promise<PutBackPlan>;
   putBack(runId: string, installIds: string[]): Promise<UninstallResultView[]>;
   openWorkshopFolder(): Promise<void>;
@@ -62,6 +73,9 @@ async function tauriWorkshop(): Promise<WorkshopBackend> {
     runFenceProbe: () => invoke("run_fence_probe"),
     planBringThrough: (artifact) => invoke("plan_bring_through", { artifact }),
     bringThrough: (artifact, sha256) => invoke("bring_through", { artifact, sha256 }),
+    updateBuild: (artifact, sha256, earlierPackageId) => invoke("update_build", { artifact, sha256, earlierPackageId }),
+    answerPawnUpdate: (runId, heldRequestId, accept, earlierPackageId) =>
+      invoke("answer_pawn_update", { runId, heldRequestId, accept, earlierPackageId }),
     planPutBack: (runId) => invoke("plan_put_back", { runId }),
     putBack: (runId, installIds) => invoke("put_back", { runId, installIds }),
     openWorkshopFolder: () => invoke("open_workshop_folder"),

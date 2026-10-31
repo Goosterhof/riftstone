@@ -15,6 +15,8 @@ import {
   type PawnStateView,
   type PutBackPlan,
   type PawnSession,
+  type UpdateAnswered,
+  type UpdateResult,
   type WorkshopView,
 } from "@/types/workshop";
 import { asRiftFailure, rift, type RiftFailure } from "@/services/rift";
@@ -81,6 +83,11 @@ const pawn = computed<PawnStateView | null>(() => view.value?.pawn ?? null);
 const here = computed(() => pawn.value?.state === "here");
 const summoned = computed(() => pawn.value?.state === "here" || pawn.value?.state === "summoning");
 const held = computed(() => pawn.value?.held ?? null);
+/** 0.8: Tamsin's update ask waiting, with the digest frozen at it. */
+const heldUpdate = computed(() => pawn.value?.heldUpdate ?? null);
+/** 0.8: the last press on her update ask, and its refusal while she waits. */
+const updateAnswered = ref<UpdateAnswered | null>(null);
+const updateRefusal = ref<string | null>(null);
 const fence = computed<FenceView | null>(() => view.value?.fence ?? null);
 
 function decode(data: string): Uint8Array {
@@ -458,6 +465,39 @@ async function bring(plan: BringThroughPlan): Promise<"landed" | "alreadyHad" | 
   return result?.outcome ?? null;
 }
 
+/** 0.8: the Update press, on the card's frozen digest and the earlier build it showed. */
+async function updateBuild(plan: BringThroughPlan): Promise<UpdateResult | null> {
+  const result = await attempt(async () =>
+    (await workshop()).updateBuild(plan.artifact, plan.sha256, plan.earlier?.packageId ?? null),
+  );
+  if (result) await load();
+  return result;
+}
+
+/** 0.8: the press on her update ask: the ask waiting now, by run and id, and
+ *  the earlier build its card showed. A refusal leaves it waiting, shown. */
+async function answerUpdate(accept: boolean, earlierPackageId: string | null): Promise<UpdateAnswered | null> {
+  const run = runId.value;
+  const waiting = heldUpdate.value;
+  if (!run || !waiting || answering.value) return null;
+  answering.value = true;
+  updateRefusal.value = null;
+  try {
+    const result = await attempt(async () =>
+      (await workshop()).answerPawnUpdate(run, waiting.heldRequestId, accept, earlierPackageId),
+    );
+    if (result) {
+      updateAnswered.value = result;
+      await load();
+    } else if (failure.value) {
+      updateRefusal.value = "detail" in failure.value.detail ? failure.value.detail.detail : failure.value.message;
+    }
+    return result;
+  } finally {
+    answering.value = false;
+  }
+}
+
 /** Ask for a rescan and let it run; its answer arrives as rift://library-changed. */
 async function rescanQuietly(): Promise<void> {
   try {
@@ -494,6 +534,8 @@ export function resetWorkshop(): void {
   probing.value = false;
   failure.value = null;
   answering.value = false;
+  updateAnswered.value = null;
+  updateRefusal.value = null;
   sink = null;
   subscribed = null;
 }
@@ -534,6 +576,11 @@ export function useWorkshop() {
     declinePlay,
     planBring,
     bring,
+    heldUpdate,
+    updateAnswered,
+    updateRefusal,
+    updateBuild,
+    answerUpdate,
     planPutBack,
     putBack,
   };

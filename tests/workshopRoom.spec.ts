@@ -462,3 +462,140 @@ describe("THE BENCH folds (0.7.4)", () => {
     expect(isShown(w, "session")).toBe(true);
   });
 });
+
+describe("Update in its place (0.8, #00015 §20.14)", () => {
+  const BUILD = "Stride-Tuner-0.2.0.zip";
+  const row = (w: VueWrapper) => w.get(`[data-artifact="${BUILD}"]`);
+
+  it("should name the earlier build on the row and offer Update first", async () => {
+    const w = await room("update");
+    expect(row(w).find(".built__replaces").text()).toBe("replaces Stride-Tuner-0.1.0.zip");
+    expect(button(w, "Update…").classes()).toContain("rs-btn--primary");
+    expect(button(w, "Add to library…").classes()).toContain("rs-btn--secondary");
+  });
+
+  it("should offer no Update for a build with no earlier build", async () => {
+    const w = await room();
+    expect(w.find(".built__replaces").exists()).toBe(false);
+    expect(w.findAll("button").some((b) => labelOf(b) === "Update…")).toBe(false);
+  });
+
+  it("should show the swap and the put-away, and press with the digest and the earlier build it showed", async () => {
+    const w = await room("update");
+    await button(w, "Update…").trigger("click");
+    await settle();
+    const card = w.get(".update");
+    expect(card.text()).toContain("IN ITS PLACE");
+    expect(card.get("[data-swap]").text()).toBe("↻Stride Tuner  0.1.0 → 0.2.0");
+    expect(card.get("[data-put-away]").text()).toBe("↧Stride-Tuner-0.1.0.zip to mods (older versions)");
+    expect(button(w, "Update ▶").classes()).toContain("rs-btn--world");
+    const sha = mock.controls.view().artifacts.find((a) => a.name === BUILD)?.sha256;
+    await button(w, "Update ▶").trigger("click");
+    await settle();
+    const pressed = mock.controls.calls.find((c) => c.cmd === "update_build");
+    expect(pressed?.args).toStrictEqual([BUILD, sha, "pkg-stride-010"]);
+    expect(w.get(".update__state").text()).toBe("IN YOUR WORLD");
+    expect(w.text()).toContain("Stride-Tuner-0.1.0.zip is put away in mods (older versions)");
+  });
+
+  it("should say the swap did not happen and the game folder is as it was", async () => {
+    const w = await room("updaterefused");
+    await button(w, "Update…").trigger("click");
+    await settle();
+    await button(w, "Update ▶").trigger("click");
+    await settle();
+    expect(w.get(".update__state").text()).toBe("IN THE RIFT");
+    expect(w.text()).toContain("but the swap didn't happen: That install would write over a game file");
+    expect(w.text()).toContain("Stride-Tuner-0.1.0.zip is still installed");
+  });
+
+  it("should refuse bytes that changed after the card opened, and review them again", async () => {
+    const w = await room("update");
+    await button(w, "Update…").trigger("click");
+    await settle();
+    mock.controls.rebuild(BUILD);
+    await settle();
+    await button(w, "Update ▶").trigger("click");
+    await settle();
+    expect(w.get(".update__state").text()).toBe("THE BYTES CHANGED");
+    expect(w.text()).toContain("Nothing was added or swapped.");
+    await button(w, "Review it again").trigger("click");
+    await settle();
+    expect(w.get(".update").text()).toContain("IN ITS PLACE");
+    expect(w.find(".update__state").exists()).toBe(false);
+  });
+});
+
+const asks = (w: VueWrapper) => w.findAll("[data-ask]").map((a) => a.attributes("data-ask"));
+
+describe("SHE ASKS (0.8, R20.36, Q20.33 ruled A)", () => {
+  const BUILD = "Stride-Tuner-0.2.0.zip";
+
+  it("should pin a lone held Play under SHE ASKS", async () => {
+    const w = await room();
+    await summoned(w);
+    mock.controls.hold();
+    await settle();
+    expect(w.get("#ws-she-asks").text()).toBe("SHE ASKS");
+    expect(asks(w)).toStrictEqual(["play"]);
+    expect(w.get('[data-ask="play"]').text()).toContain("Tamsin asks to start the game.");
+  });
+
+  it("should pin both asks oldest first, and answer the update by its run, id and earlier build", async () => {
+    const w = await room("update");
+    await summoned(w);
+    const id = mock.controls.holdUpdate(BUILD);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    mock.controls.hold();
+    await settle();
+    expect(asks(w)).toStrictEqual(["update", "play"]);
+    const update = w.get('[data-ask="update"]');
+    expect(update.text()).toContain(`Tamsin asks to update to ${BUILD}.`);
+    expect(update.text()).toContain("↻ Stride Tuner  0.1.0 → 0.2.0");
+    expect(update.text()).toContain("frozen at her ask");
+    expect(w.get('[data-ask="play"]').text()).toContain("Her update is still waiting above.");
+    const updateButton = update.findAll("button").find((b) => labelOf(b) === "Update");
+    await updateButton?.trigger("click");
+    await settle();
+    const answered = mock.controls.calls.find((c) => c.cmd === "answer_pawn_update");
+    expect(answered?.args).toStrictEqual(["run-mock-1", id, true, "pkg-stride-010"]);
+    expect(asks(w)).toStrictEqual(["play"]);
+  });
+
+  it("should not update bytes that changed after she asked", async () => {
+    const w = await room("update");
+    await summoned(w);
+    mock.controls.holdUpdate(BUILD);
+    await settle();
+    mock.controls.rebuild(BUILD);
+    await settle();
+    // her ask's card is read again when the ask appears; a new look reads the new bytes
+    resetWorkshop();
+    wrapper?.unmount();
+    wrapper = mount(WorkshopPage, { attachTo: document.body, global: { stubs: { WorkshopHollow: HollowStub } } });
+    await settle();
+    const update = wrapper.get('[data-ask="update"]');
+    expect(update.text()).toContain("changed after Tamsin asked");
+    const updateButton = update.findAll("button").find((b) => labelOf(b) === "Update");
+    expect(updateButton?.attributes("aria-disabled")).toBe("true");
+    await updateButton?.trigger("click");
+    await settle();
+    expect(mock.controls.calls.some((c) => c.cmd === "answer_pawn_update")).toBe(false);
+  });
+
+  it("should answer Not now with no earlier build", async () => {
+    const w = await room("update");
+    await summoned(w);
+    const id = mock.controls.holdUpdate(BUILD);
+    await settle();
+    const notNow = w
+      .get('[data-ask="update"]')
+      .findAll("button")
+      .find((b) => labelOf(b) === "Not now");
+    await notNow?.trigger("click");
+    await settle();
+    const answered = mock.controls.calls.find((c) => c.cmd === "answer_pawn_update");
+    expect(answered?.args).toStrictEqual(["run-mock-1", id, false, null]);
+    expect(w.find("#ws-she-asks").exists()).toBe(false);
+  });
+});

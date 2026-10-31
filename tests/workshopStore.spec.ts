@@ -244,7 +244,15 @@ describe("the Heretic's review of the room (PR #11)", () => {
     const seen: Uint8Array[] = [];
     w.attach((b) => seen.push(b));
     const state = (run: string, s: "summoning" | "here") =>
-      mock.controls.emitRawState({ runId: run, state: s, since: null, exitCode: null, host: null, held: null });
+      mock.controls.emitRawState({
+        runId: run,
+        state: s,
+        since: null,
+        exitCode: null,
+        host: null,
+        held: null,
+        heldUpdate: null,
+      });
     // Output before state.
     mock.controls.emitRawOutput({ runId: "run-a", seq: 0, data: b64("FIRST") });
     expect(text(seen)).toBe("");
@@ -303,7 +311,15 @@ describe("the Heretic's review of the room (PR #11)", () => {
       },
     });
     const state = (run: string, s: "summoning" | "here") =>
-      mock.controls.emitRawState({ runId: run, state: s, since: null, exitCode: null, host: null, held: null });
+      mock.controls.emitRawState({
+        runId: run,
+        state: s,
+        since: null,
+        exitCode: null,
+        host: null,
+        held: null,
+        heldUpdate: null,
+      });
     state("run-mock-1", "here");
     await flushPromises();
     expect(sent).toStrictEqual([["run-mock-1", "\x1b[1;1R"]]);
