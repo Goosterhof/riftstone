@@ -405,6 +405,56 @@ describe("THE BENCH folds (0.7.4)", () => {
     expect(isShown(w, "hands")).toBe(false);
   });
 
+  it("should keep BUILT open while a build's refusal shows, until it is dismissed (the Heretic's BF1)", async () => {
+    const w = await room();
+    const sentence = "The build changed before its plan could be opened.";
+    setWorkshopBackend({ ...mock, planBringThrough: () => Promise.reject(new Error(sentence)) });
+    await button(w, "Add to library…").trigger("click");
+    await settle();
+    expect(w.get(".built__refused").text()).toBe(sentence);
+    await toggle(w, "built").trigger("click");
+    expect(isShown(w, "built")).toBe(true);
+    expect(toggle(w, "built").attributes("aria-disabled")).toBe("true");
+    expect(toggle(w, "built").attributes("title")).toBe("Open while a build's card or the stone's refusal is showing.");
+    await button(w, "Dismiss").trigger("click");
+    expect(w.find(".built__refused").exists()).toBe(false);
+    await toggle(w, "built").trigger("click");
+    expect(isShown(w, "built")).toBe(false);
+  });
+
+  it("should reopen BUILT for a refusal that lands after it was folded (the Heretic's BF1)", async () => {
+    const w = await room();
+    const sentence = "The build was removed while its plan was being read.";
+    let refuse: ((reason: Error) => void) | null = null;
+    setWorkshopBackend({
+      ...mock,
+      planBringThrough: () =>
+        new Promise((_resolve, reject: (reason: Error) => void) => {
+          refuse = reject;
+        }),
+    });
+    await button(w, "Add to library…").trigger("click");
+    await settle();
+    await toggle(w, "built").trigger("click");
+    expect(isShown(w, "built")).toBe(false);
+    (refuse as unknown as (reason: Error) => void)(new Error(sentence));
+    await settle();
+    expect(isShown(w, "built")).toBe(true);
+    expect(w.get(".built__refused").text()).toBe(sentence);
+  });
+
+  it("should keep BUILT open while a build's card is open", async () => {
+    const w = await room();
+    await button(w, "Add to library…").trigger("click");
+    await settle();
+    expect(w.find(".bring").exists()).toBe(true);
+    await toggle(w, "built").trigger("click");
+    expect(isShown(w, "built")).toBe(true);
+    await button(w, "Cancel").trigger("click");
+    await toggle(w, "built").trigger("click");
+    expect(isShown(w, "built")).toBe(false);
+  });
+
   it("should ignore storage it cannot read", async () => {
     localStorage.setItem(FOLDS_KEY, "not json");
     resetBenchFolds();

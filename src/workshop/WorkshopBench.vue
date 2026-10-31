@@ -55,6 +55,15 @@ const summaries = computed(() => ({
 }));
 /** A section the investor must see stays open, and says why. */
 const REFUSAL_HOLDS = "Open while it shows the stone's refusal.";
+const BUILT_HOLDS = "Open while a build's card or the stone's refusal is showing.";
+/** The built rows that need the investor now (the Heretic's BF1). */
+const needing = ref(new Set<string>());
+function attention(name: string, needed: boolean): void {
+  const next = new Set(needing.value);
+  if (needed) next.add(name);
+  else next.delete(name);
+  needing.value = next;
+}
 const WAITING_HOLDS = `Open while ${PAWN_NAME} waits for your answer.`;
 
 async function setInputs(next: string[]): Promise<void> {
@@ -137,12 +146,12 @@ async function addFolder(): Promise<void> {
       <p v-if="inputRefusal" class="bench__refused" role="alert">{{ inputRefusal }}</p>
     </BenchSection>
 
-    <BenchSection section="built" title="BUILT" :summary="summaries.built">
+    <BenchSection section="built" title="BUILT" :summary="summaries.built" :held="needing.size ? BUILT_HOLDS : null">
       <p v-if="!built.length" class="bench__note">
         Nothing is built yet. A finished build is a ZIP with its receipt beside it.
       </p>
       <ul v-else class="built-list">
-        <BuiltArtifact v-for="a in built" :key="a.name" :artifact="a" />
+        <BuiltArtifact v-for="a in built" :key="a.name" :artifact="a" @attention="attention(a.name, $event)" />
       </ul>
     </BenchSection>
 

@@ -467,8 +467,11 @@ the Undercroft's idiom). A folded head keeps a one-line summary on its own line
 never the state. Every section starts open; the window remembers the folds the investor made
 (`src/workshop/benchFolds.ts`, the webview's storage: a window preference, so never `pawn.json`
 or the settings). Two rules keep a fold from hiding a press: THE PAWN'S HANDS stays open while
-Tamsin waits on one (a held Play), and a section stays open while it shows a refusal. Its toggle
-then says why in its title and does nothing, instead of seeming to do nothing.
+Tamsin waits on one (a held Play), and a section stays open while it shows a refusal. BUILT
+stays open while a build's card is open or its refusal shows, and a refusal that lands after the
+fold opens it again (the Heretic's BF1); the refusal carries a Dismiss, and a new build's digest
+clears it. A plan still being read does not hold it. Its toggle then says why in its title and
+does nothing, instead of seeming to do nothing.
 `tests/workshopRoom.spec.ts` § THE BENCH folds covers the fold, the summary, the memory across
 windows, unreadable storage and the held rule (mutation-checked). Rendered at 1320 from the mock.
 
