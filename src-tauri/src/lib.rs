@@ -271,5 +271,6 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         pawn::commands::set_pawn_inputs,
         pawn::commands::paste_to_pawn,
         pawn::commands::update_build,
+        pawn::commands::answer_pawn_update,
     ))
 }

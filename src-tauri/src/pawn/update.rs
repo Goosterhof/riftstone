@@ -468,3 +468,47 @@ fn swap(state: &Arc<AppState>, artifact: &str, earlier_id: &PackageId, result: &
         state.request_scan();
     }
 }
+
+fn options(n: usize) -> String {
+    if n == 1 {
+        "1 option".into()
+    } else {
+        format!("{n} options")
+    }
+}
+
+/// What Tamsin is told a press did, plainly (her tool answers carry no
+/// persona): the facts, in the order they happened.
+pub fn told(artifact: &str, done: &UpdateResult) -> String {
+    let Some(earlier) = &done.earlier else {
+        return match done.outcome {
+            BringOutcome::Landed => format!(
+                "added {artifact} to the mods folder; no earlier build of it was there, so nothing was installed. Plan and install it."
+            ),
+            BringOutcome::AlreadyHad => {
+                format!("{artifact} was already in the mods folder; nothing changed.")
+            }
+        };
+    };
+    let mut said = vec![format!("added {artifact} in place of {earlier}")];
+    if !done.swapped.is_empty() {
+        said.push(format!("{} swapped", options(done.swapped.len())));
+    }
+    if let Some(refusal) = &done.failed {
+        said.push(format!("then a swap was refused: {refusal}"));
+    }
+    if !done.stays.is_empty() {
+        said.push(format!(
+            "{} of {earlier} stay installed: this build has no option that is the same",
+            options(done.stays.len())
+        ));
+    }
+    if !done.put_away.is_empty() {
+        said.push(format!(
+            "{earlier} was put away in the older-versions folder"
+        ));
+    } else if let Some(failed) = &done.put_away_failed {
+        said.push(format!("{earlier} could not be put away: {failed}"));
+    }
+    format!("{}. It loads at the game's next start.", said.join("; "))
+}

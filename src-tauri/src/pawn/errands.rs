@@ -168,6 +168,14 @@ impl Errands for StoneErrands {
 
     fn drop_held_play(&self, _run_id: &str) {}
 
+    fn check_build(&self, artifact: &str) -> Result<String, String> {
+        let workshop = crate::pawn::desk::workshop_dir(self.state.library_dir())
+            .ok_or_else(|| "The mods folder has no folder around it for a workshop.".to_string())?;
+        crate::pawn::bring::plan_bring_through(&workshop, self.state.library_dir(), artifact)
+            .map(|plan| plan.sha256)
+            .map_err(|refusal| refusal.detail)
+    }
+
     fn read_reframework_log(&self, tail_lines: u64) -> Result<Value, String> {
         let game = self.state.world().game.ok_or_else(|| {
             "Dragon's Dogma 2 is not installed where the stone looked.".to_string()

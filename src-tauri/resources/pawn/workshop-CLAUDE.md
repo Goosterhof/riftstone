@@ -18,8 +18,13 @@ mods folder. It is the only place files are created or changed here.
 - Read-only inputs (for example a pinned extract of the game's files) are mounted
   at `/inputs/<n>`. They cannot be written.
 - The stone's tools are the only way to touch the library or the game: search it,
-  read an option, plan and install, uninstall, ask to play (the player answers),
-  and read REFramework's log. Their refusals are final.
+  read an option, plan and install, uninstall, ask to update to a build (the player
+  answers), ask to play (the player answers), and read REFramework's log. Their
+  refusals are final.
+- An update brings a build in place of the earlier build of the same mod (the same
+  `modinfo.ini` `name=`): its installs are swapped and the earlier zip is put away.
+  Give each build a new version in its file name; a build under the same name as one
+  in the mods folder cannot take its place.
 
 ## How Dragon's Dogma 2 loads mods (2026 engine)
 

@@ -427,6 +427,29 @@ pub fn bring_through_impl(
     Ok(BringThroughResult { outcome })
 }
 
+/// 0.8: the Arisen's press on Tamsin's held update ask, by its run and id,
+/// replacing the earlier build the window showed.
+#[tauri::command]
+pub async fn answer_pawn_update(
+    spine: Spine<'_>,
+    desk: DeskState<'_>,
+    run_id: String,
+    held_request_id: String,
+    accept: bool,
+    earlier_package_id: Option<String>,
+) -> Result<crate::pawn::desk::UpdateAnsweredView, RiftError> {
+    with_desk(&spine, &desk, move |state, desk| {
+        desk.answer_update(
+            state,
+            &run_id,
+            &held_request_id,
+            accept,
+            earlier_package_id.as_deref(),
+        )
+    })
+    .await
+}
+
 /// 0.8: the Update press: `artifact` by the digest shown, replacing the
 /// earlier build shown (`earlierPackageId`, or none).
 #[tauri::command]
@@ -526,7 +549,7 @@ pub async fn set_pawn_inputs(
 }
 
 /// Every THE WORKSHOP command's invoke name, for RS-10's registration test.
-pub const COMMANDS: [&str; 17] = [
+pub const COMMANDS: [&str; 18] = [
     "get_workshop",
     "summon_pawn",
     "pawn_write",
@@ -544,6 +567,7 @@ pub const COMMANDS: [&str; 17] = [
     "run_fence_probe",
     "paste_to_pawn",
     "update_build",
+    "answer_pawn_update",
 ];
 
 #[tauri::command]

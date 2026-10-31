@@ -69,6 +69,16 @@ pub struct HeldView {
     pub since: String,
 }
 
+/// 0.8: the update ask waiting for the Arisen, with the digest frozen at it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldUpdateView {
+    pub held_request_id: String,
+    pub since: String,
+    pub artifact: String,
+    pub sha256: String,
+}
+
 /// `PawnStateView` (WINDOW-CONTRACT § v0.7, Types).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -80,6 +90,8 @@ pub struct PawnStateView {
     pub exit_code: Option<u32>,
     pub host: Option<HostView>,
     pub held: Option<HeldView>,
+    /// 0.8: the update ask waiting, if one is.
+    pub held_update: Option<HeldUpdateView>,
 }
 
 impl PawnStateView {
@@ -91,8 +103,20 @@ impl PawnStateView {
             exit_code: None,
             host: None,
             held: None,
+            held_update: None,
         }
     }
+}
+
+/// 0.8: what `answer_pawn_update` did: the decision, what the stone did when
+/// it updated, what Tamsin is told, and whether it reached the ledger.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAnsweredView {
+    pub decision: crate::pawn::mailbox::UpdateDecisionKind,
+    pub result: Option<crate::pawn::update::UpdateResult>,
+    pub told: String,
+    pub persisted: bool,
 }
 
 /// What `answer_pawn_play` did: the decision, and whether it reached the
@@ -625,9 +649,16 @@ impl Desk {
         let desk = lock(&self.state);
         match &desk.live {
             Some(live) => {
-                let held = live.summoning.broker().ledger().held.map(|held| HeldView {
+                let ledger = live.summoning.broker().ledger();
+                let held = ledger.held.map(|held| HeldView {
                     held_request_id: held.held_request_id,
                     since: held.since,
+                });
+                let held_update = ledger.held_update.map(|held| HeldUpdateView {
+                    held_request_id: held.held_request_id,
+                    since: held.since,
+                    artifact: held.artifact,
+                    sha256: held.sha256,
                 });
                 PawnStateView {
                     run_id: Some(live.summoning.run_id().to_string()),
@@ -643,6 +674,7 @@ impl Desk {
                         claude_version: live.host.claude_version.clone(),
                     }),
                     held,
+                    held_update,
                 }
             }
             None => desk.last.clone().unwrap_or_else(PawnStateView::absent),
@@ -785,6 +817,7 @@ impl Desk {
                 claude_version: survey.host.claude_version.clone(),
             }),
             held: None,
+            held_update: None,
         };
         ears.events.emit_value(
             PAWN_STATE,
@@ -1118,6 +1151,7 @@ impl Desk {
             exit_code: None,
             host: None,
             held: None,
+            held_update: None,
         };
         {
             let mut desk = lock(&self.state);
@@ -1181,6 +1215,69 @@ impl Desk {
         }
     }
 
+    /// 0.8: the Arisen's press on Tamsin's held update ask: the Update press
+    /// on the digest frozen at her ask, replacing the earlier build the
+    /// window showed (`earlier_shown`). A refusal leaves the ask waiting.
+    pub fn answer_update(
+        &self,
+        state: &Arc<AppState>,
+        run_id: &str,
+        held_request_id: &str,
+        accept: bool,
+        earlier_shown: Option<&str>,
+    ) -> Result<UpdateAnsweredView, RiftError> {
+        use crate::pawn::mailbox::UpdateRefusal;
+        let pawn = self
+            .here()
+            .map_err(|_| RiftError::pawn(PawnReason::StaleHeld, "Tamsin's summoning has ended."))?;
+        let workshop = workshop_dir(state.library_dir()).ok_or_else(|| {
+            RiftError::refused("The mods folder has no folder around it for a workshop.")
+        })?;
+        let mut result = None;
+        let answered = pawn
+            .broker()
+            .answer_update(run_id, held_request_id, accept, |held| {
+                let done = crate::pawn::update::apply(
+                    state,
+                    &self.brought,
+                    &self.read_builds,
+                    &workshop,
+                    &held.artifact,
+                    &held.sha256,
+                    earlier_shown,
+                )?;
+                let told = crate::pawn::update::told(&held.artifact, &done);
+                result = Some(done);
+                Ok::<_, RiftError>(told)
+            });
+        match answered {
+            Ok(answered) => {
+                if !answered.persisted {
+                    log::warn!("the Arisen's answer to a held update could not be recorded");
+                }
+                Ok(UpdateAnsweredView {
+                    decision: answered.decision,
+                    result,
+                    told: answered.summary,
+                    persisted: answered.persisted,
+                })
+            }
+            Err(UpdateRefusal::NothingHeld) => Err(RiftError::pawn(
+                PawnReason::NothingHeld,
+                "No update is waiting.",
+            )),
+            Err(UpdateRefusal::StaleHeld | UpdateRefusal::Answering) => Err(RiftError::pawn(
+                PawnReason::StaleHeld,
+                "That update ask is not the one waiting now.",
+            )),
+            Err(UpdateRefusal::LedgerDown) => Err(RiftError::pawn(
+                PawnReason::LedgerDown,
+                "Tamsin's ledger cannot be written, so nothing more changes in this summoning.",
+            )),
+            Err(UpdateRefusal::Refused(err)) => Err(err),
+        }
+    }
+
     fn hand(&self, run_id: &str, handled: &Handled) -> PawnHand {
         let answer = &handled.answer;
         let outcome = if handled.repeated {
@@ -1239,6 +1336,7 @@ impl Desk {
             exit_code,
             host: None,
             held: None,
+            held_update: None,
         };
         desk.last = Some(view.clone());
         Some(view)
