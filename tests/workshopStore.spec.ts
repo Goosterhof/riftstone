@@ -488,3 +488,38 @@ describe("THE BENCH's settings, as Tauri answers them", () => {
     expect(w.view.value?.inputs).toStrictEqual(["D:\\Extracts\\vanilla"]);
   });
 });
+
+describe("a pasted picture (0.7.5)", () => {
+  const shot = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" });
+
+  it("should send the picture to the run on show and answer the path the stone gave", async () => {
+    const w = await bench();
+    await summoned(w);
+    const done = await w.pastePicture(shot);
+    expect(done).toStrictEqual({ path: "pasted/paste-20261031-231401.png", run: "run-mock-1" });
+    const sent = mock.controls.calls.find((c) => c.cmd === "paste_to_pawn");
+    expect(sent?.args).toStrictEqual(["run-mock-1", b64("\x89PNG").length]);
+  });
+
+  it("should paste nothing when no pawn is here, and say so", async () => {
+    const w = await bench();
+    const done = await w.pastePicture(shot);
+    expect(done).toStrictEqual({ refused: "Tamsin is not here, so the picture was not pasted." });
+    expect(mock.controls.calls.some((c) => c.cmd === "paste_to_pawn")).toBe(false);
+  });
+
+  it("should say the stone's own sentence when it refuses the picture", async () => {
+    const w = await bench();
+    await summoned(w);
+    mock.pasteToPawn = () =>
+      Promise.reject(
+        asRiftFailure({
+          kind: "refused",
+          detail: { reason: "The stone pastes PNG, JPEG, GIF and WebP pictures only, and this was none of them." },
+        }),
+      );
+    expect(await w.pastePicture(shot)).toStrictEqual({
+      refused: "The stone pastes PNG, JPEG, GIF and WebP pictures only, and this was none of them.",
+    });
+  });
+});

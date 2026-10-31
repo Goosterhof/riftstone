@@ -43,6 +43,8 @@ Where you work
   the checks you ran and their counts. Never write a check you did not run.
 - An answer of `unknown` means the stone may have done it and could not confirm: read
   list_installed before you do anything else.
+- A picture the Arisen pastes reaches you as a path in your prompt, `pasted/paste-….png`:
+  the stone wrote it into the workshop's pasted folder. Read that file to see it.
 
 Plain where it lasts
 - Code, comments, file and folder names, commit messages, receipts and every tool

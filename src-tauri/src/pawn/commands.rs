@@ -241,6 +241,34 @@ pub async fn pawn_write(
     with_desk(&spine, &desk, move |_, desk| desk.write(&run_id, &data)).await
 }
 
+/// 0.7.5: the most base64 a picture of [`crate::pawn::picture::MAX_PICTURE_BYTES`]
+/// can take, so an oversized one is refused before it is decoded.
+const MAX_PICTURE_BASE64: usize = crate::pawn::picture::MAX_PICTURE_BYTES.div_ceil(3) * 4;
+
+#[tauri::command]
+pub async fn paste_to_pawn(
+    spine: Spine<'_>,
+    desk: DeskState<'_>,
+    run_id: String,
+    data: String,
+) -> Result<String, RiftError> {
+    if data.len() > MAX_PICTURE_BASE64 {
+        return Err(RiftError::refused(
+            "That picture is larger than 20 MiB; the stone pastes pictures up to 20 MiB. Save a smaller one, or crop it.",
+        ));
+    }
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.as_bytes())
+        .map_err(|_| {
+            RiftError::refused("The picture did not reach the stone whole, so nothing was pasted.")
+        })?;
+    with_desk(&spine, &desk, move |state, desk| {
+        desk.paste_picture(state, &run_id, &bytes)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn pawn_resize(
     spine: Spine<'_>,
@@ -385,7 +413,7 @@ pub async fn set_pawn_inputs(
 }
 
 /// Every THE WORKSHOP command's invoke name, for RS-10's registration test.
-pub const COMMANDS: [&str; 15] = [
+pub const COMMANDS: [&str; 16] = [
     "get_workshop",
     "summon_pawn",
     "pawn_write",
@@ -401,6 +429,7 @@ pub const COMMANDS: [&str; 15] = [
     "set_pawn_session",
     "set_pawn_inputs",
     "run_fence_probe",
+    "paste_to_pawn",
 ];
 
 #[tauri::command]

@@ -279,6 +279,7 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
   let termCols = 80;
   let handSeq = 0;
   let runCount = 0;
+  let pasted = 0;
   // The journal keys an install by its option id, so the two are one id here.
   const pawnInstalls: { installId: string; name: string }[] = [];
   const timers: ReturnType<typeof setTimeout>[] = [];
@@ -464,6 +465,15 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
         playSession();
       });
       return Promise.resolve();
+    },
+    pasteToPawn: (run, data) => {
+      call("paste_to_pawn", run, data.length);
+      if (pawn.state !== "here") return Promise.reject(pawnRefused("notHere", "No pawn is here."));
+      if (pawn.runId !== run) {
+        return Promise.reject(pawnRefused("notHere", "That summoning is over, so the picture was not pasted."));
+      }
+      pasted += 1;
+      return Promise.resolve(`pasted/paste-20261031-2314${String(pasted).padStart(2, "0")}.png`);
     },
     pawnWrite: (run, data) => {
       call("pawn_write", run, data);

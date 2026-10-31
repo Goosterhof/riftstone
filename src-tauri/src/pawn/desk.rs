@@ -1031,6 +1031,37 @@ impl Desk {
             .map_err(|err| RiftError::io("could not reach Tamsin's terminal", err))
     }
 
+    /// `paste_to_pawn` (0.7.5): a picture the player pasted, for the
+    /// summoning the window was showing. It lands in the workshop's
+    /// `pasted\` ([`crate::pawn::picture`]); the path, relative to her
+    /// working folder, is returned, and the window pastes it into her prompt
+    /// through xterm (bracketed only when her terminal asked for it). A run
+    /// that is not the live one gets nothing.
+    pub fn paste_picture(
+        &self,
+        state: &AppState,
+        run_id: &str,
+        bytes: &[u8],
+    ) -> Result<String, RiftError> {
+        let pawn = self.here()?;
+        if pawn.run_id() != run_id {
+            return Err(RiftError::pawn(
+                PawnReason::NotHere,
+                "That summoning is over, so the picture was not pasted.",
+            ));
+        }
+        let workshop = workshop_dir(state.library_dir()).ok_or_else(|| {
+            RiftError::refused("The mods folder has no folder around it for a workshop.")
+        })?;
+        let path = crate::pawn::picture::paste_picture(
+            &workshop,
+            bytes,
+            &crate::pawn::picture::stamp_now(),
+        )
+        .map_err(RiftError::refused)?;
+        Ok(path)
+    }
+
     pub fn resize(&self, cols: u16, rows: u16) {
         if let Some(pawn) = self.live() {
             let _ = pawn.resize(cols, rows);

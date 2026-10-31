@@ -1033,6 +1033,7 @@ Types live in `src/types/workshop.ts`. Design: #00015 §20.
 | `put_back` | `runId: string, installIds: string[]` | `UninstallResultView[]` | Uninstalls exactly the `remove` items named, newest first, each through the journal. An id that is not that run's own still-installed install is refused, not skipped. `review` items are never acted on here. |
 | `open_workshop_folder` | — | `void` | Explorer, Rust-side. |
 | `set_pawn_session` | `session: PawnSession` | `void` | 0.7.2, in place of 0.7.0's `set_pawn_voice`. The whole session, saved in `pawn.json`; takes effect at the next summon (the window says so while a pawn is here). The stone passes it to her Claude Code as `--permission-mode`, then `--effort` and `--model` when one is chosen. A word outside `PawnSession` is refused by the command's own decoding. |
+| `paste_to_pawn` | `runId: string, data: string` | `string` | 0.7.5. A picture the player pasted (`data` is its bytes, base64), for the summoning `runId`; anything else is refused `pawn` `notHere`. The stone takes only a PNG, JPEG, GIF or WebP by its own first bytes, at most 20 MiB, and writes it into the workshop's `pasted\` as `paste-<yyyymmdd-hhmmss>[-n].<ext>`. It opens `pasted\` by handle and refuses it as a link or reparse point, creates the file exclusively relative to that handle and passes over every name the folder already lists. It answers the path relative to the workshop (`pasted/paste-….png`), which the window pastes into her prompt. A refusal is `refused` with the stone's sentence. |
 | `set_pawn_inputs` | `inputs: string[]` | `void` | Saved in `pawn.json` after each folder passes the protected-root check (below); refuses `pawn` `inputRefused`, naming the root, and saves nothing. |
 
 The pawn's own settings live in the stone's app data as `pawn.json` (the session, the inputs, the
@@ -1153,6 +1154,13 @@ the investor's own and may be shown.
   `The stone started the launch.`; whether the game runs is the watcher's line, apart.
 - A bring-through reports `landed` as soon as the stone does. The rescan it requests runs on,
   and its result arrives as `rift://library-changed`.
+- **A pasted picture (0.7.5).** Her Claude Code takes a pasted image from the system clipboard,
+  which the fence closes to her, and xterm pastes text only. So the hollow catches a paste whose
+  clipboard holds a picture and no text (`pictureIn`, `hollowHands.ts`) before xterm does, sends it
+  to `paste_to_pawn`, and pastes the answered path through xterm (bracketed when her terminal asked
+  for it), only while the run it was sent for is still here. A paste with text pastes the text, as
+  before. Toasts: the path on success (rift), the stone's sentence on a refusal (ember), and the
+  path that was not typed when the summoning ended meanwhile (warn).
 - **The bench folds (0.7.4).** Each bench section folds under its own head and keeps a
   one-line summary when folded. The window remembers the folds in its own storage; no command
   carries them. THE PAWN'S HANDS cannot fold while a Play is held, nor any section while it shows

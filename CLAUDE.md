@@ -466,6 +466,27 @@ then says why in its title and does nothing, instead of seeming to do nothing.
 `tests/workshopRoom.spec.ts` § THE BENCH folds covers the fold, the summary, the memory across
 windows, unreadable storage and the held rule (mutation-checked). Rendered at 1320 from the mock.
 
+## A picture pasted to Tamsin — 0.7.5 (investor report, 31 October 2026)
+
+*"i can not paste to Tamsin, when i want to show a screenshot of something i can not paste it
+in."* Claude Code takes a pasted image by reading the system clipboard itself, and Tamsin's runs
+in WSL inside the fence, which closes every way to Windows (RS-9), so her Ctrl+V can never reach
+the investor's clipboard. The hollow's paste carried text only. Now the hollow catches a paste
+whose clipboard holds a picture and no text, before xterm, and sends the bytes to
+`paste_to_pawn`. The stone takes a PNG, JPEG, GIF or WebP by its own first bytes, at most 20 MiB,
+and writes it into the workshop's `pasted\` under its own name (`pawn/picture.rs`). It opens
+`pasted\` by handle and refuses it as a link, creates the file exclusively relative to that
+handle, and passes over every name already there, so a link she planted is never written
+through. The window pastes the answered path, `pasted/paste-….png`, into her prompt, and her
+persona says to read it. Text on the clipboard still pastes as text. The persona is not part of
+the probe's ground, so this leaves the fence's record standing.
+
+Measured: `pawn::picture`'s tests (the four kinds, the size cap, every paste its own name, a
+linked `pasted\`, a planted link under the next name), the store's and hands' specs, and in
+headless Chromium on the mock: a PNG pasted on the terminal put its path in her prompt, and a
+clipboard with text and a picture pasted the text. Owed on the installed build: a screenshot
+from the Snipping Tool, pasted with Ctrl+V, read by her with the Read tool.
+
 ## Known Limitations
 
 - **Manual save backups (v0.6.2)** cover every discovered account's original encrypted

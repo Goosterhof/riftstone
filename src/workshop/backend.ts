@@ -1,6 +1,6 @@
 // THE WORKSHOP's door to the spine (WINDOW-CONTRACT § v0.7). Separate from
 // services/rift.ts so the public build, which never imports src/workshop/,
-// carries none of it (RS-10). Inside Tauri it invokes the fifteen commands;
+// carries none of it (RS-10). Inside Tauri it invokes the sixteen commands;
 // outside it serves the mock in ./mock.ts.
 
 import type { UninstallResultView } from "@/types/rift";
@@ -21,6 +21,9 @@ export interface WorkshopBackend {
   summonPawn(cols: number, rows: number): Promise<void>;
   /** Keystrokes for the summoning `runId`; the stone refuses them for any other. */
   pawnWrite(runId: string, data: string): Promise<void>;
+  /** 0.7.5: a pasted picture (base64) for the summoning `runId`; answers its
+   *  path in the workshop, relative to her working folder. */
+  pasteToPawn(runId: string, data: string): Promise<string>;
   pawnResize(cols: number, rows: number): Promise<void>;
   departPawn(): Promise<void>;
   answerPawnPlay(runId: string, heldRequestId: string, accept: boolean): Promise<PlayAnswered>;
@@ -51,6 +54,7 @@ async function tauriWorkshop(): Promise<WorkshopBackend> {
     getWorkshop: () => invoke("get_workshop"),
     summonPawn: (cols, rows) => invoke("summon_pawn", { cols, rows }),
     pawnWrite: (runId, data) => invoke("pawn_write", { runId, data }),
+    pasteToPawn: (runId, data) => invoke("paste_to_pawn", { runId, data }),
     pawnResize: (cols, rows) => invoke("pawn_resize", { cols, rows }),
     departPawn: () => invoke("depart_pawn"),
     answerPawnPlay: (runId, heldRequestId, accept) => invoke("answer_pawn_play", { runId, heldRequestId, accept }),

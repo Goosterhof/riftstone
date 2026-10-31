@@ -38,6 +38,7 @@ pub mod folder;
 pub mod host;
 pub mod mailbox;
 pub mod persona;
+pub mod picture;
 pub mod probe;
 pub mod put_back;
 pub mod session;

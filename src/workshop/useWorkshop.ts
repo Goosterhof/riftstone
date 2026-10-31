@@ -20,6 +20,8 @@ import {
 import { asRiftFailure, rift, type RiftFailure } from "@/services/rift";
 import { useLaunch } from "@/composables/useLaunch";
 import { workshop } from "./backend";
+import { base64Of } from "./hollowHands";
+import { PAWN_NAME } from "./words";
 
 export type OutputSink = (bytes: Uint8Array) => void;
 
@@ -273,6 +275,26 @@ async function flushPendingWrites(run: string): Promise<void> {
   }
 }
 
+/** 0.7.5: a picture the player pasted, for the run on show. The stone writes
+ *  it into the workshop and answers its path, which the hollow pastes into her
+ *  prompt only if that run is still the one here. `refused` is the stone's
+ *  sentence; `gone` names the path when the run changed while the picture travelled. */
+async function pastePicture(
+  picture: Blob,
+): Promise<{ path: string; run: string } | { refused: string } | { gone: string }> {
+  const run = runId.value;
+  if (!run || !hereNow(run)) return { refused: `${PAWN_NAME} is not here, so the picture was not pasted.` };
+  try {
+    const data = base64Of(new Uint8Array(await picture.arrayBuffer()));
+    const path = await (await workshop()).pasteToPawn(run, data);
+    return hereNow(run) ? { path, run } : { gone: path };
+  } catch (raw) {
+    const failed = asRiftFailure(raw);
+    // a pawn refusal's sentence is its `detail`; a plain refusal's message is its reason
+    return { refused: "detail" in failed.detail ? failed.detail.detail : failed.message };
+  }
+}
+
 async function resize(cols: number, rows: number): Promise<void> {
   await (await workshop()).pawnResize(cols, rows).catch(() => undefined);
 }
@@ -499,6 +521,7 @@ export function useWorkshop() {
     summon,
     write,
     writeFor,
+    pastePicture,
     resize,
     depart,
     runProbe,

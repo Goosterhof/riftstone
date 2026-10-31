@@ -2,7 +2,14 @@
 // or a click on Tamsin's terminal sends to her, and what stays with the player.
 
 import { describe, expect, it, vi } from "vitest";
-import { linkHint, makeHollowKeyHandler, makeHollowLinkActivate, openableLink } from "@/workshop/hollowHands";
+import {
+  base64Of,
+  linkHint,
+  makeHollowKeyHandler,
+  makeHollowLinkActivate,
+  openableLink,
+  pictureIn,
+} from "@/workshop/hollowHands";
 
 function key(k: string, mods: Partial<KeyboardEventInit> = {}, type = "keydown"): KeyboardEvent {
   return new KeyboardEvent(type, { key: k, ...mods });
@@ -173,5 +180,42 @@ describe("a link on her screen", () => {
     expect(linkHint(SIGN_IN)).toBe("Ctrl+click to open claude.com in your browser");
     expect(linkHint("http://claude.com")).toBe("");
     expect(openableLink("https://claude.com")?.host).toBe("claude.com");
+  });
+});
+
+/** A paste's clipboard as the webview hands it: text, and items that may be files. */
+function clipboard(text: string, items: { kind: string; type: string; file?: File }[]): DataTransfer {
+  return {
+    getData: (format: string) => (format === "text/plain" ? text : ""),
+    items: items.map((item) => ({ kind: item.kind, type: item.type, getAsFile: () => item.file ?? null })),
+  } as unknown as DataTransfer;
+}
+
+describe("a pasted picture (0.7.5)", () => {
+  const shot = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "image.png", { type: "image/png" });
+
+  it("should take a screenshot: a picture and no text", () => {
+    expect(pictureIn(clipboard("", [{ kind: "file", type: "image/png", file: shot }]))).toBe(shot);
+  });
+
+  it("should leave text to xterm, even when the clipboard holds a picture too", () => {
+    expect(pictureIn(clipboard("a copied line", [{ kind: "file", type: "image/png", file: shot }]))).toBeNull();
+  });
+
+  it("should leave a paste with no picture to xterm", () => {
+    expect(pictureIn(clipboard("", [{ kind: "string", type: "text/html" }]))).toBeNull();
+    expect(pictureIn(clipboard("", [{ kind: "file", type: "application/pdf", file: shot }]))).toBeNull();
+    expect(pictureIn(null)).toBeNull();
+  });
+
+  it("should carry megabytes as base64 without overflowing the stack", () => {
+    const bytes = new Uint8Array(3 * 1024 * 1024).map((_, i) => i % 251);
+    const encoded = base64Of(bytes);
+    const decoded = atob(encoded);
+    expect(decoded.length).toBe(bytes.length);
+    // every byte on both sides of each 32 KiB chunk's edge, and the ends
+    const edges = [0, 1, bytes.length - 1];
+    for (let edge = 0x8000; edge < bytes.length; edge += 0x8000) edges.push(edge - 1, edge);
+    for (const i of edges) expect(decoded.charCodeAt(i)).toBe(bytes[i]);
   });
 });

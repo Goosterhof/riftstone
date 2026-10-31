@@ -14,9 +14,9 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { useToasts } from "@/composables/useToasts";
 import { rift } from "@/services/rift";
-import { linkHint, makeHollowKeyHandler, makeHollowLinkActivate } from "./hollowHands";
+import { linkHint, makeHollowKeyHandler, makeHollowLinkActivate, pictureIn } from "./hollowHands";
 import { useWorkshop } from "./useWorkshop";
-import { TERMINAL_THEME } from "./words";
+import { PAWN_NAME, TERMINAL_THEME } from "./words";
 
 const { live = false } = defineProps<{
   /** A pawn is here: keystrokes cross. Otherwise the conversation is read-only. */
@@ -67,6 +67,34 @@ const activateLink = makeHollowLinkActivate({
     ),
 });
 
+/** 0.7.5: a paste that holds a picture and no text. xterm would drop it (it
+ *  pastes text only), and her Claude Code cannot reach this clipboard through
+ *  the fence, so the stone takes the picture into the workshop and the path
+ *  is pasted into her prompt instead. Caught before xterm's own listener. */
+function onPaste(event: ClipboardEvent): void {
+  const picture = pictureIn(event.clipboardData);
+  if (!picture) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (!live) {
+    useToasts().push("warn", `Summon ${PAWN_NAME} first: a picture is pasted to her, and she is not here.`);
+    return;
+  }
+  void w.pastePicture(picture).then((done) => {
+    if ("path" in done) {
+      term?.paste(`${done.path} `);
+      useToasts().push("rift", `The picture is in the workshop as ${done.path}, and its path is in her prompt.`);
+    } else if ("refused" in done) {
+      useToasts().push("ember", done.refused);
+    } else {
+      useToasts().push(
+        "warn",
+        `The picture is in the workshop as ${done.gone}, but that summoning ended, so its path was not typed.`,
+      );
+    }
+  });
+}
+
 function hover(_event: MouseEvent, text: string): void {
   if (screen.value) screen.value.title = linkHint(text);
 }
@@ -113,6 +141,7 @@ async function open(): Promise<void> {
       copyFailed: () => useToasts().push("warn", "The clipboard refused the selection."),
     }),
   );
+  screen.value.addEventListener("paste", onPaste, { capture: true });
   term.open(screen.value);
   refit();
   term.onData((data) => void w.write(data));
@@ -141,6 +170,7 @@ watch(
 onMounted(() => void open());
 onBeforeUnmount(() => {
   gone = true;
+  screen.value?.removeEventListener("paste", onPaste, { capture: true });
   observer?.disconnect();
   detach?.();
   term?.dispose();
