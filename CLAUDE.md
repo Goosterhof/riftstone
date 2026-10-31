@@ -451,6 +451,21 @@ Owed on the installed build: a build of Tamsin's appears on the bench with no ro
 watcher on Windows sees writes made from WSL through `/mnt/c` (the 9P server writes NTFS for her),
 and that is inferred, not yet measured.
 
+## THE BENCH folds — 0.7.4 (investor ask, 31 October 2026)
+
+*"can we make the tabs on the side also a dropdown? cause i do not always need to see that
+summoned with and inputs and stuff."* Each of the bench's four sections (SUMMONED WITH, INPUTS,
+BUILT, THE PAWN'S HANDS) now folds under its own head (`src/workshop/BenchSection.vue`, ▸ / ▾,
+the Undercroft's idiom). A folded head keeps a one-line summary on its own line
+(`Ask · default · Default`, `2 folders`, `3 builds`, `12 calls`), so a fold hides the controls,
+never the state. Every section starts open; the window remembers the folds the investor made
+(`src/workshop/benchFolds.ts`, the webview's storage: a window preference, so never `pawn.json`
+or the settings). Two rules keep a fold from hiding a press: THE PAWN'S HANDS stays open while
+Tamsin waits on one (a held Play), and a section stays open while it shows a refusal. Its toggle
+then says why in its title and does nothing, instead of seeming to do nothing.
+`tests/workshopRoom.spec.ts` § THE BENCH folds covers the fold, the summary, the memory across
+windows, unreadable storage and the held rule (mutation-checked). Rendered at 1320 from the mock.
+
 ## Known Limitations
 
 - **Manual save backups (v0.6.2)** cover every discovered account's original encrypted

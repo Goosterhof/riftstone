@@ -15,6 +15,7 @@ import { resetToasts } from "@/composables/useToasts";
 import { setWorkshopBackend } from "@/workshop/backend";
 import { createMockWorkshop, type MockWorkshop, type WorkshopScenario } from "@/workshop/mock";
 import { resetWorkshop, useWorkshop } from "@/workshop/useWorkshop";
+import { FOLDS_KEY, resetBenchFolds } from "@/workshop/benchFolds";
 import { MODE_CHOICES, NO_RECEIPT_TITLE, SESSION_LATER, TERMINAL_THEME } from "@/workshop/words";
 import WorkshopPage from "@/workshop/WorkshopPage.vue";
 
@@ -62,6 +63,8 @@ async function summoned(w: VueWrapper): Promise<void> {
 }
 
 beforeEach(() => {
+  localStorage.removeItem(FOLDS_KEY);
+  resetBenchFolds();
   resetWorkshop();
   resetToasts();
 });
@@ -339,5 +342,73 @@ describe("THE BENCH's SUMMONED WITH (0.7.2)", () => {
     await summoned(w);
     expect(w.text()).toContain(SESSION_LATER);
     expect(group(w, "model").attributes("title")).toBe(SESSION_LATER);
+  });
+});
+
+const toggle = (w: VueWrapper, section: string) => w.get(`[aria-controls="ws-${section}-body"]`);
+const body = (w: VueWrapper, section: string) => w.get(`#ws-${section}-body`);
+const isShown = (w: VueWrapper, section: string) => (body(w, section).element as HTMLElement).style.display !== "none";
+
+describe("THE BENCH folds (0.7.4)", () => {
+  it("should open every section until the investor folds one", async () => {
+    const w = await room();
+    for (const section of ["session", "inputs", "built", "hands"]) {
+      expect(toggle(w, section).attributes("aria-expanded")).toBe("true");
+      expect(isShown(w, section)).toBe(true);
+    }
+  });
+
+  it("should fold SUMMONED WITH to a line that still says how she is summoned", async () => {
+    const w = await room();
+    await toggle(w, "session").trigger("click");
+    expect(toggle(w, "session").attributes("aria-expanded")).toBe("false");
+    expect(isShown(w, "session")).toBe(false);
+    expect(toggle(w, "session").find(".bench__summary").text()).toBe("Ask · default · Default");
+    expect(isShown(w, "built")).toBe(true);
+    await toggle(w, "session").trigger("click");
+    expect(isShown(w, "session")).toBe(true);
+    expect(toggle(w, "session").find(".bench__summary").exists()).toBe(false);
+  });
+
+  it("should remember the folds the investor made in the next window", async () => {
+    const first = await room();
+    await toggle(first, "session").trigger("click");
+    await toggle(first, "inputs").trigger("click");
+    first.unmount();
+    wrapper = null;
+    expect(JSON.parse(localStorage.getItem(FOLDS_KEY) ?? "{}")).toStrictEqual({ session: true, inputs: true });
+
+    resetBenchFolds();
+    resetWorkshop();
+    const w = await room();
+    expect(isShown(w, "session")).toBe(false);
+    expect(isShown(w, "inputs")).toBe(false);
+    expect(toggle(w, "inputs").find(".bench__summary").text()).toBe("none");
+    expect(isShown(w, "built")).toBe(true);
+  });
+
+  it("should keep THE PAWN'S HANDS open while Tamsin waits on a press, and say why", async () => {
+    const w = await room();
+    await summoned(w);
+    await toggle(w, "hands").trigger("click");
+    expect(isShown(w, "hands")).toBe(false);
+    mock.controls.hold();
+    await settle();
+    expect(isShown(w, "hands")).toBe(true);
+    expect(w.text()).toContain("Tamsin asks to start the game.");
+    expect(toggle(w, "hands").attributes("aria-disabled")).toBe("true");
+    expect(toggle(w, "hands").attributes("title")).toBe("Open while Tamsin waits for your answer.");
+    // A press while held changes nothing, and the fold returns once she is answered.
+    await toggle(w, "hands").trigger("click");
+    await button(w, "Not now").trigger("click");
+    await settle();
+    expect(isShown(w, "hands")).toBe(false);
+  });
+
+  it("should ignore storage it cannot read", async () => {
+    localStorage.setItem(FOLDS_KEY, "not json");
+    resetBenchFolds();
+    const w = await room();
+    expect(isShown(w, "session")).toBe(true);
   });
 });

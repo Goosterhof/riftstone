@@ -1153,6 +1153,10 @@ the investor's own and may be shown.
   `The stone started the launch.`; whether the game runs is the watcher's line, apart.
 - A bring-through reports `landed` as soon as the stone does. The rescan it requests runs on,
   and its result arrives as `rift://library-changed`.
+- **The bench folds (0.7.4).** Each bench section folds under its own head and keeps a
+  one-line summary when folded. The window remembers the folds in its own storage; no command
+  carries them. THE PAWN'S HANDS cannot fold while a Play is held, nor any section while it shows
+  a refusal.
 - No per-row Undo and no log viewer in the hands: the contract carries neither. Put back is
   the undo. `Resume the last conversation` (Q20.8) is not offered, since it is unmeasured.
 - **The player's hands on the terminal (0.7.1, `src/workshop/hollowHands.ts`).** The installed

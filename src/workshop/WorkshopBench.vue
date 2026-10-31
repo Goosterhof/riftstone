@@ -6,10 +6,14 @@
 // Sections separated by space and hairlines, never nested cards. INPUTS
 // replaces WORKSHOP FILES (the contract lists no workshop files): the
 // read-only folders Tamsin may read, each checked by the stone on set.
+// 0.7.4: each section folds under its own head (BenchSection), remembered
+// by the window; a folded head keeps a one-line summary.
 import { computed, ref } from "vue";
 import RiftButton from "@/components/RiftButton.vue";
 import { rift } from "@/services/rift";
+import { counted } from "./benchFolds";
 import BenchDial from "./BenchDial.vue";
+import BenchSection from "./BenchSection.vue";
 import BuiltArtifact from "./BuiltArtifact.vue";
 import PawnHands from "./PawnHands.vue";
 import { useWorkshop } from "./useWorkshop";
@@ -36,6 +40,23 @@ const built = computed(() => {
 });
 const inputs = computed(() => w.view.value?.inputs ?? []);
 
+const label = <T extends string>(choices: { value: T; label: string }[], chosen: T | undefined): string =>
+  choices.find((c) => c.value === chosen)?.label ?? choices[0].label;
+/** What each folded head says in place of its body. */
+const summaries = computed(() => ({
+  session: [
+    label(MODE_CHOICES, session.value?.mode),
+    label(EFFORT_CHOICES, session.value?.effort),
+    label(MODEL_CHOICES, session.value?.model),
+  ].join(" · "),
+  inputs: counted(inputs.value.length, "folder", "folders", "none"),
+  built: counted(built.value.length, "build", "builds", "nothing yet"),
+  hands: counted(w.hands.value.length, "call", "calls", "nothing yet"),
+}));
+/** A section the investor must see stays open, and says why. */
+const REFUSAL_HOLDS = "Open while it shows the stone's refusal.";
+const WAITING_HOLDS = `Open while ${PAWN_NAME} waits for your answer.`;
+
 async function setInputs(next: string[]): Promise<void> {
   inputRefusal.value = null;
   const ok = await w.setInputs(next);
@@ -55,8 +76,12 @@ async function addFolder(): Promise<void> {
 
 <template>
   <div class="bench">
-    <section class="bench__section" aria-labelledby="ws-session">
-      <h2 id="ws-session" class="bench__head rs-inscription">SUMMONED WITH</h2>
+    <BenchSection
+      section="session"
+      title="SUMMONED WITH"
+      :summary="summaries.session"
+      :held="sessionRefusal ? REFUSAL_HOLDS : null"
+    >
       <BenchDial
         id="ws-mode"
         name="MODE"
@@ -84,10 +109,14 @@ async function addFolder(): Promise<void> {
       <p v-if="sessionRefusal" class="bench__refused" role="alert">{{ sessionRefusal }}</p>
       <p v-if="w.summoned.value" class="bench__note bench__note--now">{{ SESSION_LATER }}</p>
       <p class="bench__note">{{ SESSION_NOTE }}</p>
-    </section>
+    </BenchSection>
 
-    <section class="bench__section" aria-labelledby="ws-inputs">
-      <h2 id="ws-inputs" class="bench__head rs-inscription">INPUTS</h2>
+    <BenchSection
+      section="inputs"
+      title="INPUTS"
+      :summary="summaries.inputs"
+      :held="inputRefusal ? REFUSAL_HOLDS : null"
+    >
       <p v-if="!inputs.length" class="bench__note">{{ PAWN_NAME }} reads no folder outside the workshop.</p>
       <ul v-else class="inputs">
         <li v-for="path in inputs" :key="path" class="inputs__row">
@@ -106,23 +135,26 @@ async function addFolder(): Promise<void> {
         <RiftButton size="sm" :busy="picking" @click="addFolder">Add a folder…</RiftButton>
       </div>
       <p v-if="inputRefusal" class="bench__refused" role="alert">{{ inputRefusal }}</p>
-    </section>
+    </BenchSection>
 
-    <section class="bench__section" aria-labelledby="ws-built">
-      <h2 id="ws-built" class="bench__head rs-inscription">BUILT</h2>
+    <BenchSection section="built" title="BUILT" :summary="summaries.built">
       <p v-if="!built.length" class="bench__note">
         Nothing is built yet. A finished build is a ZIP with its receipt beside it.
       </p>
       <ul v-else class="built-list">
         <BuiltArtifact v-for="a in built" :key="a.name" :artifact="a" />
       </ul>
-    </section>
+    </BenchSection>
 
-    <section class="bench__section" aria-labelledby="ws-hands">
-      <h2 id="ws-hands" class="bench__head rs-inscription">THE PAWN'S HANDS</h2>
+    <BenchSection
+      section="hands"
+      title="THE PAWN'S HANDS"
+      :summary="summaries.hands"
+      :held="w.held.value ? WAITING_HOLDS : null"
+    >
       <p v-if="!w.hands.value.length" class="bench__note">The stone has answered nothing for {{ PAWN_NAME }} yet.</p>
       <PawnHands v-else />
-    </section>
+    </BenchSection>
   </div>
 </template>
 
@@ -130,21 +162,6 @@ async function addFolder(): Promise<void> {
 .bench {
   display: flex;
   flex-direction: column;
-}
-.bench__section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--rs-space-2);
-  padding: var(--rs-space-4) var(--rs-space-5);
-  border-bottom: 1px solid var(--rs-edge);
-}
-.bench__section:last-child {
-  border-bottom: 0;
-}
-.bench__head {
-  margin: 0;
-  color: var(--rs-muted);
-  font-size: 14px;
 }
 .bench__note {
   margin: 0;
