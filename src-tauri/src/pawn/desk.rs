@@ -174,6 +174,16 @@ struct DeskState {
     last: Option<PawnStateView>,
 }
 
+/// The watch on the workshop's `dist\` (0.7.3): it stands on the workshop
+/// folder itself, which outlives every `dist\`, and counts only what happens
+/// at or under `dist`. `born` is the workshop's own creation time, so a
+/// workshop folder that was replaced is watched afresh at the next look.
+struct DistWatch {
+    workshop: PathBuf,
+    born: Option<std::time::SystemTime>,
+    _watcher: LibraryWatcher,
+}
+
 /// The Workshop's desk: one per stone.
 pub struct Desk {
     settings_path: PathBuf,
@@ -186,7 +196,7 @@ pub struct Desk {
     /// The watcher on the workshop's `dist\` (0.7.3): 0.7.0–0.7.2 sent
     /// `rift://workshop-changed` only after a bring-through, so a build
     /// Tamsin finished never reached the room until it was entered again.
-    dist_watcher: Mutex<Option<LibraryWatcher>>,
+    dist_watcher: Mutex<Option<DistWatch>>,
     me: Weak<Desk>,
 }
 
@@ -467,11 +477,15 @@ impl Desk {
     }
 
     /// Watch the workshop's `dist\`, so a build Tamsin writes reaches the
-    /// window as `rift://workshop-changed` (WINDOW-CONTRACT § v0.7). Armed
-    /// once the folder is there: by `get_workshop` (the room's first look)
-    /// and by each summon, which makes it. A `dist\` that went is let go,
-    /// and the next look arms a watcher on the one made again. Off where the
-    /// spine watches nothing (`watch_library`, the benches' tests).
+    /// window as `rift://workshop-changed` (WINDOW-CONTRACT § v0.7). The watch
+    /// stands on the workshop folder (the stone's own, the fence's mount
+    /// point, which she cannot replace) and counts only changes at or under
+    /// `dist`, so a `dist\` deleted, renamed away or made again is followed
+    /// with no further look (the Heretic's DW1 on PR #15). Armed by
+    /// `get_workshop` once the workshop is there and by each summon, which
+    /// makes it; armed again only for a workshop folder that was replaced.
+    /// Off where the spine watches nothing (`watch_library`, the benches'
+    /// tests).
     pub fn watch_dist(&self, state: &AppState) {
         if !state.config.watch_library {
             return;
@@ -479,23 +493,33 @@ impl Desk {
         let Some(workshop) = workshop_dir(state.library_dir()) else {
             return;
         };
-        let dist = workshop.join("dist");
-        let mut watcher = lock(&self.dist_watcher);
-        if !dist.is_dir() {
-            *watcher = None;
+        let mut watch = lock(&self.dist_watcher);
+        if !workshop.is_dir() {
+            *watch = None;
             return;
         }
-        if watcher.is_some() {
+        let born = std::fs::metadata(&workshop)
+            .and_then(|meta| meta.created())
+            .ok();
+        if watch
+            .as_ref()
+            .is_some_and(|w| w.workshop == workshop && w.born == born)
+        {
             return;
         }
         let events = Arc::clone(&state.events);
-        *watcher = watch::arm_labelled(
-            &dist,
-            &[],
+        *watch = watch::arm_within(
+            &workshop,
+            &workshop.join("dist"),
             DIST_QUIET,
             "the workshop's dist folder",
             move || events.changed(WORKSHOP_CHANGED),
-        );
+        )
+        .map(|watcher| DistWatch {
+            workshop,
+            born,
+            _watcher: watcher,
+        });
     }
 
     /// Is the workshop's `dist\` watched?
