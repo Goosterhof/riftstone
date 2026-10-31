@@ -370,6 +370,61 @@ describe("THE BENCH's settings, as Tauri answers them", () => {
     expect(w.view.value?.session).toStrictEqual({ mode: "acceptEdits", effort: "xhigh", model: "opus" });
   });
 
+  /** The Heretic's BM1 (PR #14): a press while an earlier save is still on its
+   *  way must not write the earlier press's field back to what it was. */
+  it("should keep both of two quick presses when the first save is still on its way", async () => {
+    mock = createMockWorkshop({ scenario: "contained", beat: 0, script: false });
+    const tauri = asTauri(mock);
+    let release = ignore;
+    let held = true;
+    setWorkshopBackend({
+      ...tauri,
+      setPawnSession: (session) => {
+        if (!held) return tauri.setPawnSession(session);
+        held = false;
+        return new Promise<void>((resolve) => {
+          release = () => resolve(tauri.setPawnSession(session));
+        });
+      },
+    });
+    const w = useWorkshop();
+    await w.load();
+    const edits = w.setSession({ mode: "acceptEdits" });
+    const xhigh = w.setSession({ effort: "xhigh" });
+    await flushPromises();
+    release();
+    expect(await edits).toBe(true);
+    expect(await xhigh).toBe(true);
+    const sent = mock.controls.calls.filter((c) => c.cmd === "set_pawn_session").map((c) => c.args[0]);
+    expect(sent).toStrictEqual([
+      { mode: "acceptEdits", effort: "default", model: "default" },
+      { mode: "acceptEdits", effort: "xhigh", model: "default" },
+    ]);
+    await w.load();
+    expect(w.view.value?.session).toStrictEqual({ mode: "acceptEdits", effort: "xhigh", model: "default" });
+  });
+
+  it("should build the next press on the last saved session when one save is refused", async () => {
+    mock = createMockWorkshop({ scenario: "contained", beat: 0, script: false });
+    const tauri = asTauri(mock);
+    let refuseNext = false;
+    setWorkshopBackend({
+      ...tauri,
+      setPawnSession: (session) =>
+        refuseNext
+          ? ((refuseNext = false), Promise.reject(new Error("The stone could not write pawn.json.")))
+          : tauri.setPawnSession(session),
+    });
+    const w = useWorkshop();
+    await w.load();
+    expect(await w.setSession({ mode: "plan" })).toBe(true);
+    refuseNext = true;
+    expect(await w.setSession({ model: "opus" })).toBe(false);
+    expect(w.failure.value).not.toBeNull();
+    expect(await w.setSession({ effort: "low" })).toBe(true);
+    expect(w.view.value?.session).toStrictEqual({ mode: "plan", effort: "low", model: "default" });
+  });
+
   it("should keep an added input when the stone answers null, and still show a refusal", async () => {
     mock = createMockWorkshop({ scenario: "contained", beat: 0, script: false });
     setWorkshopBackend(asTauri(mock));

@@ -282,13 +282,26 @@ async function runProbe(): Promise<void> {
 }
 
 /** Set one part of her session; the stone keeps the whole in `pawn.json`. */
-async function setSession(part: Partial<PawnSession>): Promise<boolean> {
-  const current = view.value?.session;
-  if (!current) return false;
-  const next = { ...current, ...part };
-  const done = await attemptDone(async () => (await workshop()).setPawnSession(next));
-  if (done && view.value) view.value = { ...view.value, session: next };
-  return done;
+/** The bench's saves, one at a time. Each press merges its part onto the
+ *  session the stone last confirmed WHEN ITS TURN COMES, never onto a copy
+ *  taken at the press: two quick presses (Edits, then xhigh) otherwise both
+ *  start from Ask, and the second save writes Ask back over the first (the
+ *  Heretic's BM1 on PR #14). A failed save leaves the last confirmed session
+ *  for the next one to build on. */
+let sessionSaves: Promise<unknown> = Promise.resolve();
+
+function setSession(part: Partial<PawnSession>): Promise<boolean> {
+  const save = async (): Promise<boolean> => {
+    const current = view.value?.session;
+    if (!current) return false;
+    const next = { ...current, ...part };
+    const done = await attemptDone(async () => (await workshop()).setPawnSession(next));
+    if (done && view.value) view.value = { ...view.value, session: next };
+    return done;
+  };
+  const turn = sessionSaves.then(save, save);
+  sessionSaves = turn;
+  return turn;
 }
 
 async function setInputs(next: string[]): Promise<boolean> {
@@ -436,6 +449,7 @@ async function putBack(plan: PutBackPlan): Promise<boolean> {
 /** For specs: forget everything, as a fresh window would. */
 export function resetWorkshop(): void {
   view.value = null;
+  sessionSaves = Promise.resolve();
   handsByRun.value = {};
   outputs.clear();
   retired.clear();
