@@ -13,8 +13,8 @@ use crate::dto::{UninstallPlanView, UninstallResultView};
 use crate::pawn::bring::{self, BringOutcome, BringPlan, Conflict};
 use crate::pawn::desk::{workshop_dir, Desk, FenceView, PawnStateView, WORKSHOP_CHANGED};
 use crate::pawn::mailbox::RunLedger;
-use crate::pawn::persona::Voice;
 use crate::pawn::put_back::{self, PutBack};
+use crate::pawn::session::PawnSession;
 use crate::state::AppState;
 
 pub type DeskState<'a> = tauri::State<'a, Arc<Desk>>;
@@ -56,7 +56,7 @@ pub struct WorkshopView {
     pub artifacts: Vec<ArtifactView>,
     pub pawn: PawnStateView,
     pub fence: FenceView,
-    pub voice: Voice,
+    pub session: PawnSession,
     pub inputs: Vec<String>,
 }
 
@@ -114,7 +114,7 @@ pub fn get_workshop_impl(state: &AppState, desk: &Desk) -> Result<WorkshopView, 
         artifacts: artifacts(&workshop, state.library_dir()),
         pawn: desk.pawn_state(),
         fence: desk.fence_view(state),
-        voice: settings.voice,
+        session: settings.session,
         inputs: settings.inputs,
     })
 }
@@ -363,12 +363,12 @@ pub async fn open_workshop_folder(spine: Spine<'_>, desk: DeskState<'_>) -> Resu
 }
 
 #[tauri::command]
-pub async fn set_pawn_voice(
+pub async fn set_pawn_session(
     spine: Spine<'_>,
     desk: DeskState<'_>,
-    voice: Voice,
+    session: PawnSession,
 ) -> Result<(), RiftError> {
-    with_desk(&spine, &desk, move |_, desk| desk.set_voice(voice)).await
+    with_desk(&spine, &desk, move |_, desk| desk.set_session(session)).await
 }
 
 #[tauri::command]
@@ -397,7 +397,7 @@ pub const COMMANDS: [&str; 15] = [
     "plan_put_back",
     "put_back",
     "open_workshop_folder",
-    "set_pawn_voice",
+    "set_pawn_session",
     "set_pawn_inputs",
     "run_fence_probe",
 ];

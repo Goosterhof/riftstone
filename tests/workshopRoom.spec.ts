@@ -15,7 +15,7 @@ import { resetToasts } from "@/composables/useToasts";
 import { setWorkshopBackend } from "@/workshop/backend";
 import { createMockWorkshop, type MockWorkshop, type WorkshopScenario } from "@/workshop/mock";
 import { resetWorkshop, useWorkshop } from "@/workshop/useWorkshop";
-import { NO_RECEIPT_TITLE, TERMINAL_THEME } from "@/workshop/words";
+import { MODE_CHOICES, NO_RECEIPT_TITLE, SESSION_LATER, TERMINAL_THEME } from "@/workshop/words";
 import WorkshopPage from "@/workshop/WorkshopPage.vue";
 
 /** The hollow without xterm: a fitted 80×24, a focus that does nothing. */
@@ -280,5 +280,64 @@ describe("the fence's record", () => {
     expect(three.classes()).not.toContain("is-broken");
     expect(last.text()).toContain("broker: a bad name, 64 KiB + 1");
     expect(w.text()).toContain("the last probe could not show step 3");
+  });
+});
+
+const group = (w: VueWrapper, name: string) => w.find(`[role=radiogroup][aria-labelledby="ws-${name}"]`);
+const chosen = (w: VueWrapper, name: string) => group(w, name).find('[aria-checked="true"]').text();
+const says = (w: VueWrapper, name: string) => w.find(`#ws-${name}-says`).text();
+
+describe("THE BENCH's SUMMONED WITH (0.7.2)", () => {
+  it("should carry mode, effort and model, and no voice dial", async () => {
+    const w = await room();
+    expect(w.find("#ws-session").text()).toBe("SUMMONED WITH");
+    expect(w.text()).not.toContain("VOICE");
+    expect(w.text()).not.toContain("Sparing");
+    expect(chosen(w, "mode")).toBe("Ask");
+    expect(chosen(w, "effort")).toBe("default");
+    expect(chosen(w, "model")).toBe("Default");
+    expect(says(w, "mode")).toBe(
+      "She asks before each file edit. Most shell commands run unasked, inside her sandbox.",
+    );
+  });
+
+  it("should say what the chosen setting does, and send it to the stone", async () => {
+    const w = await room();
+    await group(w, "mode")
+      .findAll("button")
+      .find((b) => b.text() === "Edits")
+      ?.trigger("click");
+    await settle();
+    expect(chosen(w, "mode")).toBe("Edits");
+    expect(says(w, "mode")).toBe(
+      "Her file edits in the workshop go through unasked, like most sandboxed shell commands.",
+    );
+    await group(w, "effort")
+      .findAll("button")
+      .find((b) => b.text() === "xhigh")
+      ?.trigger("click");
+    await settle();
+    const sent = mock.controls.calls.filter((c) => c.cmd === "set_pawn_session").map((c) => c.args[0]);
+    expect(sent).toStrictEqual([
+      { mode: "acceptEdits", effort: "default", model: "default" },
+      { mode: "acceptEdits", effort: "xhigh", model: "default" },
+    ]);
+  });
+
+  it("should rove with the arrows and wrap at the ends", async () => {
+    const w = await room();
+    const ask = group(w, "mode").find('[aria-checked="true"]');
+    await ask.trigger("keydown", { key: "ArrowLeft" });
+    await settle();
+    expect(chosen(w, "mode")).toBe(MODE_CHOICES.at(-1)?.label);
+    expect(document.activeElement).toBe(group(w, "mode").findAll("button").at(-1)?.element);
+  });
+
+  it("should say a change waits for the next summon while she is here", async () => {
+    const w = await room();
+    expect(w.text()).not.toContain(SESSION_LATER);
+    await summoned(w);
+    expect(w.text()).toContain(SESSION_LATER);
+    expect(group(w, "model").attributes("title")).toBe(SESSION_LATER);
   });
 });

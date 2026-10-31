@@ -26,6 +26,7 @@ use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, Master
 use crate::pawn::fence::{bwrap_argv, wsl_args, FenceCommand, FencePlan, FenceRefusal};
 use crate::pawn::folder::MailFolder;
 use crate::pawn::mailbox::{request_id_of, Answer, Broker, Handled, Outcome, Retired};
+use crate::pawn::session::PawnSession;
 
 /// How often the mailbox loop looks for requests.
 const MAILBOX_POLL: Duration = Duration::from_millis(100);
@@ -47,9 +48,13 @@ pub struct Launch {
 
 impl Launch {
     /// The stone's launch on Windows: `wsl.exe … /bin/sh -c 'exec bwrap …'`,
-    /// with `WSLENV` emptied (RS-9.1, RS-9.5).
-    pub fn through_wsl(distro: &str, plan: &FencePlan) -> Result<Launch, FenceRefusal> {
-        let argv = bwrap_argv(plan, &FenceCommand::Pawn)?;
+    /// with `WSLENV` emptied (RS-9.1, RS-9.5), and the bench's session.
+    pub fn through_wsl(
+        distro: &str,
+        plan: &FencePlan,
+        session: PawnSession,
+    ) -> Result<Launch, FenceRefusal> {
+        let argv = bwrap_argv(plan, &FenceCommand::Pawn(session))?;
         Ok(Launch {
             program: "wsl.exe".into(),
             args: wsl_args(distro, plan, &argv)?,
@@ -59,8 +64,8 @@ impl Launch {
 
     /// The same fence on the Linux bench: the very script `wsl.exe` would be
     /// handed, run by `/bin/sh` itself.
-    pub fn on_bench(plan: &FencePlan) -> Result<Launch, FenceRefusal> {
-        let argv = bwrap_argv(plan, &FenceCommand::Pawn)?;
+    pub fn on_bench(plan: &FencePlan, session: PawnSession) -> Result<Launch, FenceRefusal> {
+        let argv = bwrap_argv(plan, &FenceCommand::Pawn(session))?;
         let mut args = wsl_args("bench", plan, &argv)?;
         let script = args.pop().unwrap_or_default();
         Ok(Launch {
@@ -657,8 +662,8 @@ mod tests {
             run_id: RUN.into(),
             inputs: Vec::new(),
         };
-        let wsl = Launch::through_wsl("Ubuntu-24.04", &plan).unwrap();
-        let bench = Launch::on_bench(&plan).unwrap();
+        let wsl = Launch::through_wsl("Ubuntu-24.04", &plan, PawnSession::default()).unwrap();
+        let bench = Launch::on_bench(&plan, PawnSession::default()).unwrap();
         assert_eq!(wsl.program, "wsl.exe");
         assert_eq!(wsl.env, [("WSLENV".to_string(), String::new())]);
         assert_eq!(wsl.args.last(), bench.args.last(), "the same fence script");
@@ -715,7 +720,7 @@ mod tests {
     fn bench_summon_the_real_fence() {
         use crate::pawn::fence::FencePlan;
         use crate::pawn::host::{install_files, relay_files, survey, LocalSh};
-        use crate::pawn::persona::{persona, Voice};
+        use crate::pawn::persona::persona;
 
         let root = std::env::var("RIFT_BENCH_SUMMON_ROOT").expect("RIFT_BENCH_SUMMON_ROOT");
         let survey = survey(&LocalSh, None).expect("the bench distro is ready");
@@ -735,7 +740,7 @@ mod tests {
         };
         install_files(
             &LocalSh,
-            &relay_files(&plan, &persona(Voice::Sparing, &workshop)),
+            &relay_files(&plan, &persona(&workshop)),
             &[plan.claude_config()],
         )
         .unwrap();
@@ -747,7 +752,7 @@ mod tests {
             crate::pawn::mailbox::now,
         ));
         let pawn = summon(
-            &Launch::on_bench(&plan).unwrap(),
+            &Launch::on_bench(&plan, PawnSession::default()).unwrap(),
             (100, 30),
             broker,
             &RunFolders {

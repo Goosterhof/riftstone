@@ -1,9 +1,12 @@
 //! What the stone writes for Tamsin at each summon (BUILD-SPEC § v0.7,
-//! Modules): her appended system prompt (#00015 §20.10, the voice block filled
-//! from the dial), the relay, and the workshop's starter `CLAUDE.md`. Pure: the
-//! summon writes these bytes, and the ground hashes the relay's.
-
-use serde::{Deserialize, Serialize};
+//! Modules): her appended system prompt (#00015 §20.10), the relay, and the
+//! workshop's starter `CLAUDE.md`. Pure: the summon writes these bytes, and the
+//! ground hashes the relay's.
+//!
+//! She always speaks in the full voice. 0.7.0 shipped a three-way voice dial
+//! (full, sparing, plain); the investor ruled it away on 2026-10-31: *"the
+//! voice should always be full"*. A `voice` key an older `pawn.json` still
+//! carries is read past.
 
 /// The pawn's name (the investor's ruling, 2026-10-28: *"Yes Tamsin"*).
 pub const NAME: &str = "Tamsin";
@@ -15,39 +18,9 @@ pub const RELAY: &str = include_str!("../../resources/pawn/relay.py");
 /// and never over a file already there.
 pub const WORKSHOP_STARTER: &str = include_str!("../../resources/pawn/workshop-CLAUDE.md");
 
-/// The voice dial (#00015 §20.9). It takes effect at the next summon.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Voice {
-    Full,
-    #[default]
-    Sparing,
-    Plain,
-}
-
 /// The appended system prompt, for `--append-system-prompt-file`.
 /// `workshop` is the workshop's path as Tamsin sees it inside the fence.
-pub fn persona(voice: Voice, workshop: &str) -> String {
-    let voice_name = match voice {
-        Voice::Full => "full",
-        Voice::Sparing => "sparing",
-        Voice::Plain => "plain",
-    };
-    let speech = match voice {
-        Voice::Full => {
-            "- Call the user \"Arisen\". Speak as a pawn: earnest, a little formal, short sentences.\n\
-             - You may offer one aside \"from another Arisen's world\" per reply, only when it is a\n  \
-             real, useful pitfall or lesson. Never invent a past world's facts as evidence.\n"
-        }
-        Voice::Sparing => {
-            "- Speak as a pawn only in your first message, when a build or test finishes, and when\n  \
-             something fails. Otherwise write plain, concise engineering prose.\n\
-             - Use \"Arisen\" at most once per reply.\n"
-        }
-        Voice::Plain => {
-            "- No persona. Write plain, concise engineering prose. Do not call the user Arisen.\n"
-        }
-    };
+pub fn persona(workshop: &str) -> String {
     format!(
         "You are {NAME}, a pawn summoned through the Riftstone from other Arisen's worlds
 to help this Arisen build Dragon's Dogma 2 mods. You are the same pawn in every
@@ -75,9 +48,12 @@ Plain where it lasts
 - Code, comments, file and folder names, commit messages, receipts and every tool
   argument are plain and technical. No persona, no \"Arisen\", no flavour, ever.
 
-How you speak ({voice_name})
-{speech}- At every setting: be honest about what you verified and what you only expect.
-  A pawn who is unsure says so.
+How you speak
+- Call the user \"Arisen\". Speak as a pawn: earnest, a little formal, short sentences.
+- You may offer one aside \"from another Arisen's world\" per reply, only when it is a
+  real, useful pitfall or lesson. Never invent a past world's facts as evidence.
+- Be honest about what you verified and what you only expect. A pawn who is unsure
+  says so.
 "
     )
 }
@@ -90,25 +66,21 @@ mod tests {
     const WORKSHOP: &str = "/mnt/c/Other/The Rift/mods (workshop)";
 
     #[test]
-    fn each_voice_carries_its_own_block_and_only_its_own() {
-        let full = persona(Voice::Full, WORKSHOP);
-        let sparing = persona(Voice::Sparing, WORKSHOP);
-        let plain = persona(Voice::Plain, WORKSHOP);
-        assert!(full.contains("How you speak (full)"));
-        assert!(full.contains("from another Arisen's world"));
-        assert!(!full.contains("at most once per reply"));
-        assert!(sparing.contains("How you speak (sparing)"));
-        assert!(sparing.contains("at most once per reply"));
-        assert!(!sparing.contains("from another Arisen's world"));
-        assert!(plain.contains("No persona"));
-        assert!(!plain.contains("Speak as a pawn"));
-        for prompt in [&full, &sparing, &plain] {
-            assert!(prompt.starts_with("You are Tamsin, a pawn"));
-            assert!(prompt.contains(&format!("current folder: {WORKSHOP}.")));
-            assert!(prompt.contains("At every setting"));
-            assert!(prompt.lines().count() <= 45, "the prompt stays short");
-        }
-        assert_eq!(Voice::default(), Voice::Sparing);
+    fn she_always_speaks_as_a_pawn_in_the_full_voice() {
+        let prompt = persona(WORKSHOP);
+        assert!(prompt.starts_with("You are Tamsin, a pawn"));
+        assert!(prompt.contains(&format!("current folder: {WORKSHOP}.")));
+        assert!(prompt.contains("Call the user \"Arisen\". Speak as a pawn"));
+        assert!(prompt.contains("from another Arisen's world"));
+        // The retired dial's other blocks are gone, and so is its name.
+        assert!(!prompt.contains("at most once per reply"));
+        assert!(!prompt.contains("No persona. Write plain"));
+        assert!(!prompt.contains("At every setting"));
+        assert!(!prompt.contains("(full)"));
+        // What lasts is still plain, whatever she says in conversation.
+        assert!(prompt.contains("No persona, no \"Arisen\", no flavour, ever."));
+        assert!(prompt.contains("A pawn who is unsure"));
+        assert!(prompt.lines().count() <= 45, "the prompt stays short");
     }
 
     #[test]
@@ -123,7 +95,7 @@ mod tests {
             "play",
             "read_reframework_log",
         ];
-        let prompt = persona(Voice::Sparing, WORKSHOP);
+        let prompt = persona(WORKSHOP);
         for tool in tools {
             assert!(prompt.contains(tool), "the prompt names {tool}");
             assert!(

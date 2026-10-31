@@ -1,6 +1,6 @@
 //! THE WORKSHOP's desk (WINDOW-CONTRACT § v0.7): the one live summoning, the
-//! pawn's settings (`pawn.json`: the voice, the read-only inputs, the
-//! distro), and the commands' work, off the async runtime.
+//! pawn's settings (`pawn.json`: the bench's session, the read-only inputs,
+//! the distro), and the commands' work, off the async runtime.
 //!
 //! The desk is Tauri-managed state of its own, beside the spine, so neither
 //! `AppState` nor the window's `Settings` carry anything of the pawn in a
@@ -23,8 +23,9 @@ use crate::pawn::fence::{
 };
 use crate::pawn::host::{install_files, relay_files, survey, Shell};
 use crate::pawn::mailbox::{now, Broker, Handled, Outcome, PlayRefusal};
-use crate::pawn::persona::{persona, Voice, RELAY, WORKSHOP_STARTER};
+use crate::pawn::persona::{persona, RELAY, WORKSHOP_STARTER};
 use crate::pawn::probe::{self, FenceRecord};
+use crate::pawn::session::PawnSession;
 use crate::pawn::summon::{summon, Launch, RunFolders, Summoning, Watcher};
 use crate::persist;
 use crate::state::AppState;
@@ -38,7 +39,9 @@ pub const WORKSHOP_CHANGED: &str = "rift://workshop-changed";
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PawnSettings {
-    pub voice: Voice,
+    /// Her Claude Code's mode, effort and model (0.7.2), passed at each
+    /// summon. A `voice` key from 0.7.0–0.7.1 is read past.
+    pub session: PawnSession,
     /// Windows folders mounted read-only at `/inputs/<n>`, validated on set
     /// and again at every summon.
     pub inputs: Vec<String>,
@@ -133,6 +136,7 @@ struct Prepared {
     run_dir: PathBuf,
     run_id: String,
     ground: Ground,
+    session: PawnSession,
 }
 
 /// `FenceView` (WINDOW-CONTRACT § v0.7, Types).
@@ -296,13 +300,21 @@ fn shell(_distro: Option<String>) -> Box<dyn Shell> {
 }
 
 #[cfg(windows)]
-fn launch(distro: &str, plan: &FencePlan) -> Result<Launch, crate::pawn::fence::FenceRefusal> {
-    Launch::through_wsl(distro, plan)
+fn launch(
+    distro: &str,
+    plan: &FencePlan,
+    session: PawnSession,
+) -> Result<Launch, crate::pawn::fence::FenceRefusal> {
+    Launch::through_wsl(distro, plan, session)
 }
 
 #[cfg(not(windows))]
-fn launch(_distro: &str, plan: &FencePlan) -> Result<Launch, crate::pawn::fence::FenceRefusal> {
-    Launch::on_bench(plan)
+fn launch(
+    _distro: &str,
+    plan: &FencePlan,
+    session: PawnSession,
+) -> Result<Launch, crate::pawn::fence::FenceRefusal> {
+    Launch::on_bench(plan, session)
 }
 
 fn no_fence(detail: impl Into<String>) -> RiftError {
@@ -449,10 +461,10 @@ impl Desk {
         Ok(())
     }
 
-    /// `set_pawn_voice`: saved now, in effect at the next summon.
-    pub fn set_voice(&self, voice: Voice) -> Result<(), RiftError> {
+    /// `set_pawn_session`: saved now, in effect at the next summon.
+    pub fn set_session(&self, session: PawnSession) -> Result<(), RiftError> {
         let mut settings = self.settings();
-        settings.voice = voice;
+        settings.session = session;
         self.save_settings(settings)
     }
 
@@ -622,7 +634,7 @@ impl Desk {
         )?;
         install_files(
             shell.as_ref(),
-            &relay_files(&plan, &persona(settings.voice, &workshop_fence)),
+            &relay_files(&plan, &persona(&workshop_fence)),
             &[plan.claude_config()],
         )
         .map_err(no_fence)?;
@@ -636,6 +648,7 @@ impl Desk {
             run_dir,
             run_id,
             ground,
+            session: settings.session,
         })
     }
 
@@ -664,9 +677,11 @@ impl Desk {
             plan,
             run_dir,
             run_id,
+            session,
             ..
         } = self.prepare(state)?;
-        let launch = launch(&survey.host.distro, &plan).map_err(|refusal| no_fence(refusal.0))?;
+        let launch =
+            launch(&survey.host.distro, &plan, session).map_err(|refusal| no_fence(refusal.0))?;
 
         let errands = Arc::new(StoneErrands::new(Arc::clone(state)));
         let broker = Arc::new(Broker::new(&run_id, errands, self.runs(), now));
@@ -1817,14 +1832,41 @@ mod tests {
     }
 
     #[test]
-    fn the_settings_keep_their_voice_and_inputs() {
+    fn the_settings_keep_the_bench_session() {
+        use crate::pawn::session::{PawnEffort, PawnMode, PawnModel};
         let dir = tempfile::tempdir().unwrap();
         let desk = Desk::new(dir.path());
-        assert_eq!(desk.settings().voice, Voice::Sparing);
-        desk.set_voice(Voice::Full).unwrap();
+        assert_eq!(desk.settings().session, PawnSession::default());
+        let chosen = PawnSession {
+            mode: PawnMode::AcceptEdits,
+            effort: PawnEffort::Xhigh,
+            model: PawnModel::Opus,
+        };
+        desk.set_session(chosen).unwrap();
         let again = Desk::new(dir.path());
-        assert_eq!(again.settings().voice, Voice::Full, "saved in pawn.json");
+        assert_eq!(again.settings().session, chosen, "saved in pawn.json");
         assert_eq!(again.pawn_state().state, "absent");
+    }
+
+    /// The investor's own `pawn.json` from 0.7.1 carries the retired voice:
+    /// it still opens, with its inputs, and the session starts at default.
+    #[test]
+    fn a_pawn_json_from_0_7_1_still_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("pawn.json"),
+            r#"{ "voice": "sparing", "inputs": ["C:\\Extracts"], "distro": null }"#,
+        )
+        .unwrap();
+        let desk = Desk::new(dir.path());
+        assert_eq!(desk.settings().inputs, [r"C:\Extracts"]);
+        assert_eq!(desk.settings().session, PawnSession::default());
+        desk.set_session(PawnSession::default()).unwrap();
+        let saved = std::fs::read_to_string(dir.path().join("pawn.json")).unwrap();
+        assert!(
+            !saved.contains("voice"),
+            "the retired key is not written back"
+        );
     }
 
     /// The Heretic's WD2: a pawn whose process exits by itself is departed

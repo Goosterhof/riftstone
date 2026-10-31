@@ -399,6 +399,37 @@ warnings. The installer build uses that candidate; installed button presses and
 native display acceptance remain separate. Later journal/frame-only edits do not
 change executable source.
 
+## THE WORKSHOP's bench remembers — 0.7.2 (investor report, 31 October 2026)
+
+*"the workshop does not remember the mode and the effort level, it goes back to default always,
+and it is not clear what the voice does, nor can i change it."* Three causes, each measured:
+
+- **Mode and effort.** The stone launches Tamsin `--restricted`, and restricted Claude Code reads
+  no user settings file: her `/effort xhigh` was saved in her config dir's `settings.json` and never
+  read again. The argv also pinned `--permission-mode default`. THE BENCH's **SUMMONED WITH** now
+  carries MODE (Ask, Edits, Plan, Auto), EFFORT (`default`, then Claude Code's own `low` to `max`) and MODEL (Default, Fable, Opus,
+  Sonnet, Haiku), saved in `pawn.json` and passed as flags at each summon (`pawn/session.rs`).
+  The line under each dial says what the chosen setting does. Changed in her terminal, a setting
+  lasts until she departs. Bypass and `dontAsk` stay unreachable (RS-9.6, widened by the
+  investor for `acceptEdits` and `auto`). The fence's ground hashes the default session's argv,
+  so a press never stales a probe record.
+- **The voice.** Ruled away: *"the voice should always be full"*. The dial and `set_pawn_voice`
+  are gone; she speaks in the full block always, and `set_pawn_session` takes the command's place.
+- **"Pressing did nothing."** Tauri resolves a command returning `()` as `null`, and the store's
+  `attempt()` returns `null` for a failure too. Every voice press and every **Add a folder…** was
+  SAVED in `pawn.json` while the window read it as refused and left the bench unchanged. The mock
+  answers `undefined`, so every spec passed. Commands that answer nothing now go through
+  `attemptDone()`, and `tests/workshopStore.spec.ts` drives the store through a backend that
+  answers `null` (it fails on the old reading, checked by mutation). The Heretic's review (BM1)
+  then found two ways a press could still be lost: two quick presses each starting from the old
+  session, and an older refresh (`rift://workshop-changed`) landing after a save. Saves now run in
+  turn, and a refresh that a save outran keeps the bench's own session and inputs. Both have
+  specs, mutation-checked. Its BM2 made the mode lines honest: outside Plan, most shell commands
+  run in her sandbox unasked, and Auto blocks before it asks.
+
+Owed on the installed build: a summon with each mode (Auto's availability depends on the account),
+and an effort and model she reports back in her own `/status`.
+
 ## Known Limitations
 
 - **Manual save backups (v0.6.2)** cover every discovered account's original encrypted

@@ -5,7 +5,21 @@
 
 import type { UninstallPlanView } from "@/types/rift";
 
-export type Voice = "full" | "sparing" | "plain";
+/** Who approves her actions (0.7.2): `ask` is Claude Code's `default`. */
+export type PawnMode = "ask" | "acceptEdits" | "plan" | "auto";
+/** `--effort`; `default` passes no flag. */
+export type PawnEffort = "default" | "low" | "medium" | "high" | "xhigh" | "max";
+/** `--model` by Claude Code's alias; `default` passes no flag. */
+export type PawnModel = "default" | "fable" | "opus" | "sonnet" | "haiku";
+
+/** What THE BENCH sets for her Claude Code, kept in `pawn.json` and passed at
+ *  each summon (the stone launches her `--restricted`, which reads no user
+ *  settings, so nothing she is told in the terminal outlives her summoning). */
+export interface PawnSession {
+  mode: PawnMode;
+  effort: PawnEffort;
+  model: PawnModel;
+}
 
 export type PawnState = "absent" | "summoning" | "here" | "departed" | "torn";
 
@@ -117,7 +131,7 @@ export interface WorkshopView {
   artifacts: ArtifactView[];
   pawn: PawnStateView;
   fence: FenceView;
-  voice: Voice;
+  session: PawnSession;
   inputs: string[];
 }
 

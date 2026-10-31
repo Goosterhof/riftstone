@@ -2938,13 +2938,26 @@ what it holds.** Rules, each a test or a Sentinel step:
    `*_TOKEN`, `*_KEY` or proxy variables, no `SSH_AUTH_SOCK`, no `WSLENV`-carried Windows
    variable. The stone starts `wsl.exe` with `WSLENV` emptied. The fence's process holds no
    descriptor but the PTY's three and the filter's, which `bwrap` consumes. The persona is
-   `--append-system-prompt-file` (#00015 §20.10, the voice block filled from the dial).
-6. **Approval prompts stay on.** The permission mode is `default`. The stone never passes
-   `bypassPermissions`, `dontAsk` or `--dangerously-skip-permissions` to a pawn.
+   `--append-system-prompt-file` (#00015 §20.10, always the full voice since 0.7.2).
+6. **Bypass stays out of reach.** The permission mode is the player's, from THE BENCH (0.7.2,
+   investor 2026-10-31): `default` (Ask, the default), `acceptEdits`, `plan` or `auto`. The stone
+   never passes `bypassPermissions`, `dontAsk` or `--dangerously-skip-permissions` to a pawn,
+   `PawnMode` has no word for either, and her settings keep `disableBypassPermissionsMode`.
+   Before 0.7.2 the mode was always `default` and `acceptEdits` was banned with the other two;
+   the investor widened it so the bench can choose, while the fence (items 1–5) holds whatever
+   Claude Code approves. Effort and model ride the same session (`pawn/session.rs`). Outside
+   Plan, an eligible shell command can run inside Claude Code's sandbox without a prompt
+   (`autoAllowBashIfSandboxed`, item 4; permission-flow exceptions and new network domains can
+   still prompt), so no mode is an every-action approval; Auto's judge
+   blocks rather than asks until repeated blocks bring the prompts back. The bench's lines say
+   exactly that (the Heretic's BM2 on PR #14).
 7. **The ground is named.** `pawn::fence::ground()` hashes the launch argv (paths normalised),
    the settings file, the filter bytes and the relay's bytes, and records them with the distro,
    `claude --version` and the WSL kernel version. A probe record holds only for the ground it
-   was proved on (#00015 R20.14).
+   was proved on (#00015 R20.14). The argv it hashes is the **default session's** (Ask, no
+   effort, no model): the bench's three set Claude Code's approvals and model inside the fence,
+   never a mount, the environment or the filter, so a press on the bench never stales a record,
+   and every record proved before 0.7.2 still names the same ground.
 
 ### The probe: deterministic, no model
 
@@ -3211,8 +3224,9 @@ She also uninstalled 1 of yours; it is listed below.* It never promises the worl
 
 - `src-tauri/src/pawn/fence.rs`: pure functions only, with no I/O and every one unit-tested. They
   build `bwrap_argv(&FencePlan)` (the plan names every mount), `fence_filter()` (the exact
-  bytes, tested instruction by instruction), `pawn_settings(&Voice)`, `ground()`, and the
+  bytes, tested instruction by instruction), `pawn_settings()`, `ground()`, and the
   `wsl.exe` command line.
+- `src-tauri/src/pawn/session.rs` (0.7.2): the bench's mode, effort and model, and their flags.
 - `src-tauri/src/pawn/summon.rs`: the PTY (`portable-pty`, as the Mezzanine's `pty/`), its
   reader pump to `rift://pawn-output`, input, resize, depart, exit codes, and one pawn at a time.
   The terminal stays mounted across rooms (§20.12), so the PTY lives in state, not in a page.

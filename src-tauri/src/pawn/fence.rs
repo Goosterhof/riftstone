@@ -25,6 +25,8 @@
 
 use sha2::{Digest, Sha256};
 
+use crate::pawn::session::PawnSession;
+
 /// Where the stone's own read-only files appear inside the fence: the relay,
 /// its MCP config, the settings, the persona and the filter.
 pub const RELAY_MOUNT: &str = "/stone/relay";
@@ -175,8 +177,9 @@ impl FencePlan {
 /// What runs inside the fence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FenceCommand {
-    /// Tamsin: Claude Code, restricted, with the relay as its only MCP server.
-    Pawn,
+    /// Tamsin: Claude Code, restricted, with the relay as its only MCP server,
+    /// and the player's session from THE BENCH (0.7.2).
+    Pawn(PawnSession),
     /// One probe step: `/bin/sh -c <script>` in the identical fence, plus,
     /// when given, the probe-only input at `/inputs/probe`. It must be
     /// exactly `<the pawn's base>/probe-input` (beside `runs`); the probe's
@@ -458,7 +461,7 @@ pub fn bwrap_argv(plan: &FencePlan, command: &FenceCommand) -> Result<Vec<String
         ],
     );
     match command {
-        FenceCommand::Pawn => {
+        FenceCommand::Pawn(session) => {
             argv.push(plan.claude_bin());
             argv.push("--restricted".into());
             argv.push("--tools".into());
@@ -473,10 +476,9 @@ pub fn bwrap_argv(plan: &FencePlan, command: &FenceCommand) -> Result<Vec<String
                     &format!("{RELAY_MOUNT}/mcp.json"),
                     "--append-system-prompt-file",
                     &format!("{RELAY_MOUNT}/persona.md"),
-                    "--permission-mode",
-                    "default",
                 ],
             );
+            argv.extend(session.args());
             // `--restricted` keeps the file tools in the working dirs: each
             // input is named so Tamsin can read it (the fence keeps it
             // read-only).
@@ -602,9 +604,12 @@ pub struct Host {
 
 /// Name the ground: the pawn's argv for this plan, with the run's id written
 /// as `<run>` (every run has its own), and the bytes of every file the stone
-/// writes into the relay folder.
+/// writes into the relay folder. The argv is the DEFAULT session's: the
+/// bench's mode, effort and model set Claude Code's approvals and model inside
+/// the fence, never what the fence holds, so a dial press never stales a
+/// probe record (and every record proved before 0.7.2 still names this ground).
 pub fn ground(plan: &FencePlan, host: &Host, relay: &[u8]) -> Result<Ground, FenceRefusal> {
-    let argv = bwrap_argv(plan, &FenceCommand::Pawn)?;
+    let argv = bwrap_argv(plan, &FenceCommand::Pawn(PawnSession::default()))?;
     let mut hash = Sha256::new();
     let mut part = |bytes: &[u8]| {
         hash.update((bytes.len() as u64).to_le_bytes());
@@ -882,7 +887,7 @@ mod tests {
     #[test]
     fn the_argv_mounts_exactly_the_allowlist() {
         let p = plan();
-        let argv = bwrap_argv(&p, &FenceCommand::Pawn).unwrap();
+        let argv = bwrap_argv(&p, &FenceCommand::Pawn(PawnSession::default())).unwrap();
         let run = &p.run_dir;
         let s = |x: &str| x.to_string();
         let expected = vec![
@@ -966,7 +971,7 @@ mod tests {
 
     #[test]
     fn the_environment_is_exactly_the_allowlist_after_clearenv() {
-        let argv = bwrap_argv(&plan(), &FenceCommand::Pawn).unwrap();
+        let argv = bwrap_argv(&plan(), &FenceCommand::Pawn(PawnSession::default())).unwrap();
         let clear = argv.iter().position(|w| w == "--clearenv").unwrap();
         let mut names = Vec::new();
         for (i, word) in argv.iter().enumerate() {
@@ -988,7 +993,7 @@ mod tests {
 
     #[test]
     fn the_pawn_runs_restricted_with_its_six_tools_and_the_relay_only() {
-        let argv = bwrap_argv(&plan(), &FenceCommand::Pawn).unwrap();
+        let argv = bwrap_argv(&plan(), &FenceCommand::Pawn(PawnSession::default())).unwrap();
         let tail: Vec<&str> = argv
             .iter()
             .skip_while(|w| *w != "--")
@@ -1024,7 +1029,6 @@ mod tests {
             "bypassPermissions",
             "dontAsk",
             "--dangerously-skip-permissions",
-            "acceptEdits",
         ] {
             assert!(!argv.iter().any(|w| w == banned), "{banned}");
         }
@@ -1033,7 +1037,7 @@ mod tests {
     #[test]
     fn the_probe_runs_in_the_identical_fence() {
         let p = plan();
-        let pawn = bwrap_argv(&p, &FenceCommand::Pawn).unwrap();
+        let pawn = bwrap_argv(&p, &FenceCommand::Pawn(PawnSession::default())).unwrap();
         let probe = bwrap_argv(
             &p,
             &FenceCommand::Probe {
@@ -1183,7 +1187,7 @@ mod tests {
             let mut p = plan();
             change(&mut p);
             assert!(
-                bwrap_argv(&p, &FenceCommand::Pawn).is_err(),
+                bwrap_argv(&p, &FenceCommand::Pawn(PawnSession::default())).is_err(),
                 "{what} must be refused"
             );
         }
@@ -1316,7 +1320,7 @@ mod tests {
                     .map(|_| draw.pick(&pieces).to_string())
                     .collect(),
             };
-            let Ok(argv) = bwrap_argv(&plan, &FenceCommand::Pawn) else {
+            let Ok(argv) = bwrap_argv(&plan, &FenceCommand::Pawn(PawnSession::default())) else {
                 continue;
             };
             accepted += 1;
@@ -1339,7 +1343,7 @@ mod tests {
     #[test]
     fn the_wsl_command_carries_no_double_quote_and_quotes_every_word() {
         let p = plan();
-        let argv = bwrap_argv(&p, &FenceCommand::Pawn).unwrap();
+        let argv = bwrap_argv(&p, &FenceCommand::Pawn(PawnSession::default())).unwrap();
         let args = wsl_args("Ubuntu-24.04", &p, &argv).unwrap();
         assert_eq!(
             args[..7],
@@ -1399,6 +1403,49 @@ mod tests {
         let other = ground(&p, &other_host, b"relay").unwrap();
         assert_eq!(other.digest, base.digest, "the version is named apart");
         assert_ne!(other, base);
+    }
+
+    #[test]
+    fn the_bench_session_changes_only_claude_codes_flags_never_the_fence() {
+        use crate::pawn::session::{PawnEffort, PawnMode, PawnModel};
+        let p = plan();
+        let default = bwrap_argv(&p, &FenceCommand::Pawn(PawnSession::default())).unwrap();
+        let chosen = bwrap_argv(
+            &p,
+            &FenceCommand::Pawn(PawnSession {
+                mode: PawnMode::Auto,
+                effort: PawnEffort::Maximum,
+                model: PawnModel::Fable,
+            }),
+        )
+        .unwrap();
+        let fence =
+            |argv: &[String]| argv[..=argv.iter().position(|w| w == "--").unwrap()].to_vec();
+        assert_eq!(fence(&default), fence(&chosen), "the fence is the same");
+        let split = |argv: &[String]| {
+            let at = argv.iter().position(|w| w == "--permission-mode").unwrap();
+            (argv[..at].to_vec(), argv[at..].to_vec())
+        };
+        let (default_head, default_tail) = split(&default);
+        let (chosen_head, chosen_tail) = split(&chosen);
+        assert_eq!(default_head, chosen_head);
+        assert_eq!(
+            default_tail,
+            ["--permission-mode", "default", "--add-dir", "/inputs/0"]
+        );
+        assert_eq!(
+            chosen_tail,
+            [
+                "--permission-mode",
+                "auto",
+                "--effort",
+                "max",
+                "--model",
+                "fable",
+                "--add-dir",
+                "/inputs/0"
+            ]
+        );
     }
 
     fn roots() -> Vec<ProtectedRoot> {
@@ -1593,7 +1640,7 @@ mod bench {
                 script: script.into(),
                 probe_input: None,
             },
-            None => FenceCommand::Pawn,
+            None => FenceCommand::Pawn(PawnSession::default()),
         };
         let argv = bwrap_argv(&plan, &command).unwrap();
         let args = wsl_args(&s("distro"), &plan, &argv).unwrap();

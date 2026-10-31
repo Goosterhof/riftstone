@@ -1019,8 +1019,8 @@ Types live in `src/types/workshop.ts`. Design: #00015 §20.
 
 | Command (invoke name) | Args (JS, camelCase) | Returns | Notes |
 |---|---|---|---|
-| `get_workshop` | — | `WorkshopView` | The folder (made or not yet), the built artifacts with the stone's digests, the pawn's state, the fence and the voice. The fence is judged against the ground now, which costs one `wsl.exe` survey; the window calls it on entering the room and on `rift://workshop-changed`. |
-| `summon_pawn` | `cols: number, rows: number` | `void` | Makes the workshop folder, the mailbox and Tamsin's config dir on first use, writes the relay, settings and persona for the current voice, and starts the PTY. Refuses `pawn` `alreadyHere`, `breached` or `noFence` (the missing piece named: the WSL distro, `bwrap`, `socat`, or `claude` in that distro). Output arrives as `rift://pawn-output`. |
+| `get_workshop` | — | `WorkshopView` | The folder (made or not yet), the built artifacts with the stone's digests, the pawn's state, the fence, the bench's session and the inputs. The fence is judged against the ground now, which costs one `wsl.exe` survey; the window calls it on entering the room and on `rift://workshop-changed`. |
+| `summon_pawn` | `cols: number, rows: number` | `void` | Makes the workshop folder, the mailbox and Tamsin's config dir on first use, writes the relay, settings and persona, and starts the PTY with the session's flags (`set_pawn_session`). Refuses `pawn` `alreadyHere`, `breached` or `noFence` (the missing piece named: the WSL distro, `bwrap`, `socat`, or `claude` in that distro). Output arrives as `rift://pawn-output`. |
 | `pawn_write` | `runId: string, data: string` | `void` | Keystrokes and pastes, UTF-8, to the PTY of the summoning `runId`. Refuses `notHere` when no pawn is here or `runId` is not the live summoning, so a key typed for one run never reaches the next. |
 | `pawn_resize` | `cols: number, rows: number` | `void` | Called on fit; ignored when no pawn is here. |
 | `depart_pawn` | — | `void` | Ends the session: SIGTERM to the fence, then a kill after 3 s. A held Play is dropped. The pawn's installs stay (see `plan_put_back`). |
@@ -1032,11 +1032,11 @@ Types live in `src/types/workshop.ts`. Design: #00015 §20.
 | `plan_put_back` | `runId: string` | `PutBackPlan` | The Gift, narrowed (BUILD-SPEC § v0.7, the run ledger). `remove`: that run's own installs still installed and unchanged, newest first, as THE RETURN's plans. `review`: what that run uninstalled that was not its own, each with its Undo when the journal still allows it. It never claims to restore the world as it was. |
 | `put_back` | `runId: string, installIds: string[]` | `UninstallResultView[]` | Uninstalls exactly the `remove` items named, newest first, each through the journal. An id that is not that run's own still-installed install is refused, not skipped. `review` items are never acted on here. |
 | `open_workshop_folder` | — | `void` | Explorer, Rust-side. |
-| `set_pawn_voice` | `voice: "full" \| "sparing" \| "plain"` | `void` | Saved in `pawn.json`; takes effect at the next summon (the window says so while a pawn is here). |
+| `set_pawn_session` | `session: PawnSession` | `void` | 0.7.2, in place of 0.7.0's `set_pawn_voice`. The whole session, saved in `pawn.json`; takes effect at the next summon (the window says so while a pawn is here). The stone passes it to her Claude Code as `--permission-mode`, then `--effort` and `--model` when one is chosen. A word outside `PawnSession` is refused by the command's own decoding. |
 | `set_pawn_inputs` | `inputs: string[]` | `void` | Saved in `pawn.json` after each folder passes the protected-root check (below); refuses `pawn` `inputRefused`, naming the root, and saves nothing. |
 
-The pawn's own settings live in the stone's app data as `pawn.json` (the voice, the inputs, the
-distro), never in `get_settings` / `set_settings`, so the public `Settings` carries nothing of the
+The pawn's own settings live in the stone's app data as `pawn.json` (the session, the inputs, the
+distro; a `voice` key 0.7.0–0.7.1 wrote is read past and not written back), never in `get_settings` / `set_settings`, so the public `Settings` carries nothing of the
 pawn (RS-10; ruled with the Heretic's review of PR #9). `set_pawn_inputs(inputs: string[])` sets the
 Windows folders mounted read-only at `/inputs/<n>` (for example a pinned vanilla extract), and
 `get_workshop` returns them. On set, and again at every summon, the stone
@@ -1073,7 +1073,7 @@ the investor's own and may be shown.
 ### Types (`src/types/workshop.ts`)
 
 - `WorkshopView`: `{ folder: { made: boolean, path: string }, artifacts: ArtifactView[],
-  pawn: PawnStateView, fence: FenceView, voice: Voice, inputs: string[] }`.
+  pawn: PawnStateView, fence: FenceView, session: PawnSession, inputs: string[] }`.
 - `ArtifactView`: `{ name, bytes, sha256: string | null` (null while hashing), `receipt:
   ReceiptView | null, receiptProblem: "missing" | "unreadable" | "mismatch" | null, inLibrary:
   boolean }`. `inLibrary` is true when a file with these exact bytes is in the mods folder.
@@ -1111,7 +1111,24 @@ the investor's own and may be shown.
   `sentence` is the press's own promise and counts each kind in its own words, e.g. *Removes the 3
   installs Tamsin made in this summoning. She also uninstalled 1 of yours. The stone cannot tell
   whether 1 more was uninstalled, or whose it was. They are listed below.*
-- `Voice`: `"full" | "sparing" | "plain"` (default `sparing`).
+- `PawnSession` (0.7.2): `{ mode: "ask" | "acceptEdits" | "plan" | "auto", effort: "default" |
+  "low" | "medium" | "high" | "xhigh" | "max", model: "default" | "fable" | "opus" | "sonnet" |
+  "haiku" }`, each `default`/`ask` when absent. `ask` is Claude Code's `default` mode; a
+  `default` effort or model passes no flag. Why the stone carries them: it launches her
+  `--restricted`, which reads no user settings file, so a `/effort`, `/model` or Shift+Tab in her
+  terminal lasts that summoning only (the investor's report, 2026-10-31).
+- The voice is gone (0.7.2, investor 2026-10-31: *"the voice should always be full"*): she always
+  speaks in #00015 §20.10's full block, and the bench carries no voice dial.
+- **A command that answers nothing resolves `null` through Tauri**, never `undefined`. The window
+  reads such a command's success from the absence of a failure (`attemptDone` in
+  `useWorkshop.ts`), never from its value: 0.7.0–0.7.1 read the `null` as a refusal, so every
+  voice press and every added input saved in `pawn.json` while the bench stayed unchanged.
+  `tests/workshopStore.spec.ts` drives the store through a backend that answers `null`.
+- **The bench's saves are ordered** (the Heretic's BM1 on PR #14). `set_pawn_session` presses run
+  one at a time, each merged onto the session the stone last confirmed when its turn comes. A
+  `get_workshop` that started before a confirmed save and lands after it keeps the window's own
+  session and inputs: `get_workshop` reads `pawn.json` before its WSL survey, so such a view
+  can carry the settings from before the save.
 
 ### The room as built (#00015 §20, rendered at 1320 and 1024)
 

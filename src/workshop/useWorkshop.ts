@@ -14,7 +14,7 @@ import {
   type PawnOutput,
   type PawnStateView,
   type PutBackPlan,
-  type Voice,
+  type PawnSession,
   type WorkshopView,
 } from "@/types/workshop";
 import { asRiftFailure, rift, type RiftFailure } from "@/services/rift";
@@ -160,9 +160,20 @@ function onHand(hand: PawnHand): void {
   handsByRun.value = { ...handsByRun.value, [hand.runId]: [...rows, hand] };
 }
 
+/** Counts the bench's saves the stone confirmed. A view read before one of
+ *  them can carry `pawn.json` as it was (`get_workshop` reads the settings
+ *  before its WSL survey), so a refresh that started before a save and lands
+ *  after it keeps the bench's own session and inputs: the stone confirmed
+ *  those later than it read the refresh's (the Heretic's BM1 residual on
+ *  PR #14, with `rift://workshop-changed` as the real trigger). */
+let settingsSaved = 0;
+
 async function load(): Promise<void> {
   const backend = await workshop();
-  const next = await backend.getWorkshop();
+  const savedBefore = settingsSaved;
+  const read = await backend.getWorkshop();
+  const mine = view.value;
+  const next = savedBefore !== settingsSaved && mine ? { ...read, session: mine.session, inputs: mine.inputs } : read;
   if (runId.value === null && next.pawn.runId) newRun(next.pawn.runId);
   view.value = next;
 }
@@ -195,6 +206,22 @@ async function attempt<T>(work: () => Promise<T>): Promise<T | null> {
   } catch (raw) {
     failure.value = asRiftFailure(raw);
     return null;
+  }
+}
+
+/** For a command that answers nothing: did it go through? Never read that
+ *  from the value. Tauri resolves a Rust `()` as `null`, which `attempt`
+ *  also returns for a failure, so 0.7.0–0.7.1 read every saved voice and
+ *  every added input as refused and left the bench unchanged (the
+ *  investor's report, 2026-10-31: "pressing did nothing"). */
+async function attemptDone(work: () => Promise<unknown>): Promise<boolean> {
+  failure.value = null;
+  try {
+    await work();
+    return true;
+  } catch (raw) {
+    failure.value = asRiftFailure(raw);
+    return false;
   }
 }
 
@@ -265,14 +292,34 @@ async function runProbe(): Promise<void> {
   }
 }
 
-async function setVoice(next: Voice): Promise<void> {
-  const done = await attempt(async () => (await workshop()).setPawnVoice(next));
-  if (done !== null && view.value) view.value = { ...view.value, voice: next };
+/** Set one part of her session; the stone keeps the whole in `pawn.json`. */
+/** The bench's saves, one at a time. Each press merges its part onto the
+ *  session the stone last confirmed WHEN ITS TURN COMES, never onto a copy
+ *  taken at the press: two quick presses (Edits, then xhigh) otherwise both
+ *  start from Ask, and the second save writes Ask back over the first (the
+ *  Heretic's BM1 on PR #14). A failed save leaves the last confirmed session
+ *  for the next one to build on. */
+let sessionSaves: Promise<unknown> = Promise.resolve();
+
+function setSession(part: Partial<PawnSession>): Promise<boolean> {
+  const save = async (): Promise<boolean> => {
+    const current = view.value?.session;
+    if (!current) return false;
+    const next = { ...current, ...part };
+    const done = await attemptDone(async () => (await workshop()).setPawnSession(next));
+    if (done) settingsSaved += 1;
+    if (done && view.value) view.value = { ...view.value, session: next };
+    return done;
+  };
+  const turn = sessionSaves.then(save, save);
+  sessionSaves = turn;
+  return turn;
 }
 
 async function setInputs(next: string[]): Promise<boolean> {
-  const done = await attempt(async () => (await workshop()).setPawnInputs(next));
-  if (done === null) return false;
+  const done = await attemptDone(async () => (await workshop()).setPawnInputs(next));
+  if (!done) return false;
+  settingsSaved += 1;
   if (view.value) view.value = { ...view.value, inputs: [...next] };
   return true;
 }
@@ -415,6 +462,8 @@ async function putBack(plan: PutBackPlan): Promise<boolean> {
 /** For specs: forget everything, as a fresh window would. */
 export function resetWorkshop(): void {
   view.value = null;
+  sessionSaves = Promise.resolve();
+  settingsSaved = 0;
   handsByRun.value = {};
   outputs.clear();
   retired.clear();
@@ -453,7 +502,7 @@ export function useWorkshop() {
     resize,
     depart,
     runProbe,
-    setVoice,
+    setSession,
     setInputs,
     openFolder,
     pressPlay,

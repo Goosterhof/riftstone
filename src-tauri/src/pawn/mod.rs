@@ -16,8 +16,10 @@
 //!   (`noFence` names the missing piece); the relay folder's files.
 //! - [`mailbox`]: what the stone does with a request: validation, the tool
 //!   table, the run's idempotent ledger and its retirement.
-//! - [`persona`]: Tamsin's appended system prompt from the voice dial, the
+//! - [`persona`]: Tamsin's appended system prompt (always the full voice), the
 //!   relay (`resources/pawn/relay.py`) and the workshop's starter.
+//! - [`session`]: the bench's mode, effort and model, kept in `pawn.json` and
+//!   passed to her Claude Code as flags at each summon (0.7.2).
 //! - [`summon`]: one summoning: the PTY through the fence, its output in
 //!   order, the mailbox loop, and departure.
 //! - [`probe`]: the fence's probe, no model: the steps, their judgement,
@@ -38,4 +40,5 @@ pub mod mailbox;
 pub mod persona;
 pub mod probe;
 pub mod put_back;
+pub mod session;
 pub mod summon;
