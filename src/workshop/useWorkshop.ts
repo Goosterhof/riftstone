@@ -14,7 +14,7 @@ import {
   type PawnOutput,
   type PawnStateView,
   type PutBackPlan,
-  type Voice,
+  type PawnSession,
   type WorkshopView,
 } from "@/types/workshop";
 import { asRiftFailure, rift, type RiftFailure } from "@/services/rift";
@@ -198,6 +198,22 @@ async function attempt<T>(work: () => Promise<T>): Promise<T | null> {
   }
 }
 
+/** For a command that answers nothing: did it go through? Never read that
+ *  from the value. Tauri resolves a Rust `()` as `null`, which `attempt`
+ *  also returns for a failure, so 0.7.0–0.7.1 read every saved voice and
+ *  every added input as refused and left the bench unchanged (the
+ *  investor's report, 2026-10-31: "pressing did nothing"). */
+async function attemptDone(work: () => Promise<unknown>): Promise<boolean> {
+  failure.value = null;
+  try {
+    await work();
+    return true;
+  } catch (raw) {
+    failure.value = asRiftFailure(raw);
+    return false;
+  }
+}
+
 async function summon(cols: number, rows: number): Promise<void> {
   await attempt(async () => (await workshop()).summonPawn(cols, rows));
   await load();
@@ -265,14 +281,19 @@ async function runProbe(): Promise<void> {
   }
 }
 
-async function setVoice(next: Voice): Promise<void> {
-  const done = await attempt(async () => (await workshop()).setPawnVoice(next));
-  if (done !== null && view.value) view.value = { ...view.value, voice: next };
+/** Set one part of her session; the stone keeps the whole in `pawn.json`. */
+async function setSession(part: Partial<PawnSession>): Promise<boolean> {
+  const current = view.value?.session;
+  if (!current) return false;
+  const next = { ...current, ...part };
+  const done = await attemptDone(async () => (await workshop()).setPawnSession(next));
+  if (done && view.value) view.value = { ...view.value, session: next };
+  return done;
 }
 
 async function setInputs(next: string[]): Promise<boolean> {
-  const done = await attempt(async () => (await workshop()).setPawnInputs(next));
-  if (done === null) return false;
+  const done = await attemptDone(async () => (await workshop()).setPawnInputs(next));
+  if (!done) return false;
   if (view.value) view.value = { ...view.value, inputs: [...next] };
   return true;
 }
@@ -453,7 +474,7 @@ export function useWorkshop() {
     resize,
     depart,
     runProbe,
-    setVoice,
+    setSession,
     setInputs,
     openFolder,
     pressPlay,

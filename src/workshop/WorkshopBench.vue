@@ -1,26 +1,32 @@
 <script setup lang="ts">
-// R20.5 — THE BENCH, top to bottom: VOICE, INPUTS, BUILT, THE PAWN'S HANDS.
+// R20.5 — THE BENCH, top to bottom: SUMMONED WITH, INPUTS, BUILT, THE PAWN'S HANDS.
+// SUMMONED WITH (0.7.2) replaced VOICE: she always speaks in the full voice
+// (investor, 2026-10-31), and the bench now carries what her Claude Code
+// forgot between summons: its mode, effort and model.
 // Sections separated by space and hairlines, never nested cards. INPUTS
 // replaces WORKSHOP FILES (the contract lists no workshop files): the
 // read-only folders Tamsin may read, each checked by the stone on set.
 import { computed, ref } from "vue";
-import type { Voice } from "@/types/workshop";
 import RiftButton from "@/components/RiftButton.vue";
 import { rift } from "@/services/rift";
+import BenchDial from "./BenchDial.vue";
 import BuiltArtifact from "./BuiltArtifact.vue";
 import PawnHands from "./PawnHands.vue";
 import { useWorkshop } from "./useWorkshop";
-import { PAWN_NAME, VOICE_LATER } from "./words";
+import { EFFORT_CHOICES, MODE_CHOICES, MODEL_CHOICES, PAWN_NAME, SESSION_LATER, SESSION_NOTE } from "./words";
 
 const w = useWorkshop();
 
-const VOICES: { value: Voice; label: string }[] = [
-  { value: "full", label: "Full" },
-  { value: "sparing", label: "Sparing" },
-  { value: "plain", label: "Plain" },
-];
-
 const inputRefusal = ref<string | null>(null);
+const sessionRefusal = ref<string | null>(null);
+const session = computed(() => w.view.value?.session);
+const later = computed(() => (w.summoned.value ? SESSION_LATER : undefined));
+
+async function setSession(part: Parameters<typeof w.setSession>[0]): Promise<void> {
+  sessionRefusal.value = null;
+  const ok = await w.setSession(part);
+  if (!ok) sessionRefusal.value = w.failure.value?.detail.detail ?? w.failure.value?.message ?? null;
+}
 const picking = ref(false);
 
 /** Receipted builds first; the ones the stone will not bring are listed under them, faint. */
@@ -45,45 +51,39 @@ async function addFolder(): Promise<void> {
     picking.value = false;
   }
 }
-
-const STEP: Partial<Record<string, number>> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
-
-function onVoiceKey(event: KeyboardEvent, index: number): void {
-  const step = STEP[event.key];
-  if (!step) return;
-  event.preventDefault();
-  const next = VOICES[(index + step + VOICES.length) % VOICES.length];
-  void w.setVoice(next.value);
-  const group = (event.currentTarget as HTMLElement).parentElement;
-  group?.querySelectorAll<HTMLElement>("[role=radio]")[VOICES.indexOf(next)]?.focus();
-}
 </script>
 
 <template>
   <div class="bench">
-    <section class="bench__section" aria-labelledby="ws-voice">
-      <h2 id="ws-voice" class="bench__head rs-inscription">VOICE</h2>
-      <div
-        class="dial"
-        role="radiogroup"
-        aria-labelledby="ws-voice"
-        :title="w.summoned.value ? VOICE_LATER : undefined"
-      >
-        <button
-          v-for="(v, i) in VOICES"
-          :key="v.value"
-          type="button"
-          role="radio"
-          class="dial__seg"
-          :aria-checked="w.view.value?.voice === v.value"
-          :tabindex="w.view.value?.voice === v.value ? 0 : -1"
-          @click="w.setVoice(v.value)"
-          @keydown="onVoiceKey($event, i)"
-        >
-          {{ v.label }}
-        </button>
-      </div>
-      <p v-if="w.summoned.value" class="bench__note">{{ VOICE_LATER }}</p>
+    <section class="bench__section" aria-labelledby="ws-session">
+      <h2 id="ws-session" class="bench__head rs-inscription">SUMMONED WITH</h2>
+      <BenchDial
+        id="ws-mode"
+        name="MODE"
+        :choices="MODE_CHOICES"
+        :chosen="session?.mode"
+        :title="later"
+        @pick="setSession({ mode: $event })"
+      />
+      <BenchDial
+        id="ws-effort"
+        name="EFFORT"
+        :choices="EFFORT_CHOICES"
+        :chosen="session?.effort"
+        :title="later"
+        @pick="setSession({ effort: $event })"
+      />
+      <BenchDial
+        id="ws-model"
+        name="MODEL"
+        :choices="MODEL_CHOICES"
+        :chosen="session?.model"
+        :title="later"
+        @pick="setSession({ model: $event })"
+      />
+      <p v-if="sessionRefusal" class="bench__refused" role="alert">{{ sessionRefusal }}</p>
+      <p v-if="w.summoned.value" class="bench__note bench__note--now">{{ SESSION_LATER }}</p>
+      <p class="bench__note">{{ SESSION_NOTE }}</p>
     </section>
 
     <section class="bench__section" aria-labelledby="ws-inputs">
@@ -151,35 +151,13 @@ function onVoiceKey(event: KeyboardEvent, index: number): void {
   color: var(--rs-faint);
   font: 400 var(--rs-text-sm) / 1.4 var(--rs-font-sans);
 }
+.bench__note--now {
+  color: var(--rs-muted);
+}
 .bench__refused {
   margin: 0;
   color: var(--rs-ember);
   font: 400 var(--rs-text-sm) / 1.4 var(--rs-font-sans);
-}
-.dial {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  border: 1px solid var(--rs-edgehi);
-}
-.dial__seg {
-  height: 32px;
-  border: 0;
-  border-left: 1px solid var(--rs-edge);
-  background: transparent;
-  color: var(--rs-muted);
-  font: 500 var(--rs-text-sm) var(--rs-font-sans);
-  cursor: pointer;
-}
-.dial__seg:first-child {
-  border-left: 0;
-}
-.dial__seg:hover {
-  background: var(--rs-misthi);
-}
-.dial__seg[aria-checked="true"] {
-  background: var(--rs-well);
-  box-shadow: inset 0 2px 0 rgba(0, 0, 0, 0.45);
-  color: var(--rs-text);
 }
 .inputs,
 .built-list {

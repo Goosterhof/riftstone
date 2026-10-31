@@ -30,7 +30,7 @@ import {
   type PawnOutput,
   type PawnStateView,
   type PutBackPlan,
-  type Voice,
+  type PawnSession,
   type WorkshopEvent,
   type WorkshopView,
 } from "@/types/workshop";
@@ -272,7 +272,7 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
   let artifacts = initialArtifacts(scenario);
   let chip = initialChip(scenario);
   let fence = fenceFor(chip, scenario);
-  let voice: Voice = "sparing";
+  let session: PawnSession = { mode: "ask", effort: "default", model: "default" };
   let inputs: string[] = [];
   /** The last chunk's seq; the spine's pump numbers each run's chunks from 0. */
   let outSeq = -1;
@@ -366,7 +366,7 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
       artifacts: artifacts.map((a) => ({ ...a })),
       pawn: { ...pawn },
       fence: { ...fence, steps: fence.steps.map((s) => ({ ...s })) },
-      voice,
+      session: { ...session },
       inputs: [...inputs],
     };
   }
@@ -377,10 +377,8 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
       return;
     }
     const greet =
-      voice === "plain"
-        ? "\x1b[1mClaude Code\x1b[0m 2.1.312 · in the workshop\r\n\r\n> "
-        : "\x1b[36m✻\x1b[0m Arisen. I have the Stride Tuner sources open.\r\n" +
-          "  The vanilla hashes still match the pins.\r\n\r\n> ";
+      "\x1b[36m✻\x1b[0m Arisen. I have the Stride Tuner sources open.\r\n" +
+      "  The vanilla hashes still match the pins.\r\n\r\n> ";
     controls.emitOutput(greet);
     if (!script) return;
     let t = beat;
@@ -616,9 +614,9 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
       folderMade = true;
       return Promise.resolve();
     },
-    setPawnVoice: (next) => {
-      call("set_pawn_voice", next);
-      voice = next;
+    setPawnSession: (next) => {
+      call("set_pawn_session", next);
+      session = { ...next };
       return Promise.resolve();
     },
     setPawnInputs: (next) => {

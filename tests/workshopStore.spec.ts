@@ -338,3 +338,47 @@ describe("a write that belongs to one run", () => {
     expect(writes).toStrictEqual([["run-mock-1", "\u0003"]]);
   });
 });
+
+/** The mock, with every command that answers nothing answering `null`, as
+ *  Tauri resolves a Rust `()`. The mock alone answers `undefined`, which hid
+ *  the bug of 0.7.0–0.7.1: every saved press read as a refusal. */
+function asTauri(w: MockWorkshop): MockWorkshop {
+  const nothing = null as unknown as undefined;
+  return {
+    ...w,
+    setPawnSession: (session) => w.setPawnSession(session).then(() => nothing),
+    setPawnInputs: (inputs) => w.setPawnInputs(inputs).then(() => nothing),
+  };
+}
+
+describe("THE BENCH's settings, as Tauri answers them", () => {
+  it("should keep a chosen mode, effort and model when the stone answers null", async () => {
+    mock = createMockWorkshop({ scenario: "contained", beat: 0, script: false });
+    setWorkshopBackend(asTauri(mock));
+    const w = useWorkshop();
+    await w.load();
+    expect(w.view.value?.session).toStrictEqual({ mode: "ask", effort: "default", model: "default" });
+    expect(await w.setSession({ mode: "acceptEdits" })).toBe(true);
+    expect(await w.setSession({ effort: "xhigh" })).toBe(true);
+    expect(await w.setSession({ model: "opus" })).toBe(true);
+    expect(w.failure.value).toBeNull();
+    expect(w.view.value?.session).toStrictEqual({ mode: "acceptEdits", effort: "xhigh", model: "opus" });
+    // Each press sends the whole session, and the stone kept the last one.
+    const sent = mock.controls.calls.filter((c) => c.cmd === "set_pawn_session").map((c) => c.args[0]);
+    expect(sent.at(-1)).toStrictEqual({ mode: "acceptEdits", effort: "xhigh", model: "opus" });
+    await w.load();
+    expect(w.view.value?.session).toStrictEqual({ mode: "acceptEdits", effort: "xhigh", model: "opus" });
+  });
+
+  it("should keep an added input when the stone answers null, and still show a refusal", async () => {
+    mock = createMockWorkshop({ scenario: "contained", beat: 0, script: false });
+    setWorkshopBackend(asTauri(mock));
+    const w = useWorkshop();
+    await w.load();
+    expect(await w.setInputs(["D:\\Extracts\\vanilla"])).toBe(true);
+    expect(w.view.value?.inputs).toStrictEqual(["D:\\Extracts\\vanilla"]);
+    expect(await w.setInputs(["C:\\Program Files (x86)\\Steam"])).toBe(false);
+    expect(w.failure.value?.detail.reason).toBe("inputRefused");
+    expect(w.view.value?.inputs).toStrictEqual(["D:\\Extracts\\vanilla"]);
+  });
+});

@@ -267,7 +267,7 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         pawn::commands::plan_put_back,
         pawn::commands::put_back,
         pawn::commands::open_workshop_folder,
-        pawn::commands::set_pawn_voice,
+        pawn::commands::set_pawn_session,
         pawn::commands::set_pawn_inputs,
     ))
 }

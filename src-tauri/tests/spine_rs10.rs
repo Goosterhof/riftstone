@@ -41,7 +41,7 @@ const WORKSHOP: [&str; 15] = [
     "plan_put_back",
     "put_back",
     "open_workshop_folder",
-    "set_pawn_voice",
+    "set_pawn_session",
     "set_pawn_inputs",
 ];
 

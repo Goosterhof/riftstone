@@ -245,7 +245,7 @@ mod desk {
     use riftstone_lib::events::EventSink;
     use riftstone_lib::pawn::commands::{get_workshop_impl, plan_put_back_impl};
     use riftstone_lib::pawn::desk::{workshop_dir, Desk};
-    use riftstone_lib::pawn::persona::Voice;
+    use riftstone_lib::pawn::session::PawnSession;
     use sha2::{Digest, Sha256};
 
     fn reason(err: RiftError) -> PawnReason {
@@ -264,7 +264,7 @@ mod desk {
         assert!(view.artifacts.is_empty());
         assert_eq!(view.pawn.state, "absent");
         assert_eq!(view.fence.chip, "unprobed");
-        assert_eq!(view.voice, Voice::Sparing);
+        assert_eq!(view.session, PawnSession::default());
 
         // A build with its receipt, then one with none.
         let workshop = workshop_dir(state.library_dir()).unwrap();

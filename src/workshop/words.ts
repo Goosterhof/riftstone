@@ -2,7 +2,17 @@
 // what the stone sent. Pure, so the specs read the same sentences the room
 // renders. Nothing here adds a claim the stone did not make.
 
-import type { ArtifactView, Chip, PawnHand, PutBackReview, StepExpect, StepVerdict } from "@/types/workshop";
+import type {
+  ArtifactView,
+  Chip,
+  PawnEffort,
+  PawnHand,
+  PawnMode,
+  PawnModel,
+  PutBackReview,
+  StepExpect,
+  StepVerdict,
+} from "@/types/workshop";
 
 export const PAWN_NAME = "Tamsin";
 
@@ -59,7 +69,47 @@ export const RECEIPT_PROBLEM: Record<NonNullable<ArtifactView["receiptProblem"]>
 
 export const NO_RECEIPT_TITLE = "The stone adds a build to the library only with its receipt beside it.";
 export const PROBE_HELD_BACK = "Depart first: the probe needs the workshop to itself.";
-export const VOICE_LATER = "Takes effect at the next summon.";
+export const SESSION_LATER = "Takes effect at the next summon.";
+
+/** THE BENCH's SUMMONED WITH (0.7.2): each choice, and the one line that says
+ *  what the chosen one does. The stone passes them as Claude Code's own flags. */
+export interface DialChoice<T extends string> {
+  value: T;
+  label: string;
+  says: string;
+}
+
+export const MODE_CHOICES: DialChoice<PawnMode>[] = [
+  { value: "ask", label: "Ask", says: "She asks before every edit and every command." },
+  { value: "acceptEdits", label: "Edits", says: "Her edits in the workshop go through. Commands still ask." },
+  { value: "plan", label: "Plan", says: "She plans first and changes nothing until you approve the plan." },
+  {
+    value: "auto",
+    label: "Auto",
+    says: "Claude Code's own judge approves what it deems safe; the rest still asks. The fence holds either way.",
+  },
+];
+
+/** Effort's labels are Claude Code's own words, as typed after `/effort`. */
+export const EFFORT_CHOICES: DialChoice<PawnEffort>[] = [
+  { value: "default", label: "default", says: "Claude Code picks the effort for her model." },
+  { value: "low", label: "low", says: "She answers quickly and thinks little." },
+  { value: "medium", label: "med", says: "She thinks a while before she answers." },
+  { value: "high", label: "high", says: "She thinks hard: slower, and more of your usage." },
+  { value: "xhigh", label: "xhigh", says: "She thinks harder still: slower, and more of your usage." },
+  { value: "max", label: "max", says: "Her deepest thinking: the slowest, and the most of your usage." },
+];
+
+export const MODEL_CHOICES: DialChoice<PawnModel>[] = [
+  { value: "default", label: "Default", says: "Claude Code's default model for your account." },
+  { value: "fable", label: "Fable", says: "The newest Fable: the most capable, and the costliest." },
+  { value: "opus", label: "Opus", says: "The newest Opus: deep, careful work." },
+  { value: "sonnet", label: "Sonnet", says: "The newest Sonnet: quick and capable." },
+  { value: "haiku", label: "Haiku", says: "The newest Haiku: the quickest and lightest." },
+];
+
+export const SESSION_NOTE =
+  "She starts every summon with these. Changed in her terminal (Shift+Tab, /effort, /model), a setting lasts until she departs.";
 
 /** HH:MM, 24-hour, local: the second line of a hands row. */
 export function clock(at: string | null | undefined): string {

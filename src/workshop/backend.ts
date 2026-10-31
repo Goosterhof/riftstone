@@ -10,7 +10,7 @@ import type {
   FenceView,
   PlayAnswered,
   PutBackPlan,
-  Voice,
+  PawnSession,
   WorkshopEvent,
   WorkshopView,
 } from "@/types/workshop";
@@ -31,7 +31,7 @@ export interface WorkshopBackend {
   planPutBack(runId: string): Promise<PutBackPlan>;
   putBack(runId: string, installIds: string[]): Promise<UninstallResultView[]>;
   openWorkshopFolder(): Promise<void>;
-  setPawnVoice(voice: Voice): Promise<void>;
+  setPawnSession(session: PawnSession): Promise<void>;
   setPawnInputs(inputs: string[]): Promise<void>;
   on<T>(event: WorkshopEvent, handler: (payload: T) => void): Promise<() => void>;
 }
@@ -61,7 +61,7 @@ async function tauriWorkshop(): Promise<WorkshopBackend> {
     planPutBack: (runId) => invoke("plan_put_back", { runId }),
     putBack: (runId, installIds) => invoke("put_back", { runId, installIds }),
     openWorkshopFolder: () => invoke("open_workshop_folder"),
-    setPawnVoice: (voice) => invoke("set_pawn_voice", { voice }),
+    setPawnSession: (session) => invoke("set_pawn_session", { session }),
     setPawnInputs: (inputs) => invoke("set_pawn_inputs", { inputs }),
     on: async (event, handler) => {
       const unlisten = await listen(event, (e) => {
