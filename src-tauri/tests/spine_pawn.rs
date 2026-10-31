@@ -387,19 +387,42 @@ mod desk {
             || heard(&events) > before,
         );
 
-        // A dist that went is let go; the one made again is watched afresh.
+        // A dist that went, and one made again, are followed with no further
+        // look: the watch stands on the workshop (the Heretic's DW1, case 1).
         fs::remove_dir_all(workshop.join("dist")).unwrap();
-        get_workshop_impl(&state, &desk).unwrap();
-        assert!(!desk.watching_dist());
-        fs::create_dir_all(workshop.join("dist")).unwrap();
-        get_workshop_impl(&state, &desk).unwrap();
+        std::thread::sleep(settled);
         assert!(desk.watching_dist());
+        fs::create_dir_all(workshop.join("dist")).unwrap();
         std::thread::sleep(settled);
         let before = heard(&events);
         fs::write(workshop.join("dist/Second.zip"), b"second").unwrap();
-        support::wait_for(Duration::from_secs(10), "the new dist is watched", || {
+        support::wait_for(Duration::from_secs(10), "the new dist is followed", || {
             heard(&events) > before
         });
+
+        // Renamed aside and replaced (DW1, case 2): the replacement is followed;
+        // what happens in the renamed one is not dist's any more.
+        fs::rename(workshop.join("dist"), workshop.join("dist-old")).unwrap();
+        fs::create_dir_all(workshop.join("dist")).unwrap();
+        std::thread::sleep(settled);
+        let before = heard(&events);
+        fs::write(workshop.join("dist-old/Old.zip"), b"old").unwrap();
+        std::thread::sleep(settled);
+        assert_eq!(heard(&events), before, "the renamed folder is not dist");
+        fs::write(workshop.join("dist/Third.zip"), b"third").unwrap();
+        support::wait_for(
+            Duration::from_secs(10),
+            "the replacement is followed",
+            || heard(&events) > before,
+        );
+
+        // Her work elsewhere in the workshop says nothing.
+        std::thread::sleep(settled);
+        let before = heard(&events);
+        fs::create_dir_all(workshop.join("src")).unwrap();
+        fs::write(workshop.join("src/stature.lua"), b"-- invented").unwrap();
+        std::thread::sleep(settled);
+        assert_eq!(heard(&events), before, "only dist counts");
     }
 
     /// The benches' spine watches nothing, the workshop's dist included.
