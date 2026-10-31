@@ -430,6 +430,33 @@ and it is not clear what the voice does, nor can i change it."* Three causes, ea
 Owed on the installed build: a summon with each mode (Auto's availability depends on the account),
 and an effort and model she reports back in her own `/status`.
 
+## THE WORKSHOP sees her builds land — 0.7.3 (investor report, 31 October 2026)
+
+*"i am not seeing the built being updated once tamsin has build a mod."* The build was whole: a
+zip in the workshop's `dist\` with a receipt whose digest matched it. The room never heard of it.
+WINDOW-CONTRACT § v0.7 promised `rift://workshop-changed` whenever `dist\` changes (debounced
+500 ms), but no watcher on `dist\` existed. The only sender was `bring_through`, so a new build
+reached the room only when it was entered again.
+
+The desk now watches `dist\` (`Desk::watch_dist`, `pawn/desk.rs`), with `DIST_QUIET` at
+500 ms, so a zip and its receipt make one event. The watch stands on the workshop folder, the
+stone's own and the fence's mount point, which Tamsin cannot replace, and counts only changes at
+or under `dist` (`watch::arm_within`). The first version watched `dist\` itself, and the
+Heretic's DW1 showed three ways it went deaf: `dist\` made again between two looks, renamed aside
+and replaced, or deleted so that the refresh its own deletion caused let the watcher go. A
+`dist\` deleted, renamed or made again is now followed with no further look. The watch is
+armed again only for a workshop folder that was replaced, known by its creation time.
+`get_workshop` arms it once the workshop exists, and every summon arms it after making the
+folder. Like the mods folder's watcher, it is off where `watch_library` is false (the benches'
+tests). `tests/spine_pawn.rs`'s `a_build_landing_in_dist_tells_the_window` drives the real
+watcher through a build, a same-name rebuild, a `dist\` deleted and made again, one renamed aside
+and replaced, and a change elsewhere in the workshop, which says nothing. It fails with the
+event's sender removed (mutation-checked).
+
+Owed on the installed build: a build of Tamsin's appears on the bench with no room change. The
+watcher on Windows sees writes made from WSL through `/mnt/c` (the 9P server writes NTFS for her),
+and that is inferred, not yet measured.
+
 ## Known Limitations
 
 - **Manual save backups (v0.6.2)** cover every discovered account's original encrypted

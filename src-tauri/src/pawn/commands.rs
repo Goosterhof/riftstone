@@ -105,6 +105,7 @@ fn workshop_of(state: &AppState) -> Result<std::path::PathBuf, RiftError> {
 
 pub fn get_workshop_impl(state: &AppState, desk: &Desk) -> Result<WorkshopView, RiftError> {
     let workshop = workshop_of(state)?;
+    desk.watch_dist(state);
     let settings = desk.settings();
     Ok(WorkshopView {
         folder: FolderView {

@@ -83,9 +83,54 @@ pub fn arm_labelled(
         return None;
     }
     let ignore = ignore.to_vec();
+    let counted = move |path: &Path| !ignore.iter().any(|dir| within(path, dir));
+    spawn(watcher, rx, quiet, label, counted, on_change)
+}
+
+/// Watch `folder` recursively, but count only changes at or under `only`
+/// (v0.7.3, the workshop's `dist\`). `only` may be missing, replaced or
+/// renamed away: the watch stands on `folder`, which outlives it, so a
+/// `dist\` made again is followed without being armed again (the Heretic's
+/// DW1 on PR #15). `None` when `folder` is not there or the platform watcher
+/// could not start.
+pub fn arm_within(
+    folder: &Path,
+    only: &Path,
+    quiet: Duration,
+    label: &str,
+    on_change: impl Fn() + Send + 'static,
+) -> Option<LibraryWatcher> {
+    if !folder.is_dir() {
+        return None;
+    }
+    let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
+    let mut watcher = match notify::recommended_watcher(tx) {
+        Ok(watcher) => watcher,
+        Err(err) => {
+            log::warn!("the watcher for {label} could not start ({err}); look again by hand to see its changes");
+            return None;
+        }
+    };
+    if let Err(err) = watcher.watch(folder, RecursiveMode::Recursive) {
+        log::warn!("could not watch {label} ({err}); look again by hand to see its changes");
+        return None;
+    }
+    let only = only.to_path_buf();
+    let counted = move |path: &Path| within(path, &only);
+    spawn(watcher, rx, quiet, label, counted, on_change)
+}
+
+fn spawn(
+    watcher: RecommendedWatcher,
+    rx: Receiver<notify::Result<Event>>,
+    quiet: Duration,
+    label: &str,
+    counted: impl Fn(&Path) -> bool + Send + 'static,
+    on_change: impl Fn() + Send + 'static,
+) -> Option<LibraryWatcher> {
     let spawned = std::thread::Builder::new()
         .name("riftstone-watch".into())
-        .spawn(move || settle(&rx, &ignore, quiet, &on_change));
+        .spawn(move || settle(&rx, &counted, quiet, &on_change));
     if let Err(err) = spawned {
         log::warn!("the watcher for {label} could not start its thread: {err}");
         return None;
@@ -97,13 +142,13 @@ pub fn arm_labelled(
 /// Ends when the watcher (the only sender) is dropped.
 fn settle(
     rx: &Receiver<notify::Result<Event>>,
-    ignore: &[PathBuf],
+    counted: &dyn Fn(&Path) -> bool,
     quiet: Duration,
     on_change: &dyn Fn(),
 ) {
     loop {
         match rx.recv() {
-            Ok(event) if counts(&event, ignore) => {}
+            Ok(event) if counts(&event, counted) => {}
             Ok(_) => continue,
             Err(_) => return,
         }
@@ -111,7 +156,7 @@ fn settle(
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             match rx.recv_timeout(left) {
-                Ok(event) if counts(&event, ignore) => deadline = Instant::now() + quiet,
+                Ok(event) if counts(&event, counted) => deadline = Instant::now() + quiet,
                 Ok(_) => {}
                 Err(RecvTimeoutError::Timeout) => break,
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -121,8 +166,9 @@ fn settle(
     }
 }
 
-/// Does this event change what the library holds?
-fn counts(event: &notify::Result<Event>, ignore: &[PathBuf]) -> bool {
+/// Does this event change what is watched? `counted` says whether a path is
+/// one of the watched ones (outside the ignored folders; inside the one).
+fn counts(event: &notify::Result<Event>, counted: &dyn Fn(&Path) -> bool) -> bool {
     let Ok(event) = event else {
         // The watcher lost track (an overflow): rescanning is the safe answer.
         return true;
@@ -141,7 +187,7 @@ fn counts(event: &notify::Result<Event>, ignore: &[PathBuf]) -> bool {
             || event
                 .paths
                 .iter()
-                .any(|path| !in_flight(path) && !ignore.iter().any(|dir| within(path, dir))))
+                .any(|path| !in_flight(path) && counted(path)))
 }
 
 /// `path` is `dir` or lies inside it, compared the way Windows compares paths:
@@ -171,6 +217,33 @@ mod tests {
 
     fn event(kind: EventKind, path: &str) -> notify::Result<Event> {
         Ok(Event::new(kind).add_path(PathBuf::from(path)))
+    }
+
+    /// The library watcher's filter: everything outside `ignore` counts.
+    fn counts(event: &notify::Result<Event>, ignore: &[PathBuf]) -> bool {
+        super::counts(event, &|path| !ignore.iter().any(|dir| within(path, dir)))
+    }
+
+    #[test]
+    fn a_watch_within_counts_only_its_subtree_and_the_folder_itself() {
+        let dist = PathBuf::from("/w/dist");
+        let only = |path: &Path| within(path, &dist);
+        let create = |path: &str| event(EventKind::Create(CreateKind::Any), path);
+        assert!(super::counts(&create("/w/dist/Lantern-0.1.1.zip"), &only));
+        assert!(super::counts(&create("/w/dist"), &only), "dist made again");
+        assert!(
+            super::counts(&create("/W/DIST/x.zip"), &only),
+            "as Windows compares"
+        );
+        assert!(!super::counts(&create("/w/src/stature.lua"), &only));
+        assert!(
+            !super::counts(&create("/w/dist-old/x.zip"), &only),
+            "a sibling"
+        );
+        assert!(
+            !super::counts(&create("/w/dist/x.zip.part"), &only),
+            "in flight"
+        );
     }
 
     #[test]

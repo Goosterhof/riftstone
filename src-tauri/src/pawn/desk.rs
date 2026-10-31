@@ -29,11 +29,17 @@ use crate::pawn::session::PawnSession;
 use crate::pawn::summon::{summon, Launch, RunFolders, Summoning, Watcher};
 use crate::persist;
 use crate::state::AppState;
+use crate::watch::{self, LibraryWatcher};
 
 pub const PAWN_OUTPUT: &str = "rift://pawn-output";
 pub const PAWN_STATE: &str = "rift://pawn-state";
 pub const PAWN_HANDS: &str = "rift://pawn-hands";
 pub const WORKSHOP_CHANGED: &str = "rift://workshop-changed";
+
+/// Quiet time after the last change in the workshop's `dist\` before the
+/// window hears [`WORKSHOP_CHANGED`] (WINDOW-CONTRACT § v0.7: debounced
+/// 500 ms). A build and its receipt land together, so one burst is one event.
+pub const DIST_QUIET: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// The pawn's own settings, in `pawn.json` beside the spine's.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,6 +174,16 @@ struct DeskState {
     last: Option<PawnStateView>,
 }
 
+/// The watch on the workshop's `dist\` (0.7.3): it stands on the workshop
+/// folder itself, which outlives every `dist\`, and counts only what happens
+/// at or under `dist`. `born` is the workshop's own creation time, so a
+/// workshop folder that was replaced is watched afresh at the next look.
+struct DistWatch {
+    workshop: PathBuf,
+    born: Option<std::time::SystemTime>,
+    _watcher: LibraryWatcher,
+}
+
 /// The Workshop's desk: one per stone.
 pub struct Desk {
     settings_path: PathBuf,
@@ -177,6 +193,10 @@ pub struct Desk {
     settings: Mutex<PawnSettings>,
     state: Mutex<DeskState>,
     hand_seq: AtomicU64,
+    /// The watcher on the workshop's `dist\` (0.7.3): 0.7.0–0.7.2 sent
+    /// `rift://workshop-changed` only after a bring-through, so a build
+    /// Tamsin finished never reached the room until it was entered again.
+    dist_watcher: Mutex<Option<DistWatch>>,
     me: Weak<Desk>,
 }
 
@@ -447,12 +467,64 @@ impl Desk {
             settings: Mutex::new(settings),
             state: Mutex::new(DeskState::default()),
             hand_seq: AtomicU64::new(0),
+            dist_watcher: Mutex::new(None),
             me: me.clone(),
         })
     }
 
     pub fn settings(&self) -> PawnSettings {
         lock(&self.settings).clone()
+    }
+
+    /// Watch the workshop's `dist\`, so a build Tamsin writes reaches the
+    /// window as `rift://workshop-changed` (WINDOW-CONTRACT § v0.7). The watch
+    /// stands on the workshop folder (the stone's own, the fence's mount
+    /// point, which she cannot replace) and counts only changes at or under
+    /// `dist`, so a `dist\` deleted, renamed away or made again is followed
+    /// with no further look (the Heretic's DW1 on PR #15). Armed by
+    /// `get_workshop` once the workshop is there and by each summon, which
+    /// makes it; armed again only for a workshop folder that was replaced.
+    /// Off where the spine watches nothing (`watch_library`, the benches'
+    /// tests).
+    pub fn watch_dist(&self, state: &AppState) {
+        if !state.config.watch_library {
+            return;
+        }
+        let Some(workshop) = workshop_dir(state.library_dir()) else {
+            return;
+        };
+        let mut watch = lock(&self.dist_watcher);
+        if !workshop.is_dir() {
+            *watch = None;
+            return;
+        }
+        let born = std::fs::metadata(&workshop)
+            .and_then(|meta| meta.created())
+            .ok();
+        if watch
+            .as_ref()
+            .is_some_and(|w| w.workshop == workshop && w.born == born)
+        {
+            return;
+        }
+        let events = Arc::clone(&state.events);
+        *watch = watch::arm_within(
+            &workshop,
+            &workshop.join("dist"),
+            DIST_QUIET,
+            "the workshop's dist folder",
+            move || events.changed(WORKSHOP_CHANGED),
+        )
+        .map(|watcher| DistWatch {
+            workshop,
+            born,
+            _watcher: watcher,
+        });
+    }
+
+    /// Is the workshop's `dist\` watched?
+    pub fn watching_dist(&self) -> bool {
+        lock(&self.dist_watcher).is_some()
     }
 
     fn save_settings(&self, settings: PawnSettings) -> Result<(), RiftError> {
@@ -680,6 +752,8 @@ impl Desk {
             session,
             ..
         } = self.prepare(state)?;
+        // `prepare` made the workshop's dist: watch it from this summon on.
+        self.watch_dist(state);
         let launch =
             launch(&survey.host.distro, &plan, session).map_err(|refusal| no_fence(refusal.0))?;
 
