@@ -160,9 +160,20 @@ function onHand(hand: PawnHand): void {
   handsByRun.value = { ...handsByRun.value, [hand.runId]: [...rows, hand] };
 }
 
+/** Counts the bench's saves the stone confirmed. A view read before one of
+ *  them can carry `pawn.json` as it was (`get_workshop` reads the settings
+ *  before its WSL survey), so a refresh that started before a save and lands
+ *  after it keeps the bench's own session and inputs: the stone confirmed
+ *  those later than it read the refresh's (the Heretic's BM1 residual on
+ *  PR #14, with `rift://workshop-changed` as the real trigger). */
+let settingsSaved = 0;
+
 async function load(): Promise<void> {
   const backend = await workshop();
-  const next = await backend.getWorkshop();
+  const savedBefore = settingsSaved;
+  const read = await backend.getWorkshop();
+  const mine = view.value;
+  const next = savedBefore !== settingsSaved && mine ? { ...read, session: mine.session, inputs: mine.inputs } : read;
   if (runId.value === null && next.pawn.runId) newRun(next.pawn.runId);
   view.value = next;
 }
@@ -296,6 +307,7 @@ function setSession(part: Partial<PawnSession>): Promise<boolean> {
     if (!current) return false;
     const next = { ...current, ...part };
     const done = await attemptDone(async () => (await workshop()).setPawnSession(next));
+    if (done) settingsSaved += 1;
     if (done && view.value) view.value = { ...view.value, session: next };
     return done;
   };
@@ -307,6 +319,7 @@ function setSession(part: Partial<PawnSession>): Promise<boolean> {
 async function setInputs(next: string[]): Promise<boolean> {
   const done = await attemptDone(async () => (await workshop()).setPawnInputs(next));
   if (!done) return false;
+  settingsSaved += 1;
   if (view.value) view.value = { ...view.value, inputs: [...next] };
   return true;
 }
@@ -450,6 +463,7 @@ async function putBack(plan: PutBackPlan): Promise<boolean> {
 export function resetWorkshop(): void {
   view.value = null;
   sessionSaves = Promise.resolve();
+  settingsSaved = 0;
   handsByRun.value = {};
   outputs.clear();
   retired.clear();

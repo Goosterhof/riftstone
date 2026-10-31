@@ -351,6 +351,28 @@ function asTauri(w: MockWorkshop): MockWorkshop {
   };
 }
 
+/** The Heretic's BM1 residual (PR #14 at 2e8f1cc): a refresh that read
+ *  `pawn.json` before a save and lands after it must not hand the next
+ *  press, or the bench, the session (or inputs) from before that save. */
+function heldRefresh(): { release: () => void; hold: () => void } {
+  mock = createMockWorkshop({ scenario: "contained", beat: 0, script: false });
+  const tauri = asTauri(mock);
+  let holding = false;
+  const gate = { release: ignore, hold: () => (holding = true) };
+  setWorkshopBackend({
+    ...tauri,
+    getWorkshop: async () => {
+      const snapshot = await tauri.getWorkshop();
+      if (!holding) return snapshot;
+      holding = false;
+      return new Promise((resolve) => {
+        gate.release = () => resolve(snapshot);
+      });
+    },
+  });
+  return gate;
+}
+
 describe("THE BENCH's settings, as Tauri answers them", () => {
   it("should keep a chosen mode, effort and model when the stone answers null", async () => {
     mock = createMockWorkshop({ scenario: "contained", beat: 0, script: false });
@@ -423,6 +445,35 @@ describe("THE BENCH's settings, as Tauri answers them", () => {
     expect(w.failure.value).not.toBeNull();
     expect(await w.setSession({ effort: "low" })).toBe(true);
     expect(w.view.value?.session).toStrictEqual({ mode: "plan", effort: "low", model: "default" });
+  });
+
+  it("should keep a saved mode when an older refresh lands after the save", async () => {
+    const gate = heldRefresh();
+    const w = useWorkshop();
+    await w.load();
+    gate.hold();
+    const older = w.load();
+    await flushPromises();
+    expect(await w.setSession({ mode: "acceptEdits" })).toBe(true);
+    gate.release();
+    await older;
+    expect(w.view.value?.session.mode).toBe("acceptEdits");
+    expect(await w.setSession({ effort: "xhigh" })).toBe(true);
+    await w.load();
+    expect(w.view.value?.session).toStrictEqual({ mode: "acceptEdits", effort: "xhigh", model: "default" });
+  });
+
+  it("should keep a saved input when an older refresh lands after the save", async () => {
+    const gate = heldRefresh();
+    const w = useWorkshop();
+    await w.load();
+    gate.hold();
+    const older = w.load();
+    await flushPromises();
+    expect(await w.setInputs(["D:\\Extracts\\vanilla"])).toBe(true);
+    gate.release();
+    await older;
+    expect(w.view.value?.inputs).toStrictEqual(["D:\\Extracts\\vanilla"]);
   });
 
   it("should keep an added input when the stone answers null, and still show a refusal", async () => {

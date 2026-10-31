@@ -420,7 +420,12 @@ and it is not clear what the voice does, nor can i change it."* Three causes, ea
   SAVED in `pawn.json` while the window read it as refused and left the bench unchanged. The mock
   answers `undefined`, so every spec passed. Commands that answer nothing now go through
   `attemptDone()`, and `tests/workshopStore.spec.ts` drives the store through a backend that
-  answers `null` (it fails on the old reading, checked by mutation).
+  answers `null` (it fails on the old reading, checked by mutation). The Heretic's review (BM1)
+  then found two ways a press could still be lost: two quick presses each starting from the old
+  session, and an older refresh (`rift://workshop-changed`) landing after a save. Saves now run in
+  turn, and a refresh that a save outran keeps the bench's own session and inputs. Both have
+  specs, mutation-checked. Its BM2 made the mode lines honest: her shell commands run in the
+  sandbox unasked in every mode, and Auto blocks before it asks.
 
 Owed on the installed build: a summon with each mode (Auto's availability depends on the account),
 and an effort and model she reports back in her own `/status`.

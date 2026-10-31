@@ -1124,6 +1124,11 @@ the investor's own and may be shown.
   `useWorkshop.ts`), never from its value: 0.7.0–0.7.1 read the `null` as a refusal, so every
   voice press and every added input saved in `pawn.json` while the bench stayed unchanged.
   `tests/workshopStore.spec.ts` drives the store through a backend that answers `null`.
+- **The bench's saves are ordered** (the Heretic's BM1 on PR #14). `set_pawn_session` presses run
+  one at a time, each merged onto the session the stone last confirmed when its turn comes. A
+  `get_workshop` that started before a confirmed save and lands after it keeps the window's own
+  session and inputs: `get_workshop` reads `pawn.json` before its WSL survey, so such a view
+  can carry the settings from before the save.
 
 ### The room as built (#00015 §20, rendered at 1320 and 1024)
 
