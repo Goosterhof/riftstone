@@ -2945,9 +2945,10 @@ what it holds.** Rules, each a test or a Sentinel step:
    `PawnMode` has no word for either, and her settings keep `disableBypassPermissionsMode`.
    Before 0.7.2 the mode was always `default` and `acceptEdits` was banned with the other two;
    the investor widened it so the bench can choose, while the fence (items 1–5) holds whatever
-   Claude Code approves. Effort and model ride the same session (`pawn/session.rs`). In every
-   mode her shell commands run inside Claude Code's sandbox without a prompt
-   (`autoAllowBashIfSandboxed`, item 4), so no mode is an every-action approval; Auto's judge
+   Claude Code approves. Effort and model ride the same session (`pawn/session.rs`). Outside
+   Plan, an eligible shell command can run inside Claude Code's sandbox without a prompt
+   (`autoAllowBashIfSandboxed`, item 4; permission-flow exceptions and new network domains can
+   still prompt), so no mode is an every-action approval; Auto's judge
    blocks rather than asks until repeated blocks bring the prompts back. The bench's lines say
    exactly that (the Heretic's BM2 on PR #14).
 7. **The ground is named.** `pawn::fence::ground()` hashes the launch argv (paths normalised),

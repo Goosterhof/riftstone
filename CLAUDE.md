@@ -424,8 +424,8 @@ and it is not clear what the voice does, nor can i change it."* Three causes, ea
   then found two ways a press could still be lost: two quick presses each starting from the old
   session, and an older refresh (`rift://workshop-changed`) landing after a save. Saves now run in
   turn, and a refresh that a save outran keeps the bench's own session and inputs. Both have
-  specs, mutation-checked. Its BM2 made the mode lines honest: her shell commands run in the
-  sandbox unasked in every mode, and Auto blocks before it asks.
+  specs, mutation-checked. Its BM2 made the mode lines honest: outside Plan, most shell commands
+  run in her sandbox unasked, and Auto blocks before it asks.
 
 Owed on the installed build: a summon with each mode (Auto's availability depends on the account),
 and an effort and model she reports back in her own `/status`.
