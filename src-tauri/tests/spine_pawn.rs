@@ -310,6 +310,109 @@ mod desk {
         assert!(view.artifacts[1].in_library);
     }
 
+    /// 0.7.3, the investor's report: *"i am not seeing the built being
+    /// updated once tamsin has build a mod"*. 0.7.0–0.7.2 sent
+    /// `rift://workshop-changed` only after a bring-through, so a build she
+    /// finished reached the room only when it was entered again.
+    #[test]
+    fn a_build_landing_in_dist_tells_the_window() {
+        use riftstone_lib::events::RecordedEvents;
+        use riftstone_lib::pawn::desk::WORKSHOP_CHANGED;
+        use std::time::Duration;
+
+        let bench = Bench::new();
+        let dirs = DataDirs::under(&bench.data_home());
+        let mut config = bench.config(dirs.clone());
+        config.watch_library = true;
+        let events = Arc::new(RecordedEvents::default());
+        let state = AppState::open(
+            config,
+            events.clone(),
+            Box::new(riftstone_lib::keys::MemoryKeyStore::default()),
+        );
+        let heard = |events: &RecordedEvents| {
+            events
+                .all()
+                .iter()
+                .filter(|(name, _)| name == WORKSHOP_CHANGED)
+                .count()
+        };
+        let desk = Desk::new(&dirs.data);
+
+        // No workshop yet: nothing to watch.
+        get_workshop_impl(&state, &desk).unwrap();
+        assert!(!desk.watching_dist());
+
+        // The first summon made it; the room's next look arms the watcher.
+        let workshop = workshop_dir(state.library_dir()).unwrap();
+        fs::create_dir_all(workshop.join("dist")).unwrap();
+        get_workshop_impl(&state, &desk).unwrap();
+        assert!(desk.watching_dist());
+        assert_eq!(heard(&events), 0, "arming says nothing");
+
+        // Tamsin builds: the zip, then its receipt, in one burst.
+        let bytes = b"invented build";
+        let sha: String = Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        fs::write(workshop.join("dist/Lantern Glow-0.1.0.zip"), bytes).unwrap();
+        fs::write(
+            workshop.join("dist/Lantern Glow-0.1.0.receipt.json"),
+            serde_json::to_vec(&serde_json::json!({ "artifact": "Lantern Glow-0.1.0.zip",
+                "sha256": sha, "builtAt": "2026-10-31T13:22:19Z" }))
+            .unwrap(),
+        )
+        .unwrap();
+        support::wait_for(
+            Duration::from_secs(10),
+            "the build reaches the window",
+            || heard(&events) >= 1,
+        );
+        let view = get_workshop_impl(&state, &desk).unwrap();
+        let names: Vec<&str> = view.artifacts.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["Lantern Glow-0.1.0.zip"]);
+        assert_eq!(view.artifacts[0].sha256.as_deref(), Some(sha.as_str()));
+
+        // A rebuild under the same name is a change too. (Each `before` is
+        // read once the last burst has surely settled, so a late event of
+        // an earlier step cannot pass for this one.)
+        let settled = riftstone_lib::pawn::desk::DIST_QUIET * 3;
+        std::thread::sleep(settled);
+        let before = heard(&events);
+        fs::write(workshop.join("dist/Lantern Glow-0.1.0.zip"), b"rebuilt").unwrap();
+        support::wait_for(
+            Duration::from_secs(10),
+            "the rebuild reaches the window",
+            || heard(&events) > before,
+        );
+
+        // A dist that went is let go; the one made again is watched afresh.
+        fs::remove_dir_all(workshop.join("dist")).unwrap();
+        get_workshop_impl(&state, &desk).unwrap();
+        assert!(!desk.watching_dist());
+        fs::create_dir_all(workshop.join("dist")).unwrap();
+        get_workshop_impl(&state, &desk).unwrap();
+        assert!(desk.watching_dist());
+        std::thread::sleep(settled);
+        let before = heard(&events);
+        fs::write(workshop.join("dist/Second.zip"), b"second").unwrap();
+        support::wait_for(Duration::from_secs(10), "the new dist is watched", || {
+            heard(&events) > before
+        });
+    }
+
+    /// The benches' spine watches nothing, the workshop's dist included.
+    #[test]
+    fn a_spine_that_watches_nothing_does_not_watch_dist() {
+        let (_bench, dirs, state) = opened();
+        let desk = Desk::new(&dirs.data);
+        let workshop = workshop_dir(state.library_dir()).unwrap();
+        fs::create_dir_all(workshop.join("dist")).unwrap();
+        get_workshop_impl(&state, &desk).unwrap();
+        assert!(!desk.watching_dist());
+    }
+
     #[test]
     fn a_summon_the_fence_cannot_hold_is_refused_and_nothing_runs() {
         // A distro that does not exist: on Windows `wsl.exe -d` fails the
