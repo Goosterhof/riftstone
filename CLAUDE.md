@@ -486,8 +486,9 @@ whose clipboard holds a picture and no text, before xterm, and sends the bytes t
 and writes it into the workshop's `pasted\` under its own name (`pawn/picture.rs`). It opens
 `pasted\` by handle and refuses it as a link, creates the file exclusively relative to that
 handle, and passes over every name already there, so a link she planted is never written
-through. The window pastes the answered path, `pasted/paste-….png`, into her prompt, and her
-persona says to read it. Text on the clipboard still pastes as text. The persona is not part of
+through. The window types the answered path, `pasted/paste-….png`, into her prompt, to the run it
+was pasted for and only while that run is here (the Heretic's PP1: through xterm's own paste, a
+summoning that took the hollow meanwhile got it), and her persona says to read it. Text on the clipboard still pastes as text. The persona is not part of
 the probe's ground, so this leaves the fence's record standing.
 
 Measured: `pawn::picture`'s tests (the four kinds, the size cap, every paste its own name, a

@@ -81,18 +81,30 @@ function onPaste(event: ClipboardEvent): void {
     return;
   }
   void w.pastePicture(picture).then((done) => {
-    if ("path" in done) {
-      term?.paste(`${done.path} `);
-      useToasts().push("rift", `The picture is in the workshop as ${done.path}, and its path is in her prompt.`);
-    } else if ("refused" in done) {
+    if ("refused" in done) {
       useToasts().push("ember", done.refused);
+      return;
+    }
+    const path = "path" in done ? done.path : done.gone;
+    // Typed to the run it was pasted for, never through xterm's paste, whose
+    // keystrokes go to whichever run is on show by then (the Heretic's PP1):
+    // a summoning that took the hollow meanwhile gets nothing.
+    if ("path" in done && w.runId.value === done.run && w.here.value) {
+      void w.writeFor(done.run, pasted(`${path} `));
+      useToasts().push("rift", `The picture is in the workshop as ${path}, and its path is in her prompt.`);
     } else {
       useToasts().push(
         "warn",
-        `The picture is in the workshop as ${done.gone}, but that summoning ended, so its path was not typed.`,
+        `The picture is in the workshop as ${path}, but that summoning ended, so its path was not typed.`,
       );
     }
   });
+}
+
+/** Text as xterm would paste it: bracketed when her terminal asked for that. */
+function pasted(text: string): string {
+  const bracketed = term !== null && "modes" in term && term.modes.bracketedPasteMode;
+  return bracketed ? `\u001b[200~${text}\u001b[201~` : text;
 }
 
 function hover(_event: MouseEvent, text: string): void {

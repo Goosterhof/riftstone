@@ -1157,8 +1157,9 @@ the investor's own and may be shown.
 - **A pasted picture (0.7.5).** Her Claude Code takes a pasted image from the system clipboard,
   which the fence closes to her, and xterm pastes text only. So the hollow catches a paste whose
   clipboard holds a picture and no text (`pictureIn`, `hollowHands.ts`) before xterm does, sends it
-  to `paste_to_pawn`, and pastes the answered path through xterm (bracketed when her terminal asked
-  for it), only while the run it was sent for is still here. A paste with text pastes the text, as
+  to `paste_to_pawn`, and types the answered path to the run it was sent for (`writeFor`,
+  bracketed when her terminal asked for it), only while that run is on show and here. Never through
+  xterm's own paste, whose keystrokes go to whichever run is on show by then (the Heretic's PP1). A paste with text pastes the text, as
   before. Toasts: the path on success (rift), the stone's sentence on a refusal (ember), and the
   path that was not typed when the summoning ended meanwhile (warn).
 - **The bench folds (0.7.4).** Each bench section folds under its own head and keeps a
