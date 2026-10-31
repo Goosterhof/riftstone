@@ -296,7 +296,7 @@ describe("THE BENCH's SUMMONED WITH (0.7.2)", () => {
     expect(chosen(w, "mode")).toBe("Ask");
     expect(chosen(w, "effort")).toBe("default");
     expect(chosen(w, "model")).toBe("Default");
-    expect(says(w, "mode")).toBe("She asks before every edit and every command.");
+    expect(says(w, "mode")).toBe("She asks before each file edit. Her shell commands run unasked, inside her sandbox.");
   });
 
   it("should say what the chosen setting does, and send it to the stone", async () => {
@@ -307,7 +307,9 @@ describe("THE BENCH's SUMMONED WITH (0.7.2)", () => {
       ?.trigger("click");
     await settle();
     expect(chosen(w, "mode")).toBe("Edits");
-    expect(says(w, "mode")).toBe("Her edits in the workshop go through. Commands still ask.");
+    expect(says(w, "mode")).toBe(
+      "Her file edits in the workshop go through unasked, like her sandboxed shell commands.",
+    );
     await group(w, "effort")
       .findAll("button")
       .find((b) => b.text() === "xhigh")

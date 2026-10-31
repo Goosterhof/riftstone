@@ -2939,13 +2939,17 @@ what it holds.** Rules, each a test or a Sentinel step:
    variable. The stone starts `wsl.exe` with `WSLENV` emptied. The fence's process holds no
    descriptor but the PTY's three and the filter's, which `bwrap` consumes. The persona is
    `--append-system-prompt-file` (#00015 §20.10, always the full voice since 0.7.2).
-6. **Approval prompts stay on.** The permission mode is the player's, from THE BENCH (0.7.2,
+6. **Bypass stays out of reach.** The permission mode is the player's, from THE BENCH (0.7.2,
    investor 2026-10-31): `default` (Ask, the default), `acceptEdits`, `plan` or `auto`. The stone
    never passes `bypassPermissions`, `dontAsk` or `--dangerously-skip-permissions` to a pawn,
    `PawnMode` has no word for either, and her settings keep `disableBypassPermissionsMode`.
    Before 0.7.2 the mode was always `default` and `acceptEdits` was banned with the other two;
    the investor widened it so the bench can choose, while the fence (items 1–5) holds whatever
-   Claude Code approves. Effort and model ride the same session (`pawn/session.rs`).
+   Claude Code approves. Effort and model ride the same session (`pawn/session.rs`). In every
+   mode her shell commands run inside Claude Code's sandbox without a prompt
+   (`autoAllowBashIfSandboxed`, item 4), so no mode is an every-action approval; Auto's judge
+   blocks rather than asks until repeated blocks bring the prompts back. The bench's lines say
+   exactly that (the Heretic's BM2 on PR #14).
 7. **The ground is named.** `pawn::fence::ground()` hashes the launch argv (paths normalised),
    the settings file, the filter bytes and the relay's bytes, and records them with the distro,
    `claude --version` and the WSL kernel version. A probe record holds only for the ground it

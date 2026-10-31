@@ -72,7 +72,12 @@ export const PROBE_HELD_BACK = "Depart first: the probe needs the workshop to it
 export const SESSION_LATER = "Takes effect at the next summon.";
 
 /** THE BENCH's SUMMONED WITH (0.7.2): each choice, and the one line that says
- *  what the chosen one does. The stone passes them as Claude Code's own flags. */
+ *  what the chosen one does. The stone passes them as Claude Code's own flags.
+ *  The mode lines describe her settings as they are (`fence::pawn_settings`):
+ *  her shell commands run in Claude Code's sandbox WITHOUT asking in every
+ *  mode (`autoAllowBashIfSandboxed`), and none may run outside it. No line
+ *  promises a prompt the sandbox or Auto's judge does not give (the Heretic's
+ *  BM2 on PR #14, against code.claude.com/docs/en/permission-modes). */
 export interface DialChoice<T extends string> {
   value: T;
   label: string;
@@ -80,13 +85,21 @@ export interface DialChoice<T extends string> {
 }
 
 export const MODE_CHOICES: DialChoice<PawnMode>[] = [
-  { value: "ask", label: "Ask", says: "She asks before every edit and every command." },
-  { value: "acceptEdits", label: "Edits", says: "Her edits in the workshop go through. Commands still ask." },
-  { value: "plan", label: "Plan", says: "She plans first and changes nothing until you approve the plan." },
+  {
+    value: "ask",
+    label: "Ask",
+    says: "She asks before each file edit. Her shell commands run unasked, inside her sandbox.",
+  },
+  {
+    value: "acceptEdits",
+    label: "Edits",
+    says: "Her file edits in the workshop go through unasked, like her sandboxed shell commands.",
+  },
+  { value: "plan", label: "Plan", says: "She researches and plans, and edits nothing until you approve the plan." },
   {
     value: "auto",
     label: "Auto",
-    says: "Claude Code's own judge approves what it deems safe; the rest still asks. The fence holds either way.",
+    says: "Claude Code's judge approves or blocks each action; repeated blocks bring your prompts back.",
   },
 ];
 
