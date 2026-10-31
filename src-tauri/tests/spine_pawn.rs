@@ -784,3 +784,275 @@ fn bench_run_the_real_probe() {
         record.breached()
     );
 }
+
+/// 0.8: Update in its place (BUILD-SPEC § v0.8): one press lands a build,
+/// swaps the earlier build's installs in one journaled step and puts the
+/// earlier zip away; the earlier build is only ever one the stone brought.
+mod update {
+    use super::*;
+    use rift_core::{BringReason, RiftError};
+    use riftstone_lib::pawn::commands::{
+        bring_through_impl, get_workshop_impl, plan_bring_through_impl, update_build_impl,
+    };
+    use riftstone_lib::pawn::desk::{workshop_dir, Desk};
+    use sha2::{Digest, Sha256};
+    use std::path::{Path, PathBuf};
+
+    const TEX: &str = "natives/stm/stride/stride.tex.251211553";
+
+    fn sha_of(path: &Path) -> String {
+        Sha256::digest(fs::read(path).unwrap())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    /// A build of the invented Stride Tuner in dist, with its receipt.
+    fn build(workshop: &Path, file: &str, version: &str, pixels: &[u8]) -> String {
+        let dist = workshop.join("dist");
+        fs::create_dir_all(&dist).unwrap();
+        let info = format!("name=Stride Tuner\nversion={version}\n");
+        let tex = format!("Stride Tuner/{TEX}");
+        support::write_zip(
+            &dist.join(file),
+            &[
+                ("Stride Tuner/modinfo.ini", info.as_bytes()),
+                (tex.as_str(), pixels),
+            ],
+        );
+        let sha = sha_of(&dist.join(file));
+        let stem = file.strip_suffix(".zip").unwrap();
+        fs::write(
+            dist.join(format!("{stem}.receipt.json")),
+            serde_json::to_vec(&serde_json::json!({ "artifact": file, "sha256": sha,
+                "builtAt": "2026-11-01T00:00:00Z" }))
+            .unwrap(),
+        )
+        .unwrap();
+        sha
+    }
+
+    fn option_of(state: &AppState, file: &str) -> String {
+        state
+            .shelf()
+            .packages()
+            .iter()
+            .find(|p| p.file_name == file)
+            .unwrap_or_else(|| panic!("{file} is in the library"))
+            .options[0]
+            .id
+            .0
+            .clone()
+    }
+
+    /// The scan a bring-through started (or one now) has finished.
+    fn scanned(state: &AppState) {
+        if !state.scan_blocking() {
+            state.wait_until_scanned();
+        }
+    }
+
+    fn older(bench: &Bench) -> PathBuf {
+        riftstone_lib::family::older_folder(&bench.mods).unwrap()
+    }
+
+    /// 0.1.0 brought through and installed, 0.1.1 built.
+    fn first_installed() -> (Bench, Arc<AppState>, Arc<Desk>, PathBuf, String) {
+        let (bench, dirs, state) = opened();
+        let desk = Desk::new(&dirs.data);
+        let workshop = workshop_dir(state.library_dir()).unwrap();
+        let first = build(
+            &workshop,
+            "Stride Tuner-0.1.0.zip",
+            "0.1.0",
+            b"first pixels",
+        );
+        let plan = plan_bring_through_impl(&state, &desk, "Stride Tuner-0.1.0.zip").unwrap();
+        assert!(plan.earlier.is_none(), "nothing was brought before it");
+        bring_through_impl(&state, &desk, "Stride Tuner-0.1.0.zip", &first).unwrap();
+        scanned(&state);
+        deploy::install_impl(&state, &option_of(&state, "Stride Tuner-0.1.0.zip")).unwrap();
+        let second = build(
+            &workshop,
+            "Stride Tuner-0.1.1.zip",
+            "0.1.1",
+            b"second pixels",
+        );
+        (bench, state, desk, workshop, second)
+    }
+
+    #[test]
+    fn one_press_lands_the_build_swaps_its_install_and_puts_the_earlier_away() {
+        let (bench, state, desk, _workshop, second) = first_installed();
+        let earlier_option = option_of(&state, "Stride Tuner-0.1.0.zip");
+
+        let view = get_workshop_impl(&state, &desk).unwrap();
+        let row = view
+            .artifacts
+            .iter()
+            .find(|a| a.name == "Stride Tuner-0.1.1.zip")
+            .unwrap();
+        assert_eq!(row.earlier.as_deref(), Some("Stride Tuner-0.1.0.zip"));
+
+        let plan = plan_bring_through_impl(&state, &desk, "Stride Tuner-0.1.1.zip").unwrap();
+        let earlier = plan.earlier.expect("the card names the earlier build");
+        assert_eq!(earlier.file_name, "Stride Tuner-0.1.0.zip");
+        assert_eq!(earlier.swaps.len(), 1);
+        assert_eq!(earlier.swaps[0].from_option_id, earlier_option);
+        assert_eq!(earlier.swaps[0].from_version.as_deref(), Some("0.1.0"));
+        assert_eq!(earlier.swaps[0].to_version.as_deref(), Some("0.1.1"));
+        assert!(earlier.stays.is_empty() && earlier.puts_away);
+
+        let done = update_build_impl(
+            &state,
+            &desk,
+            "Stride Tuner-0.1.1.zip",
+            &second,
+            Some(&earlier.package_id),
+        )
+        .unwrap();
+        assert_eq!(done.failed, None);
+        assert_eq!(done.earlier.as_deref(), Some("Stride Tuner-0.1.0.zip"));
+        assert_eq!(done.swapped.len(), 1);
+        assert_eq!(done.put_away.len(), 1, "{done:?}");
+        assert!(bench.mods.join("Stride Tuner-0.1.1.zip").is_file());
+        assert!(!bench.mods.join("Stride Tuner-0.1.0.zip").exists());
+        assert!(older(&bench).join("Stride Tuner-0.1.0.zip").is_file());
+        let installs = state.journal_installs();
+        assert!(!installs.contains_key(&rift_core::OptionId(earlier_option)));
+        assert!(installs.contains_key(&rift_core::OptionId(earlier.swaps[0].to_option_id.clone())));
+        assert_eq!(
+            fs::read(bench.game.join(TEX)).unwrap(),
+            b"second pixels",
+            "the game holds the new build's bytes"
+        );
+    }
+
+    #[test]
+    fn a_press_naming_another_earlier_build_than_the_stone_would_replace_is_refused() {
+        let (bench, state, desk, _workshop, second) = first_installed();
+        for shown in [None, Some("0000000000000000")] {
+            let refused =
+                update_build_impl(&state, &desk, "Stride Tuner-0.1.1.zip", &second, shown)
+                    .unwrap_err();
+            assert!(
+                matches!(
+                    refused,
+                    RiftError::Bring {
+                        reason: BringReason::EarlierChanged,
+                        ..
+                    }
+                ),
+                "{refused:?}"
+            );
+        }
+        assert!(
+            !bench.mods.join("Stride Tuner-0.1.1.zip").exists(),
+            "nothing landed"
+        );
+    }
+
+    #[test]
+    fn changed_bytes_are_refused_before_anything_lands() {
+        let (bench, state, desk, workshop, second) = first_installed();
+        let plan = plan_bring_through_impl(&state, &desk, "Stride Tuner-0.1.1.zip").unwrap();
+        build(
+            &workshop,
+            "Stride Tuner-0.1.1.zip",
+            "0.1.1",
+            b"rebuilt pixels",
+        );
+        let refused = update_build_impl(
+            &state,
+            &desk,
+            "Stride Tuner-0.1.1.zip",
+            &second,
+            Some(&plan.earlier.unwrap().package_id),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                refused,
+                RiftError::Bring {
+                    reason: BringReason::BytesChanged,
+                    ..
+                }
+            ),
+            "{refused:?}"
+        );
+        assert!(!bench.mods.join("Stride Tuner-0.1.1.zip").exists());
+    }
+
+    #[test]
+    fn a_mod_the_player_brought_in_is_never_an_earlier_build() {
+        let (bench, dirs, state) = opened();
+        let desk = Desk::new(&dirs.data);
+        let workshop = workshop_dir(state.library_dir()).unwrap();
+        // The same mod name, put in the mods folder by the player, installed.
+        let tex = format!("Stride Tuner/{TEX}");
+        support::write_zip(
+            &bench.mods.join("Stride Tuner (theirs).zip"),
+            &[
+                (
+                    "Stride Tuner/modinfo.ini",
+                    b"name=Stride Tuner\n".as_slice(),
+                ),
+                (tex.as_str(), b"their pixels".as_slice()),
+            ],
+        );
+        assert!(state.scan_blocking());
+        deploy::install_impl(&state, &option_of(&state, "Stride Tuner (theirs).zip")).unwrap();
+        let sha = build(
+            &workshop,
+            "Stride Tuner-0.1.0.zip",
+            "0.1.0",
+            b"first pixels",
+        );
+        let plan = plan_bring_through_impl(&state, &desk, "Stride Tuner-0.1.0.zip").unwrap();
+        assert!(plan.earlier.is_none(), "the stone never brought theirs");
+        let done = update_build_impl(&state, &desk, "Stride Tuner-0.1.0.zip", &sha, None).unwrap();
+        assert!(done.earlier.is_none() && done.swapped.is_empty() && done.put_away.is_empty());
+        assert!(
+            bench.mods.join("Stride Tuner (theirs).zip").is_file(),
+            "theirs stays"
+        );
+    }
+
+    #[test]
+    fn an_earlier_build_with_nothing_installed_is_put_away_and_nothing_is_installed() {
+        let (bench, dirs, state) = opened();
+        let desk = Desk::new(&dirs.data);
+        let workshop = workshop_dir(state.library_dir()).unwrap();
+        let first = build(
+            &workshop,
+            "Stride Tuner-0.1.0.zip",
+            "0.1.0",
+            b"first pixels",
+        );
+        bring_through_impl(&state, &desk, "Stride Tuner-0.1.0.zip", &first).unwrap();
+        scanned(&state);
+        let second = build(
+            &workshop,
+            "Stride Tuner-0.1.1.zip",
+            "0.1.1",
+            b"second pixels",
+        );
+        let earlier = plan_bring_through_impl(&state, &desk, "Stride Tuner-0.1.1.zip")
+            .unwrap()
+            .earlier
+            .unwrap();
+        assert!(earlier.swaps.is_empty() && earlier.puts_away);
+        let done = update_build_impl(
+            &state,
+            &desk,
+            "Stride Tuner-0.1.1.zip",
+            &second,
+            Some(&earlier.package_id),
+        )
+        .unwrap();
+        assert!(done.swapped.is_empty());
+        assert_eq!(done.put_away.len(), 1);
+        assert!(older(&bench).join("Stride Tuner-0.1.0.zip").is_file());
+        assert!(!bench.game.join(TEX).exists(), "nothing was installed");
+    }
+}

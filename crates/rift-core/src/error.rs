@@ -138,6 +138,9 @@ pub enum BringReason {
     NoReceipt,
     ReceiptMismatch,
     NotInDist,
+    /// 0.8: an Update press whose earlier build is not the one the player
+    /// was shown (another, or none, or one where none was shown).
+    EarlierChanged,
 }
 
 impl RiftError {

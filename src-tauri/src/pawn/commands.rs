@@ -15,6 +15,7 @@ use crate::pawn::desk::{workshop_dir, Desk, FenceView, PawnStateView, WORKSHOP_C
 use crate::pawn::mailbox::RunLedger;
 use crate::pawn::put_back::{self, PutBack};
 use crate::pawn::session::PawnSession;
+use crate::pawn::update;
 use crate::state::AppState;
 
 pub type DeskState<'a> = tauri::State<'a, Arc<Desk>>;
@@ -47,6 +48,9 @@ pub struct ArtifactView {
     /// `missing`, `unreadable` or `mismatch`.
     pub receipt_problem: Option<&'static str>,
     pub in_library: bool,
+    /// 0.8: the earlier build an Update would replace, by file name: one the
+    /// stone brought through, still in the mods folder, of the same mod.
+    pub earlier: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -61,8 +65,10 @@ pub struct WorkshopView {
 }
 
 /// The built zips in the workshop's `dist\`, each with the stone's own
-/// digest and what its receipt says.
-fn artifacts(workshop: &Path, mods: &Path) -> Vec<ArtifactView> {
+/// digest, what its receipt says, and (0.8) the earlier build it would
+/// replace.
+fn artifacts(state: &AppState, desk: &Desk, workshop: &Path) -> Vec<ArtifactView> {
+    let mods = state.library_dir();
     // Every name, size and digest through the pinned dist handle; the card's
     // plan reads the receipt the same way.
     bring::pinned_builds(workshop)
@@ -70,6 +76,9 @@ fn artifacts(workshop: &Path, mods: &Path) -> Vec<ArtifactView> {
         .map(
             |(name, bytes, sha)| match bring::plan_bring_through(workshop, mods, &name) {
                 Ok(plan) => ArtifactView {
+                    earlier: (plan.conflict == Conflict::None)
+                        .then(|| earlier_of(state, desk, workshop, &name, &plan.sha256))
+                        .flatten(),
                     name,
                     bytes: plan.bytes,
                     sha256: Some(plan.sha256),
@@ -88,10 +97,34 @@ fn artifacts(workshop: &Path, mods: &Path) -> Vec<ArtifactView> {
                         _ => "unreadable",
                     }),
                     in_library: false,
+                    earlier: None,
                 },
             },
         )
         .collect()
+}
+
+/// The file name of the earlier build `artifact` (these bytes) would replace.
+fn earlier_of(
+    state: &AppState,
+    desk: &Desk,
+    workshop: &Path,
+    artifact: &str,
+    sha: &str,
+) -> Option<String> {
+    let (read_sha, package) =
+        update::read_build(state, &desk.read_builds, workshop, artifact).ok()?;
+    if read_sha != sha {
+        return None;
+    }
+    let shelf = state.shelf();
+    update::earlier_build(
+        &desk.brought.all(),
+        &shelf,
+        &update::mod_names(&package),
+        artifact,
+    )
+    .map(|(brought, _)| brought.file_name)
 }
 
 fn workshop_of(state: &AppState) -> Result<std::path::PathBuf, RiftError> {
@@ -112,7 +145,7 @@ pub fn get_workshop_impl(state: &AppState, desk: &Desk) -> Result<WorkshopView, 
             made: workshop.is_dir(),
             path: workshop.to_string_lossy().into_owned(),
         },
-        artifacts: artifacts(&workshop, state.library_dir()),
+        artifacts: artifacts(state, desk, &workshop),
         pawn: desk.pawn_state(),
         fence: desk.fence_view(state),
         session: settings.session,
@@ -313,19 +346,44 @@ pub async fn get_fence(spine: Spine<'_>, desk: DeskState<'_>) -> Result<FenceVie
     with_desk(&spine, &desk, |state, desk| Ok(desk.fence_view(state))).await
 }
 
+/// The card's plan (0.8: with the earlier build an Update replaces, and what
+/// it does to that build's installs).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BringPlanView {
+    #[serde(flatten)]
+    pub plan: BringPlan,
+    pub earlier: Option<update::EarlierView>,
+}
+
+pub fn plan_bring_through_impl(
+    state: &AppState,
+    desk: &Desk,
+    artifact: &str,
+) -> Result<BringPlanView, RiftError> {
+    let workshop = workshop_of(state)?;
+    let plan = bring::plan_bring_through(&workshop, state.library_dir(), artifact)?;
+    let earlier = if plan.conflict == Conflict::None {
+        match update::read_build(state, &desk.read_builds, &workshop, artifact) {
+            Ok((sha, package)) if sha == plan.sha256 => {
+                update::plan_earlier(state, &desk.brought, &package, artifact)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    Ok(BringPlanView { plan, earlier })
+}
+
 #[tauri::command]
 pub async fn plan_bring_through(
     spine: Spine<'_>,
     desk: DeskState<'_>,
     artifact: String,
-) -> Result<BringPlan, RiftError> {
-    with_desk(&spine, &desk, move |state, _| {
-        let workshop = workshop_of(state)?;
-        Ok(bring::plan_bring_through(
-            &workshop,
-            state.library_dir(),
-            &artifact,
-        )?)
+) -> Result<BringPlanView, RiftError> {
+    with_desk(&spine, &desk, move |state, desk| {
+        plan_bring_through_impl(state, desk, &artifact)
     })
     .await
 }
@@ -343,16 +401,71 @@ pub async fn bring_through(
     artifact: String,
     sha256: String,
 ) -> Result<BringThroughResult, RiftError> {
-    with_desk(&spine, &desk, move |state, _| {
-        let workshop = workshop_of(state)?;
-        let part = crate::pawn::desk::new_run_id();
-        let outcome =
-            bring::bring_through(&workshop, state.library_dir(), &artifact, &sha256, &part)?;
-        state.request_scan();
-        state.events.changed(WORKSHOP_CHANGED);
-        Ok(BringThroughResult { outcome })
+    with_desk(&spine, &desk, move |state, desk| {
+        bring_through_impl(state, desk, &artifact, &sha256)
     })
     .await
+}
+
+pub fn bring_through_impl(
+    state: &Arc<AppState>,
+    desk: &Desk,
+    artifact: &str,
+    sha256: &str,
+) -> Result<BringThroughResult, RiftError> {
+    let workshop = workshop_of(state)?;
+    let part = crate::pawn::desk::new_run_id();
+    let outcome = bring::bring_through(&workshop, state.library_dir(), artifact, sha256, &part)?;
+    // 0.8: the lineage an Update reads later.
+    if let Ok((sha, package)) = update::read_build(state, &desk.read_builds, &workshop, artifact) {
+        if sha == sha256 {
+            update::remember(&desk.brought, artifact, sha256, &package);
+        }
+    }
+    state.request_scan();
+    state.events.changed(WORKSHOP_CHANGED);
+    Ok(BringThroughResult { outcome })
+}
+
+/// 0.8: the Update press: `artifact` by the digest shown, replacing the
+/// earlier build shown (`earlierPackageId`, or none).
+#[tauri::command]
+pub async fn update_build(
+    spine: Spine<'_>,
+    desk: DeskState<'_>,
+    artifact: String,
+    sha256: String,
+    earlier_package_id: Option<String>,
+) -> Result<update::UpdateResult, RiftError> {
+    with_desk(&spine, &desk, move |state, desk| {
+        update_build_impl(
+            state,
+            desk,
+            &artifact,
+            &sha256,
+            earlier_package_id.as_deref(),
+        )
+    })
+    .await
+}
+
+pub fn update_build_impl(
+    state: &Arc<AppState>,
+    desk: &Desk,
+    artifact: &str,
+    sha256: &str,
+    earlier_package_id: Option<&str>,
+) -> Result<update::UpdateResult, RiftError> {
+    let workshop = workshop_of(state)?;
+    update::apply(
+        state,
+        &desk.brought,
+        &desk.read_builds,
+        &workshop,
+        artifact,
+        sha256,
+        earlier_package_id,
+    )
 }
 
 #[tauri::command]
@@ -413,7 +526,7 @@ pub async fn set_pawn_inputs(
 }
 
 /// Every THE WORKSHOP command's invoke name, for RS-10's registration test.
-pub const COMMANDS: [&str; 16] = [
+pub const COMMANDS: [&str; 17] = [
     "get_workshop",
     "summon_pawn",
     "pawn_write",
@@ -430,6 +543,7 @@ pub const COMMANDS: [&str; 16] = [
     "set_pawn_inputs",
     "run_fence_probe",
     "paste_to_pawn",
+    "update_build",
 ];
 
 #[tauri::command]

@@ -197,6 +197,10 @@ pub struct Desk {
     /// `rift://workshop-changed` only after a bring-through, so a build
     /// Tamsin finished never reached the room until it was entered again.
     dist_watcher: Mutex<Option<DistWatch>>,
+    /// 0.8: the builds the stone brought through (`pawn-brought.json`), the
+    /// Update's lineage, and what is inside each build read so far.
+    pub(crate) brought: crate::pawn::update::BroughtRecord,
+    pub(crate) read_builds: crate::pawn::update::ReadBuilds,
     me: Weak<Desk>,
 }
 
@@ -468,6 +472,10 @@ impl Desk {
             state: Mutex::new(DeskState::default()),
             hand_seq: AtomicU64::new(0),
             dist_watcher: Mutex::new(None),
+            brought: crate::pawn::update::BroughtRecord::new(
+                data_dir.join(crate::pawn::update::BroughtRecord::NAME),
+            ),
+            read_builds: crate::pawn::update::ReadBuilds::default(),
             me: me.clone(),
         })
     }
