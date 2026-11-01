@@ -307,6 +307,8 @@ mod tests {
             ops,
             held: None,
             decisions: Vec::new(),
+            held_update: None,
+            update_decisions: Vec::new(),
         }
     }
 

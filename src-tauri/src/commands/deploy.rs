@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rift_core::{ExtractProgress, ModOption, OptionId, Package, RiftError};
+use rift_core::{ExtractProgress, ModOption, OptionId, Package, PackageId, RiftError};
 use rift_deploy::{Actor, DeployContext, Journal};
 
 use crate::commands::overview::game_summary;
@@ -115,6 +115,28 @@ pub fn install_checked(
     actor: &Actor,
     check: Option<InstallCheck<'_>>,
 ) -> Result<InstallResultView, RiftError> {
+    install_in_place(state, option_id, actor, check, &[], &[], None)
+}
+
+/// [`install_checked`], also replacing the installs of `in_place_of` in the
+/// same journaled step, and putting the packages of `then_put_away` away once
+/// it committed, in the same turn, when they are left without an install
+/// (v0.8: THE WORKSHOP's Update, where the earlier build is no version Nexus
+/// knows, so the family rule cannot name it). An id in `in_place_of` that is
+/// not installed when the turn comes is passed over. `from` names the archive
+/// to extract instead of the package's own path: a copy the caller owns and
+/// has verified, which nothing else can replace during the extraction (the
+/// Heretic's U1 residual: the mods folder is the player's, and a file there
+/// can change between a check and the open).
+pub fn install_in_place(
+    state: &Arc<AppState>,
+    option_id: &str,
+    actor: &Actor,
+    check: Option<InstallCheck<'_>>,
+    in_place_of: &[OptionId],
+    then_put_away: &[PackageId],
+    from: Option<&Path>,
+) -> Result<InstallResultView, RiftError> {
     // Play waits while an install is under way, from here to its last byte.
     let _installing = state.begin_install();
     let shelf = state.shelf();
@@ -152,10 +174,15 @@ pub fn install_checked(
                 journal,
             )?;
         }
-        let replacing = family::replaced(&families, &shelf, package, option, |id| {
+        let mut replacing = family::replaced(&families, &shelf, package, option, |id| {
             journal.is_installed(id)
         });
-        let mut source = rift_archive::open(&package.path)?;
+        for id in in_place_of {
+            if journal.is_installed(id) && !replacing.contains(id) {
+                replacing.push(id.clone());
+            }
+        }
+        let mut source = rift_archive::open(from.unwrap_or(&package.path))?;
         let report = rift_deploy::install_replacing(
             ctx,
             journal,
@@ -170,7 +197,15 @@ pub fn install_checked(
         // The step committed: the older versions it left without installs go,
         // still under the deploy lock and before the scan below.
         let journal: &Journal = journal;
-        let put = versions::put_away_older(state, &shelf, families.older_than(&package.id), |id| {
+        let mut older: Vec<PackageId> = families.older_than(&package.id).to_vec();
+        older.extend(
+            then_put_away
+                .iter()
+                .filter(|id| !older.contains(id))
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        let put = versions::put_away_older(state, &shelf, &older, |id| {
             versions::has_install(journal, id)
         });
         Ok((report, put))

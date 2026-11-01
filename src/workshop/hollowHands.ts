@@ -9,6 +9,11 @@
 // - Paste: Ctrl+V, Ctrl+Shift+V and Shift+Insert are handed back to the
 //   webview, whose own paste event xterm reads and sends as one paste
 //   (bracketed when her terminal asked for it). No clipboard is read here.
+// - A pasted picture (0.7.5): her Claude Code cannot reach the player's
+//   clipboard through the fence, and xterm pastes text only. A paste whose
+//   clipboard holds a picture and no text goes to the stone instead, which
+//   writes it into the workshop's pasted\ and answers its path; the hollow
+//   pastes that path into her prompt (pictureIn picks the picture).
 // - Links: Ctrl+click opens an https link in the player's browser, one the
 //   player chose. Her screen is the fence's output, so nothing else opens:
 //   no http, no file, no other scheme, and never a plain click. Claude Code
@@ -67,6 +72,28 @@ export function makeHollowKeyHandler(term: HollowSelection, hooks: HollowKeyHook
       });
     return false;
   };
+}
+
+/** The picture a paste carries, when it carries a picture and no text: a
+ *  screenshot on the clipboard. Text wins, so a copied page's text pastes as
+ *  text even when the clipboard holds its images too. */
+export function pictureIn(data: DataTransfer | null): File | null {
+  if (!data) return null;
+  if (data.getData("text/plain").trim()) return null;
+  for (const item of data.items) {
+    if (item.kind === "file" && item.type.startsWith("image/")) return item.getAsFile();
+  }
+  return null;
+}
+
+/** Bytes as base64, in chunks a call stack can take (a screenshot is megabytes). */
+export function base64Of(bytes: Uint8Array): string {
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
 }
 
 /** The link the player may open from her screen, or null. https only. */

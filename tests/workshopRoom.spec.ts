@@ -9,13 +9,14 @@ import { defineComponent, h } from "vue";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import * as built from "../uno.config";
-import { setRiftBackend, type RiftBackend } from "@/services/rift";
+import { asRiftFailure, setRiftBackend, type RiftBackend } from "@/services/rift";
 import type { LaunchPlanView } from "@/types/rift";
 import { resetToasts } from "@/composables/useToasts";
 import { setWorkshopBackend } from "@/workshop/backend";
 import { createMockWorkshop, type MockWorkshop, type WorkshopScenario } from "@/workshop/mock";
 import { resetWorkshop, useWorkshop } from "@/workshop/useWorkshop";
-import { MODE_CHOICES, NO_RECEIPT_TITLE, SESSION_LATER, TERMINAL_THEME } from "@/workshop/words";
+import { FOLDS_KEY, resetBenchFolds } from "@/workshop/benchFolds";
+import { MODE_CHOICES, NO_RECEIPT_TITLE, SESSION_LATER, TERMINAL_THEME, swapRefusedLine } from "@/workshop/words";
 import WorkshopPage from "@/workshop/WorkshopPage.vue";
 
 /** The hollow without xterm: a fitted 80×24, a focus that does nothing. */
@@ -62,6 +63,8 @@ async function summoned(w: VueWrapper): Promise<void> {
 }
 
 beforeEach(() => {
+  localStorage.removeItem(FOLDS_KEY);
+  resetBenchFolds();
   resetWorkshop();
   resetToasts();
 });
@@ -339,5 +342,326 @@ describe("THE BENCH's SUMMONED WITH (0.7.2)", () => {
     await summoned(w);
     expect(w.text()).toContain(SESSION_LATER);
     expect(group(w, "model").attributes("title")).toBe(SESSION_LATER);
+  });
+});
+
+const toggle = (w: VueWrapper, section: string) => w.get(`[aria-controls="ws-${section}-body"]`);
+const body = (w: VueWrapper, section: string) => w.get(`#ws-${section}-body`);
+const isShown = (w: VueWrapper, section: string) => (body(w, section).element as HTMLElement).style.display !== "none";
+
+describe("THE BENCH folds (0.7.4)", () => {
+  it("should open every section until the investor folds one", async () => {
+    const w = await room();
+    for (const section of ["session", "inputs", "built", "hands"]) {
+      expect(toggle(w, section).attributes("aria-expanded")).toBe("true");
+      expect(isShown(w, section)).toBe(true);
+    }
+  });
+
+  it("should fold SUMMONED WITH to a line that still says how she is summoned", async () => {
+    const w = await room();
+    await toggle(w, "session").trigger("click");
+    expect(toggle(w, "session").attributes("aria-expanded")).toBe("false");
+    expect(isShown(w, "session")).toBe(false);
+    expect(toggle(w, "session").find(".bench__summary").text()).toBe("Ask · default · Default");
+    expect(isShown(w, "built")).toBe(true);
+    await toggle(w, "session").trigger("click");
+    expect(isShown(w, "session")).toBe(true);
+    expect(toggle(w, "session").find(".bench__summary").exists()).toBe(false);
+  });
+
+  it("should remember the folds the investor made in the next window", async () => {
+    const first = await room();
+    await toggle(first, "session").trigger("click");
+    await toggle(first, "inputs").trigger("click");
+    first.unmount();
+    wrapper = null;
+    expect(JSON.parse(localStorage.getItem(FOLDS_KEY) ?? "{}")).toStrictEqual({ session: true, inputs: true });
+
+    resetBenchFolds();
+    resetWorkshop();
+    const w = await room();
+    expect(isShown(w, "session")).toBe(false);
+    expect(isShown(w, "inputs")).toBe(false);
+    expect(toggle(w, "inputs").find(".bench__summary").text()).toBe("none");
+    expect(isShown(w, "built")).toBe(true);
+  });
+
+  it("should keep THE PAWN'S HANDS open while Tamsin waits on a press, and say why", async () => {
+    const w = await room();
+    await summoned(w);
+    await toggle(w, "hands").trigger("click");
+    expect(isShown(w, "hands")).toBe(false);
+    mock.controls.hold();
+    await settle();
+    expect(isShown(w, "hands")).toBe(true);
+    expect(w.text()).toContain("Tamsin asks to start the game.");
+    expect(toggle(w, "hands").attributes("aria-disabled")).toBe("true");
+    expect(toggle(w, "hands").attributes("title")).toBe("Open while Tamsin waits for your answer.");
+    // A press while held changes nothing, and the fold returns once she is answered.
+    await toggle(w, "hands").trigger("click");
+    await button(w, "Not now").trigger("click");
+    await settle();
+    expect(isShown(w, "hands")).toBe(false);
+  });
+
+  it("should keep BUILT open while a build's refusal shows, until it is dismissed (the Heretic's BF1)", async () => {
+    const w = await room();
+    const sentence = "The build changed before its plan could be opened.";
+    setWorkshopBackend({ ...mock, planBringThrough: () => Promise.reject(new Error(sentence)) });
+    await button(w, "Add to library…").trigger("click");
+    await settle();
+    expect(w.get(".built__refused").text()).toBe(sentence);
+    await toggle(w, "built").trigger("click");
+    expect(isShown(w, "built")).toBe(true);
+    expect(toggle(w, "built").attributes("aria-disabled")).toBe("true");
+    expect(toggle(w, "built").attributes("title")).toBe("Open while a build's card or the stone's refusal is showing.");
+    await button(w, "Dismiss").trigger("click");
+    expect(w.find(".built__refused").exists()).toBe(false);
+    await toggle(w, "built").trigger("click");
+    expect(isShown(w, "built")).toBe(false);
+  });
+
+  it("should reopen BUILT for a refusal that lands after it was folded (the Heretic's BF1)", async () => {
+    const w = await room();
+    const sentence = "The build was removed while its plan was being read.";
+    let refuse: ((reason: Error) => void) | null = null;
+    setWorkshopBackend({
+      ...mock,
+      planBringThrough: () =>
+        new Promise((_resolve, reject: (reason: Error) => void) => {
+          refuse = reject;
+        }),
+    });
+    await button(w, "Add to library…").trigger("click");
+    await settle();
+    await toggle(w, "built").trigger("click");
+    expect(isShown(w, "built")).toBe(false);
+    (refuse as unknown as (reason: Error) => void)(new Error(sentence));
+    await settle();
+    expect(isShown(w, "built")).toBe(true);
+    expect(w.get(".built__refused").text()).toBe(sentence);
+  });
+
+  it("should keep BUILT open while a build's card is open", async () => {
+    const w = await room();
+    await button(w, "Add to library…").trigger("click");
+    await settle();
+    expect(w.find(".bring").exists()).toBe(true);
+    await toggle(w, "built").trigger("click");
+    expect(isShown(w, "built")).toBe(true);
+    await button(w, "Cancel").trigger("click");
+    await toggle(w, "built").trigger("click");
+    expect(isShown(w, "built")).toBe(false);
+  });
+
+  it("should ignore storage it cannot read", async () => {
+    localStorage.setItem(FOLDS_KEY, "not json");
+    resetBenchFolds();
+    const w = await room();
+    expect(isShown(w, "session")).toBe(true);
+  });
+});
+
+describe("Update in its place (0.8, #00015 §20.14)", () => {
+  const BUILD = "Stride-Tuner-0.2.0.zip";
+  const row = (w: VueWrapper) => w.get(`[data-artifact="${BUILD}"]`);
+
+  it("should name the earlier build on the row and offer Update first", async () => {
+    const w = await room("update");
+    expect(row(w).find(".built__replaces").text()).toBe("replaces Stride-Tuner-0.1.0.zip");
+    expect(button(w, "Update…").classes()).toContain("rs-btn--primary");
+    expect(button(w, "Add to library…").classes()).toContain("rs-btn--secondary");
+  });
+
+  it("should offer no Update for a build with no earlier build", async () => {
+    const w = await room();
+    expect(w.find(".built__replaces").exists()).toBe(false);
+    expect(w.findAll("button").some((b) => labelOf(b) === "Update…")).toBe(false);
+  });
+
+  it("should show the swap and the put-away, and press with the digest and the plan it showed", async () => {
+    const w = await room("update");
+    await button(w, "Update…").trigger("click");
+    await settle();
+    const card = w.get(".update");
+    expect(card.text()).toContain("IN ITS PLACE");
+    expect(card.get("[data-swap]").text()).toBe("↻Stride Tuner  0.1.0 → 0.2.0");
+    expect(card.get("[data-put-away]").text()).toBe("↧Stride-Tuner-0.1.0.zip to mods (older versions)");
+    expect(button(w, "Update ▶").classes()).toContain("rs-btn--world");
+    const sha = mock.controls.view().artifacts.find((a) => a.name === BUILD)?.sha256;
+    await button(w, "Update ▶").trigger("click");
+    await settle();
+    const pressed = mock.controls.calls.find((c) => c.cmd === "update_build");
+    expect(pressed?.args).toStrictEqual([BUILD, sha, "mock-token-stride-010-to-020"]);
+    expect(w.get(".update__state").text()).toBe("IN YOUR WORLD");
+    expect(w.text()).toContain("Stride-Tuner-0.1.0.zip is put away in mods (older versions)");
+  });
+
+  it("should say the swap did not happen and the game folder is as it was", async () => {
+    const w = await room("updaterefused");
+    await button(w, "Update…").trigger("click");
+    await settle();
+    await button(w, "Update ▶").trigger("click");
+    await settle();
+    expect(w.get(".update__state").text()).toBe("IN THE RIFT");
+    expect(w.text()).toContain("but the swap didn't happen: That install would write over a game file");
+    expect(w.text()).toContain("Stride-Tuner-0.1.0.zip is still installed");
+  });
+
+  it("should refuse bytes that changed after the card opened, and review them again", async () => {
+    const w = await room("update");
+    await button(w, "Update…").trigger("click");
+    await settle();
+    mock.controls.rebuild(BUILD);
+    await settle();
+    await button(w, "Update ▶").trigger("click");
+    await settle();
+    expect(w.get(".update__state").text()).toBe("THE BYTES CHANGED");
+    expect(w.text()).toContain("Nothing was added or swapped.");
+    await button(w, "Review it again").trigger("click");
+    await settle();
+    expect(w.get(".update").text()).toContain("IN ITS PLACE");
+    expect(w.find(".update__state").exists()).toBe(false);
+  });
+});
+
+const asks = (w: VueWrapper) => w.findAll("[data-ask]").map((a) => a.attributes("data-ask"));
+
+describe("SHE ASKS (0.8, R20.36, Q20.33 ruled A)", () => {
+  const BUILD = "Stride-Tuner-0.2.0.zip";
+
+  it("should pin a lone held Play under SHE ASKS", async () => {
+    const w = await room();
+    await summoned(w);
+    mock.controls.hold();
+    await settle();
+    expect(w.get("#ws-she-asks").text()).toBe("SHE ASKS");
+    expect(asks(w)).toStrictEqual(["play"]);
+    expect(w.get('[data-ask="play"]').text()).toContain("Tamsin asks to start the game.");
+  });
+
+  it("should pin both asks oldest first, and answer the update by its run, id and the plan it showed", async () => {
+    const w = await room("update");
+    await summoned(w);
+    const id = mock.controls.holdUpdate(BUILD);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    mock.controls.hold();
+    await settle();
+    expect(asks(w)).toStrictEqual(["update", "play"]);
+    const update = w.get('[data-ask="update"]');
+    expect(update.text()).toContain(`Tamsin asks to update to ${BUILD}.`);
+    expect(update.text()).toContain("↻ Stride Tuner  0.1.0 → 0.2.0");
+    expect(update.text()).toContain("frozen at her ask");
+    expect(w.get('[data-ask="play"]').text()).toContain("Her update is still waiting above.");
+    const updateButton = update.findAll("button").find((b) => labelOf(b) === "Update");
+    await updateButton?.trigger("click");
+    await settle();
+    const answered = mock.controls.calls.find((c) => c.cmd === "answer_pawn_update");
+    expect(answered?.args).toStrictEqual(["run-mock-1", id, true, "mock-token-stride-010-to-020"]);
+    expect(asks(w)).toStrictEqual(["play"]);
+  });
+
+  it("should not update bytes that changed after she asked", async () => {
+    const w = await room("update");
+    await summoned(w);
+    mock.controls.holdUpdate(BUILD);
+    await settle();
+    mock.controls.rebuild(BUILD);
+    await settle();
+    // her ask's card is read again when the ask appears; a new look reads the new bytes
+    resetWorkshop();
+    wrapper?.unmount();
+    wrapper = mount(WorkshopPage, { attachTo: document.body, global: { stubs: { WorkshopHollow: HollowStub } } });
+    await settle();
+    const update = wrapper.get('[data-ask="update"]');
+    expect(update.text()).toContain("changed after Tamsin asked");
+    const updateButton = update.findAll("button").find((b) => labelOf(b) === "Update");
+    expect(updateButton?.attributes("aria-disabled")).toBe("true");
+    await updateButton?.trigger("click");
+    await settle();
+    expect(mock.controls.calls.some((c) => c.cmd === "answer_pawn_update")).toBe(false);
+  });
+
+  it("should keep the order she asked in when she asks again (the Heretic's U5)", async () => {
+    const w = await room("update");
+    await summoned(w);
+    mock.controls.holdUpdate(BUILD);
+    mock.controls.hold();
+    await settle();
+    // She asks for the update again: the stone answers held, naming the one waiting.
+    mock.controls.emitHand({
+      tool: "ask_update",
+      outcome: "held",
+      summary: `asks to update to ${BUILD}`,
+      installId: null,
+      refusal: null,
+    });
+    await settle();
+    expect(asks(w)).toStrictEqual(["update", "play"]);
+  });
+
+  it("should never show an earlier ask's refusal under her next one (the Heretic's U6)", async () => {
+    const w = await room("update");
+    await summoned(w);
+    mock.controls.holdUpdate(BUILD);
+    await settle();
+    let refuse: ((reason: unknown) => void) | null = null;
+    mock.answerPawnUpdate = () =>
+      new Promise((_resolve, reject: (reason: unknown) => void) => {
+        refuse = reject;
+      });
+    const updateButton = w
+      .get('[data-ask="update"]')
+      .findAll("button")
+      .find((b) => labelOf(b) === "Update");
+    await updateButton?.trigger("click");
+    await settle();
+    // Her first ask goes; she asks again before the stone's refusal of the first arrives.
+    mock.controls.emitRawState({ ...mock.controls.view().pawn, heldUpdate: null });
+    mock.controls.holdUpdate(BUILD);
+    await settle();
+    (refuse as unknown as (reason: unknown) => void)(
+      asRiftFailure({ kind: "refused", detail: { reason: "The old ask's own refusal." } }),
+    );
+    await settle();
+    expect(w.get('[data-ask="update"]').text()).not.toContain("The old ask's own refusal.");
+  });
+
+  it("should answer Not now with no earlier build", async () => {
+    const w = await room("update");
+    await summoned(w);
+    const id = mock.controls.holdUpdate(BUILD);
+    await settle();
+    const notNow = w
+      .get('[data-ask="update"]')
+      .findAll("button")
+      .find((b) => labelOf(b) === "Not now");
+    await notNow?.trigger("click");
+    await settle();
+    const answered = mock.controls.calls.find((c) => c.cmd === "answer_pawn_update");
+    expect(answered?.args).toStrictEqual(["run-mock-1", id, false, null]);
+    expect(w.find("#ws-she-asks").exists()).toBe(false);
+  });
+});
+
+describe("a refused swap says what was swapped (the Heretic's U3)", () => {
+  it("should say the game is as it was only when nothing was swapped", () => {
+    const none = swapRefusedLine("Stride-Tuner-0.2.0.zip", {
+      earlier: "Stride-Tuner-0.1.0.zip",
+      swapped: [],
+      failed: "Refused.",
+    });
+    expect(none).toContain("Your game folder is exactly as it was");
+    const one = swapRefusedLine("Stride-Tuner-0.2.0.zip", {
+      earlier: "Stride-Tuner-0.1.0.zip",
+      swapped: [{}],
+      failed: "Refused.",
+    });
+    expect(one).not.toContain("exactly as it was");
+    expect(one).toContain(
+      "1 option was swapped in place of Stride-Tuner-0.1.0.zip's; then a swap was refused: Refused.",
+    );
+    expect(one).toContain("What was not swapped is as it was, and Stride-Tuner-0.1.0.zip stays in your mods folder.");
   });
 });

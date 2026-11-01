@@ -4,18 +4,24 @@
 // in the mods folder, then rift (Bold Choice 24: stone, then cold, then warm).
 // A build with no receipt, an unreadable one or one naming other bytes is
 // listed, faint, and gets no button.
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { ArtifactView, BringThroughPlan } from "@/types/workshop";
 import RiftButton from "@/components/RiftButton.vue";
 import { useToasts } from "@/composables/useToasts";
 import BringThroughCard from "./BringThroughCard.vue";
+import UpdateCard from "./UpdateCard.vue";
 import { useWorkshop } from "./useWorkshop";
 import { NO_RECEIPT_TITLE, RECEIPT_PROBLEM, clock, quads, size } from "./words";
 
 const { artifact } = defineProps<{ artifact: ArtifactView }>();
+/** 0.7.4: the row needs the investor (its card is open, or it shows the
+ *  stone's refusal), so BUILT must not stay folded (the Heretic's BF1). */
+const emit = defineEmits<{ attention: [needed: boolean] }>();
 
 const w = useWorkshop();
 const plan = ref<BringThroughPlan | null>(null);
+/** 0.8: the card the press opened: Update (in its place) or Add to library. */
+const updating = ref(false);
 const opening = ref(false);
 const refusal = ref<string | null>(null);
 
@@ -23,7 +29,19 @@ const hashing = computed(() => artifact.sha256 === null);
 const problem = computed(() => (artifact.receiptProblem ? RECEIPT_PROBLEM[artifact.receiptProblem] : null));
 const bringable = computed(() => !problem.value && !artifact.inLibrary && artifact.receipt !== null);
 
-async function open(): Promise<void> {
+/** The refusal on screen: the template shows it only under the door. */
+const refusalShown = computed(() => refusal.value !== null && bringable.value && !plan.value);
+const attention = computed(() => plan.value !== null || refusalShown.value);
+watch(attention, (needed) => emit("attention", needed), { immediate: true });
+onBeforeUnmount(() => emit("attention", false));
+// a new build under the name is new bytes: the old refusal was about the old ones
+watch(
+  () => artifact.sha256,
+  () => (refusal.value = null),
+);
+
+async function open(update = false): Promise<void> {
+  updating.value = update;
   opening.value = true;
   refusal.value = null;
   const next = await w.planBring(artifact.name);
@@ -76,19 +94,35 @@ async function copy(): Promise<void> {
     <template v-else-if="bringable && !plan">
       <div class="built__door">
         <RiftButton
+          v-if="artifact.earlier"
           variant="primary"
           size="sm"
-          :busy="opening"
+          :busy="opening && updating"
           :refused="hashing"
           :reason="hashing ? 'The stone is still reading these bytes.' : null"
-          @click="open"
+          @click="open(true)"
+        >
+          Update…
+        </RiftButton>
+        <RiftButton
+          :variant="artifact.earlier ? 'secondary' : 'primary'"
+          size="sm"
+          :busy="opening && !updating"
+          :refused="hashing"
+          :reason="hashing ? 'The stone is still reading these bytes.' : null"
+          @click="open(false)"
         >
           Add to library…
         </RiftButton>
       </div>
-      <p v-if="refusal" class="built__refused">{{ refusal }}</p>
+      <p v-if="artifact.earlier" class="built__replaces rs-mono">replaces {{ artifact.earlier }}</p>
+      <div v-if="refusalShown" class="built__refusal">
+        <p class="built__refused" role="alert">{{ refusal }}</p>
+        <button type="button" class="built__dismiss" @click="refusal = null">Dismiss</button>
+      </div>
     </template>
-    <BringThroughCard v-if="plan" :plan="plan" @close="plan = null" />
+    <UpdateCard v-if="plan && updating && plan.earlier" :plan="plan" @close="plan = null" />
+    <BringThroughCard v-else-if="plan" :plan="plan" @close="plan = null" />
   </li>
 </template>
 
@@ -183,12 +217,43 @@ async function copy(): Promise<void> {
   font: 400 var(--rs-text-sm) var(--rs-font-sans);
 }
 .built__door {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rs-space-2);
   margin-top: var(--rs-space-2);
 }
-.built__refused {
+/* 0.8: the earlier build an Update replaces (#00015 R20.30) */
+.built__replaces {
   margin: var(--rs-space-1) 0 0;
+  color: var(--rs-faint);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.built__refusal {
+  display: flex;
+  align-items: baseline;
+  gap: var(--rs-space-2);
+  margin: var(--rs-space-1) 0 0;
+}
+.built__refused {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
   color: var(--rs-ember);
   font: 400 var(--rs-text-sm) var(--rs-font-sans);
+}
+.built__dismiss {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--rs-muted);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.built__dismiss:hover {
+  color: var(--rs-text);
 }
 /* listed under the built ones, faint: no receipt, no door */
 .built.is-faint .built__file,
