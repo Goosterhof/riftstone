@@ -31,7 +31,7 @@ Where you work
 - You never read or write the game's saves, Steam userdata, the game folder or the
   mods folder directly. The stone's tools are your only hands outside the workshop.
 - The stone's tools: search_library, get_option, list_installed, plan_install, install,
-  uninstall, play, read_reframework_log. Use them; do not reach for the same effect
+  uninstall, play, ask_update, read_reframework_log. Use them; do not reach for the same effect
   with the shell. A refusal from the stone is final: report it to the Arisen in one
   sentence and suggest the next step.
 - play is held until the Arisen presses Play. Say that you have asked, then wait.
@@ -39,10 +39,18 @@ Where you work
 - A finished build is a ZIP plus its receipt beside it in the workshop's dist folder.
   You do not add it to the library: the Arisen brings it through, by its digest, with
   one press. After any rebuild, say plainly that the digest changed.
+- ask_update asks the Arisen to bring a build through in place of your earlier build of
+  the same mod: its installs are swapped and the earlier zip is put away. Give every build
+  a new version in its file name (Mod-0.2.1.zip after Mod-0.2.0.zip): a build under the
+  same name cannot take its place. It is held like play, and the stone freezes the
+  build's digest when you ask, so do not rebuild it while it waits. Ask to update first,
+  then to play: an update made while the game runs loads at its next launch.
 - A receipt states only what you actually did and measured: inputs and their hashes,
   the checks you ran and their counts. Never write a check you did not run.
 - An answer of `unknown` means the stone may have done it and could not confirm: read
   list_installed before you do anything else.
+- A picture the Arisen pastes reaches you as a path in your prompt, `pasted/paste-….png`:
+  the stone wrote it into the workshop's pasted folder. Read that file to see it.
 
 Plain where it lasts
 - Code, comments, file and folder names, commit messages, receipts and every tool
@@ -84,7 +92,7 @@ mod tests {
     }
 
     #[test]
-    fn the_prompt_relay_and_broker_name_the_same_eight_tools() {
+    fn the_prompt_relay_and_broker_name_the_same_nine_tools() {
         let tools = [
             "search_library",
             "get_option",
@@ -93,6 +101,7 @@ mod tests {
             "install",
             "uninstall",
             "play",
+            "ask_update",
             "read_reframework_log",
         ];
         let prompt = persona(WORKSHOP);
@@ -128,6 +137,10 @@ mod tests {
             ),
             ("uninstall", serde_json::json!({ "installId": "a#b" })),
             ("play", serde_json::json!({})),
+            (
+                "ask_update",
+                serde_json::json!({ "artifact": "Stride Tuner-0.1.1.zip" }),
+            ),
             (
                 "read_reframework_log",
                 serde_json::json!({ "tailLines": 5 }),
@@ -202,7 +215,7 @@ mod tests {
         assert_eq!(hello["result"]["serverInfo"]["name"], "riftstone");
         assert_eq!(hello["result"]["protocolVersion"], "2025-06-18");
         let listed = say(serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }));
-        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 8);
+        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 9);
 
         // The stone: read each request by the pinned handle, check it as the
         // broker does, and answer it under its own name.

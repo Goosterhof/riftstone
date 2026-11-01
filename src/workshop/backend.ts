@@ -1,6 +1,6 @@
 // THE WORKSHOP's door to the spine (WINDOW-CONTRACT § v0.7). Separate from
 // services/rift.ts so the public build, which never imports src/workshop/,
-// carries none of it (RS-10). Inside Tauri it invokes the fifteen commands;
+// carries none of it (RS-10). Inside Tauri it invokes the eighteen commands;
 // outside it serves the mock in ./mock.ts.
 
 import type { UninstallResultView } from "@/types/rift";
@@ -11,6 +11,8 @@ import type {
   PlayAnswered,
   PutBackPlan,
   PawnSession,
+  UpdateAnswered,
+  UpdateResult,
   WorkshopEvent,
   WorkshopView,
 } from "@/types/workshop";
@@ -21,6 +23,9 @@ export interface WorkshopBackend {
   summonPawn(cols: number, rows: number): Promise<void>;
   /** Keystrokes for the summoning `runId`; the stone refuses them for any other. */
   pawnWrite(runId: string, data: string): Promise<void>;
+  /** 0.7.5: a pasted picture (base64) for the summoning `runId`; answers its
+   *  path in the workshop, relative to her working folder. */
+  pasteToPawn(runId: string, data: string): Promise<string>;
   pawnResize(cols: number, rows: number): Promise<void>;
   departPawn(): Promise<void>;
   answerPawnPlay(runId: string, heldRequestId: string, accept: boolean): Promise<PlayAnswered>;
@@ -28,6 +33,15 @@ export interface WorkshopBackend {
   runFenceProbe(): Promise<FenceView>;
   planBringThrough(artifact: string): Promise<BringThroughPlan>;
   bringThrough(artifact: string, sha256: string): Promise<BringThroughResult>;
+  /** 0.8: the Update press, by the digest shown, carrying out the plan shown (its token). */
+  updateBuild(artifact: string, sha256: string, earlierToken: string | null): Promise<UpdateResult>;
+  /** 0.8: the press on Tamsin's held update ask. */
+  answerPawnUpdate(
+    runId: string,
+    heldRequestId: string,
+    accept: boolean,
+    earlierToken: string | null,
+  ): Promise<UpdateAnswered>;
   planPutBack(runId: string): Promise<PutBackPlan>;
   putBack(runId: string, installIds: string[]): Promise<UninstallResultView[]>;
   openWorkshopFolder(): Promise<void>;
@@ -51,6 +65,7 @@ async function tauriWorkshop(): Promise<WorkshopBackend> {
     getWorkshop: () => invoke("get_workshop"),
     summonPawn: (cols, rows) => invoke("summon_pawn", { cols, rows }),
     pawnWrite: (runId, data) => invoke("pawn_write", { runId, data }),
+    pasteToPawn: (runId, data) => invoke("paste_to_pawn", { runId, data }),
     pawnResize: (cols, rows) => invoke("pawn_resize", { cols, rows }),
     departPawn: () => invoke("depart_pawn"),
     answerPawnPlay: (runId, heldRequestId, accept) => invoke("answer_pawn_play", { runId, heldRequestId, accept }),
@@ -58,6 +73,9 @@ async function tauriWorkshop(): Promise<WorkshopBackend> {
     runFenceProbe: () => invoke("run_fence_probe"),
     planBringThrough: (artifact) => invoke("plan_bring_through", { artifact }),
     bringThrough: (artifact, sha256) => invoke("bring_through", { artifact, sha256 }),
+    updateBuild: (artifact, sha256, earlierToken) => invoke("update_build", { artifact, sha256, earlierToken }),
+    answerPawnUpdate: (runId, heldRequestId, accept, earlierToken) =>
+      invoke("answer_pawn_update", { runId, heldRequestId, accept, earlierToken }),
     planPutBack: (runId) => invoke("plan_put_back", { runId }),
     putBack: (runId, installIds) => invoke("put_back", { runId, installIds }),
     openWorkshopFolder: () => invoke("open_workshop_folder"),

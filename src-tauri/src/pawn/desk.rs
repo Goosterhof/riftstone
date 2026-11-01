@@ -67,6 +67,22 @@ pub struct HostView {
 pub struct HeldView {
     pub held_request_id: String,
     pub since: String,
+    /// 0.8: where her ask stands in the run's ledger: the order she asked in,
+    /// finer than `since` and the same however often she asks again (the
+    /// Heretic's U5).
+    pub order: u64,
+}
+
+/// 0.8: the update ask waiting for the Arisen, with the digest frozen at it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldUpdateView {
+    pub held_request_id: String,
+    pub since: String,
+    pub artifact: String,
+    pub sha256: String,
+    /// Where her ask stands in the run's ledger (see `HeldView::order`).
+    pub order: u64,
 }
 
 /// `PawnStateView` (WINDOW-CONTRACT § v0.7, Types).
@@ -80,6 +96,8 @@ pub struct PawnStateView {
     pub exit_code: Option<u32>,
     pub host: Option<HostView>,
     pub held: Option<HeldView>,
+    /// 0.8: the update ask waiting, if one is.
+    pub held_update: Option<HeldUpdateView>,
 }
 
 impl PawnStateView {
@@ -91,8 +109,20 @@ impl PawnStateView {
             exit_code: None,
             host: None,
             held: None,
+            held_update: None,
         }
     }
+}
+
+/// 0.8: what `answer_pawn_update` did: the decision, what the stone did when
+/// it updated, what Tamsin is told, and whether it reached the ledger.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAnsweredView {
+    pub decision: crate::pawn::mailbox::UpdateDecisionKind,
+    pub result: Option<crate::pawn::update::UpdateResult>,
+    pub told: String,
+    pub persisted: bool,
 }
 
 /// What `answer_pawn_play` did: the decision, and whether it reached the
@@ -197,6 +227,10 @@ pub struct Desk {
     /// `rift://workshop-changed` only after a bring-through, so a build
     /// Tamsin finished never reached the room until it was entered again.
     dist_watcher: Mutex<Option<DistWatch>>,
+    /// 0.8: the builds the stone brought through (`pawn-brought.json`), the
+    /// Update's lineage, and what is inside each build read so far.
+    pub brought: crate::pawn::update::BroughtRecord,
+    pub read_builds: crate::pawn::update::ReadBuilds,
     me: Weak<Desk>,
 }
 
@@ -468,6 +502,10 @@ impl Desk {
             state: Mutex::new(DeskState::default()),
             hand_seq: AtomicU64::new(0),
             dist_watcher: Mutex::new(None),
+            brought: crate::pawn::update::BroughtRecord::new(
+                data_dir.join(crate::pawn::update::BroughtRecord::NAME),
+            ),
+            read_builds: crate::pawn::update::ReadBuilds::default(),
             me: me.clone(),
         })
     }
@@ -617,9 +655,25 @@ impl Desk {
         let desk = lock(&self.state);
         match &desk.live {
             Some(live) => {
-                let held = live.summoning.broker().ledger().held.map(|held| HeldView {
-                    held_request_id: held.held_request_id,
-                    since: held.since,
+                let ledger = live.summoning.broker().ledger();
+                let order = |id: &str| {
+                    ledger
+                        .ops
+                        .iter()
+                        .position(|op| op.id == id)
+                        .map_or(u64::MAX, |i| i as u64)
+                };
+                let held = ledger.held.as_ref().map(|held| HeldView {
+                    order: order(&held.held_request_id),
+                    held_request_id: held.held_request_id.clone(),
+                    since: held.since.clone(),
+                });
+                let held_update = ledger.held_update.as_ref().map(|held| HeldUpdateView {
+                    order: order(&held.held_request_id),
+                    held_request_id: held.held_request_id.clone(),
+                    since: held.since.clone(),
+                    artifact: held.artifact.clone(),
+                    sha256: held.sha256.clone(),
                 });
                 PawnStateView {
                     run_id: Some(live.summoning.run_id().to_string()),
@@ -635,6 +689,7 @@ impl Desk {
                         claude_version: live.host.claude_version.clone(),
                     }),
                     held,
+                    held_update,
                 }
             }
             None => desk.last.clone().unwrap_or_else(PawnStateView::absent),
@@ -777,6 +832,7 @@ impl Desk {
                 claude_version: survey.host.claude_version.clone(),
             }),
             held: None,
+            held_update: None,
         };
         ears.events.emit_value(
             PAWN_STATE,
@@ -1055,6 +1111,37 @@ impl Desk {
             .map_err(|err| RiftError::io("could not reach Tamsin's terminal", err))
     }
 
+    /// `paste_to_pawn` (0.7.5): a picture the player pasted, for the
+    /// summoning the window was showing. It lands in the workshop's
+    /// `pasted\` ([`crate::pawn::picture`]); the path, relative to her
+    /// working folder, is returned, and the window pastes it into her prompt
+    /// through xterm (bracketed only when her terminal asked for it). A run
+    /// that is not the live one gets nothing.
+    pub fn paste_picture(
+        &self,
+        state: &AppState,
+        run_id: &str,
+        bytes: &[u8],
+    ) -> Result<String, RiftError> {
+        let pawn = self.here()?;
+        if pawn.run_id() != run_id {
+            return Err(RiftError::pawn(
+                PawnReason::NotHere,
+                "That summoning is over, so the picture was not pasted.",
+            ));
+        }
+        let workshop = workshop_dir(state.library_dir()).ok_or_else(|| {
+            RiftError::refused("The mods folder has no folder around it for a workshop.")
+        })?;
+        let path = crate::pawn::picture::paste_picture(
+            &workshop,
+            bytes,
+            &crate::pawn::picture::stamp_now(),
+        )
+        .map_err(RiftError::refused)?;
+        Ok(path)
+    }
+
     pub fn resize(&self, cols: u16, rows: u16) {
         if let Some(pawn) = self.live() {
             let _ = pawn.resize(cols, rows);
@@ -1079,6 +1166,7 @@ impl Desk {
             exit_code: None,
             host: None,
             held: None,
+            held_update: None,
         };
         {
             let mut desk = lock(&self.state);
@@ -1142,6 +1230,69 @@ impl Desk {
         }
     }
 
+    /// 0.8: the Arisen's press on Tamsin's held update ask: the Update press
+    /// on the digest frozen at her ask, carrying out the plan the window
+    /// showed (`earlier_shown`, its token). A refusal leaves the ask waiting.
+    pub fn answer_update(
+        &self,
+        state: &Arc<AppState>,
+        run_id: &str,
+        held_request_id: &str,
+        accept: bool,
+        earlier_shown: Option<&str>,
+    ) -> Result<UpdateAnsweredView, RiftError> {
+        use crate::pawn::mailbox::UpdateRefusal;
+        let pawn = self
+            .here()
+            .map_err(|_| RiftError::pawn(PawnReason::StaleHeld, "Tamsin's summoning has ended."))?;
+        let workshop = workshop_dir(state.library_dir()).ok_or_else(|| {
+            RiftError::refused("The mods folder has no folder around it for a workshop.")
+        })?;
+        let mut result = None;
+        let answered = pawn
+            .broker()
+            .answer_update(run_id, held_request_id, accept, |held| {
+                let done = crate::pawn::update::apply(
+                    state,
+                    &self.brought,
+                    &self.read_builds,
+                    &workshop,
+                    &held.artifact,
+                    &held.sha256,
+                    earlier_shown,
+                )?;
+                let told = crate::pawn::update::told(&held.artifact, &done);
+                result = Some(done);
+                Ok::<_, RiftError>(told)
+            });
+        match answered {
+            Ok(answered) => {
+                if !answered.persisted {
+                    log::warn!("the Arisen's answer to a held update could not be recorded");
+                }
+                Ok(UpdateAnsweredView {
+                    decision: answered.decision,
+                    result,
+                    told: answered.summary,
+                    persisted: answered.persisted,
+                })
+            }
+            Err(UpdateRefusal::NothingHeld) => Err(RiftError::pawn(
+                PawnReason::NothingHeld,
+                "No update is waiting.",
+            )),
+            Err(UpdateRefusal::StaleHeld | UpdateRefusal::Answering) => Err(RiftError::pawn(
+                PawnReason::StaleHeld,
+                "That update ask is not the one waiting now.",
+            )),
+            Err(UpdateRefusal::LedgerDown) => Err(RiftError::pawn(
+                PawnReason::LedgerDown,
+                "Tamsin's ledger cannot be written, so nothing more changes in this summoning.",
+            )),
+            Err(UpdateRefusal::Refused(err)) => Err(err),
+        }
+    }
+
     fn hand(&self, run_id: &str, handled: &Handled) -> PawnHand {
         let answer = &handled.answer;
         let outcome = if handled.repeated {
@@ -1200,6 +1351,7 @@ impl Desk {
             exit_code,
             host: None,
             held: None,
+            held_update: None,
         };
         desk.last = Some(view.clone());
         Some(view)

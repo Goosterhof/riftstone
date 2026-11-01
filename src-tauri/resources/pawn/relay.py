@@ -69,7 +69,7 @@ TOOLS = [
     },
     {
         "name": "list_installed",
-        "description": "What is installed now, with ids, origins and who placed each; also whether a Play is waiting and the Arisen's last answer to one.",
+        "description": "What is installed now, with ids, origins and who placed each; also whether a Play or an update is waiting and the Arisen's last answer to each.",
         "inputSchema": schema({}, []),
     },
     {
@@ -97,6 +97,14 @@ TOOLS = [
         "name": "play",
         "description": "Ask the Arisen to start the game. It is held until the Arisen answers; a later call, or list_installed, tells you the answer.",
         "inputSchema": schema({}, []),
+    },
+    {
+        "name": "ask_update",
+        "description": "Ask the Arisen to add a finished build from dist to the mods folder, in place of your earlier build of the same mod: its installs are swapped for this build's and the earlier zip is put away. The stone freezes the build's digest now. It is held until the Arisen answers; a later call, or list_installed, tells you the answer.",
+        "inputSchema": schema(
+            {"artifact": {"type": "string", "minLength": 1, "maxLength": 255, "pattern": "\\.[zZ][iI][pP]$"}},
+            ["artifact"],
+        ),
     },
     {
         "name": "read_reframework_log",

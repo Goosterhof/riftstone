@@ -475,6 +475,66 @@ does nothing, instead of seeming to do nothing.
 `tests/workshopRoom.spec.ts` § THE BENCH folds covers the fold, the summary, the memory across
 windows, unreadable storage and the held rule (mutation-checked). Rendered at 1320 from the mock.
 
+## A picture pasted to Tamsin — 0.7.5 (investor report, 31 October 2026)
+
+*"i can not paste to Tamsin, when i want to show a screenshot of something i can not paste it
+in."* Claude Code takes a pasted image by reading the system clipboard itself, and Tamsin's runs
+in WSL inside the fence, which closes every way to Windows (RS-9), so her Ctrl+V can never reach
+the investor's clipboard. The hollow's paste carried text only. Now the hollow catches a paste
+whose clipboard holds a picture and no text, before xterm, and sends the bytes to
+`paste_to_pawn`. The stone takes a PNG, JPEG, GIF or WebP by its own first bytes, at most 20 MiB,
+and writes it into the workshop's `pasted\` under its own name (`pawn/picture.rs`). It opens
+`pasted\` by handle and refuses it as a link, creates the file exclusively relative to that
+handle, and passes over every name already there, so a link she planted is never written
+through. The window types the answered path, `pasted/paste-….png`, into her prompt, to the run it
+was pasted for and only while that run is here (the Heretic's PP1: through xterm's own paste, a
+summoning that took the hollow meanwhile got it), and her persona says to read it. Text on the clipboard still pastes as text. The persona is not part of
+the probe's ground, so this leaves the fence's record standing.
+
+Measured: `pawn::picture`'s tests (the four kinds, the size cap, every paste its own name, a
+linked `pasted\`, a planted link under the next name), the store's and hands' specs, and in
+headless Chromium on the mock: a PNG pasted on the terminal put its path in her prompt, and a
+clipboard with text and a picture pasted the text. Owed on the installed build: a screenshot
+from the Snipping Tool, pasted with Ctrl+V, read by her with the Read tool.
+
+## Update in its place — 0.8.0 (investor ask, 31 October 2026)
+
+*"can we also easily update the mods from the built section? so i can itterate faster through mod
+versions?"* Ruled the same night and the next morning: one press lands a build, swaps its earlier
+build's installs and puts the earlier zip away; lineage is the stone's own record plus the
+player's press; Tamsin may ask, held like her Play; every waiting ask is pinned under SHE ASKS, a
+lone Play included; her ask also adds a first build. BUILD-SPEC § v0.8 and WINDOW-CONTRACT § v0.8
+carry it whole; design #00015 §20.14.
+
+- **Lineage** (`pawn/update.rs`): `pawn-brought.json` records every build the stone brought
+  through, with the `modinfo.ini` names inside it, read from the stone's own staged copy. A
+  build's earlier build is the newest recorded one, still in the mods folder with the recorded
+  bytes, that shares a name: never a mod the player brought in.
+- **The press** (`update_build`): the digest and the earlier build shown, or `bytesChanged` /
+  `earlierChanged`; land; scan; each install of the earlier build swapped for the same option of
+  the new one in one journaled step (`deploy::install_in_place`); the earlier zip put away in the
+  last swap's turn. A refused swap leaves the build landed and the game as it was.
+- **Her ask** (`ask_update`, relay tool nine): held with the digest frozen; read by
+  `list_installed`, delivered once by her next ask. The press (`answer_pawn_update`) runs without
+  the broker's lock, marked in flight, because a swap takes the game folder's turn.
+- **The window**: the row's `replaces …` and `Update…`, `UpdateCard.vue` (`IN ITS PLACE`, each
+  step on the ground it lands on), `SheAsks.vue` above the hands, and the nav's ask count.
+  `window.workshopMock` exposes the mock's controls in `npm run dev` (`holdUpdate`, `hold`,
+  `rebuild`); the scenes `?workshop=update` and `updaterefused`.
+
+The Heretic's Assay of `08be360` (NEEDS WORK) is repaired: the press carries the plan's token, so
+other swaps refuse it before anything lands, and the plan is read again after landing (U2); the
+swaps extract the stone's own verified copy of the landed bytes, never the mods folder's file,
+and each swap's turn checks the earlier build's installs are still the ones left to swap (U1, U2
+and their residuals at `75b1dc9`); a refused swap says what was swapped (U3); an old build never updates to a newer one, the record keeping
+first-brought order (U4); SHE ASKS orders by each ask's place in her ledger (U5); a refusal shows
+only under the ask it answered (U6); the read cache keys on file name and digest (N1). Each has a
+spine test or a room spec, mutation-checked where a guard could be removed alone.
+
+Owed on the installed build: **re-run the fence probe** (the relay's ninth tool changes the ground,
+so the chip reads unprobed until it does), then one loop with Tamsin: a build, her ask, Update, and
+the game reading the new bytes.
+
 ## Known Limitations
 
 - **Manual save backups (v0.6.2)** cover every discovered account's original encrypted

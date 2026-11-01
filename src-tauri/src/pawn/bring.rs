@@ -228,6 +228,37 @@ pub fn pinned_builds(workshop: &Path) -> Vec<(String, u64, String)> {
     builds
 }
 
+/// 0.8: a copy of the artifact the stone owns, for reading what is inside it
+/// (its options and `modinfo.ini` names): copied through the pinned `dist\`
+/// handle into `into` (a fresh folder of the stone's own, made here) under
+/// the artifact's own name, so the scan names its package as the mods folder
+/// will. Returns the copy's path, digest and length: the copy is hashed, and
+/// it is what is read, so no path she could replace is ever opened.
+pub fn stage_build(
+    workshop: &Path,
+    artifact: &str,
+    into: &Path,
+) -> Result<(std::path::PathBuf, String, u64), BringRefusal> {
+    let dist = dist(workshop)?;
+    let mut source = open_artifact(&dist, artifact)?;
+    fs::create_dir_all(into).map_err(io_refusal)?;
+    let staged = into.join(artifact);
+    let copied = (|| -> io::Result<()> {
+        let mut target = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged)?;
+        io::copy(&mut source, &mut target)?;
+        target.flush()
+    })();
+    if let Err(err) = copied {
+        let _ = fs::remove_file(&staged);
+        return Err(io_refusal(err));
+    }
+    let (sha, bytes) = digest_file(&staged).map_err(io_refusal)?;
+    Ok((staged, sha, bytes))
+}
+
 /// Is `name` in the mods folder (compared as Windows compares names), and
 /// does it hold `sha256`?
 fn conflict(mods: &Path, name: &str, sha256: &str) -> io::Result<Conflict> {

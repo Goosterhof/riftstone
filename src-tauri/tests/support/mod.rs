@@ -343,6 +343,11 @@ impl GatedEvents {
         *self.open.lock().unwrap() = true;
         self.opened.notify_all();
     }
+
+    /// Hold the gated event again (a test that set up with it open).
+    pub fn close(&self) {
+        *self.open.lock().unwrap() = false;
+    }
 }
 
 impl riftstone_lib::events::EventSink for GatedEvents {

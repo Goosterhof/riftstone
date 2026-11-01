@@ -9,6 +9,7 @@ import type { ArtifactView, BringThroughPlan } from "@/types/workshop";
 import RiftButton from "@/components/RiftButton.vue";
 import { useToasts } from "@/composables/useToasts";
 import BringThroughCard from "./BringThroughCard.vue";
+import UpdateCard from "./UpdateCard.vue";
 import { useWorkshop } from "./useWorkshop";
 import { NO_RECEIPT_TITLE, RECEIPT_PROBLEM, clock, quads, size } from "./words";
 
@@ -19,6 +20,8 @@ const emit = defineEmits<{ attention: [needed: boolean] }>();
 
 const w = useWorkshop();
 const plan = ref<BringThroughPlan | null>(null);
+/** 0.8: the card the press opened: Update (in its place) or Add to library. */
+const updating = ref(false);
 const opening = ref(false);
 const refusal = ref<string | null>(null);
 
@@ -37,7 +40,8 @@ watch(
   () => (refusal.value = null),
 );
 
-async function open(): Promise<void> {
+async function open(update = false): Promise<void> {
+  updating.value = update;
   opening.value = true;
   refusal.value = null;
   const next = await w.planBring(artifact.name);
@@ -90,22 +94,35 @@ async function copy(): Promise<void> {
     <template v-else-if="bringable && !plan">
       <div class="built__door">
         <RiftButton
+          v-if="artifact.earlier"
           variant="primary"
           size="sm"
-          :busy="opening"
+          :busy="opening && updating"
           :refused="hashing"
           :reason="hashing ? 'The stone is still reading these bytes.' : null"
-          @click="open"
+          @click="open(true)"
+        >
+          Update…
+        </RiftButton>
+        <RiftButton
+          :variant="artifact.earlier ? 'secondary' : 'primary'"
+          size="sm"
+          :busy="opening && !updating"
+          :refused="hashing"
+          :reason="hashing ? 'The stone is still reading these bytes.' : null"
+          @click="open(false)"
         >
           Add to library…
         </RiftButton>
       </div>
+      <p v-if="artifact.earlier" class="built__replaces rs-mono">replaces {{ artifact.earlier }}</p>
       <div v-if="refusalShown" class="built__refusal">
         <p class="built__refused" role="alert">{{ refusal }}</p>
         <button type="button" class="built__dismiss" @click="refusal = null">Dismiss</button>
       </div>
     </template>
-    <BringThroughCard v-if="plan" :plan="plan" @close="plan = null" />
+    <UpdateCard v-if="plan && updating && plan.earlier" :plan="plan" @close="plan = null" />
+    <BringThroughCard v-else-if="plan" :plan="plan" @close="plan = null" />
   </li>
 </template>
 
@@ -200,7 +217,17 @@ async function copy(): Promise<void> {
   font: 400 var(--rs-text-sm) var(--rs-font-sans);
 }
 .built__door {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--rs-space-2);
   margin-top: var(--rs-space-2);
+}
+/* 0.8: the earlier build an Update replaces (#00015 R20.30) */
+.built__replaces {
+  margin: var(--rs-space-1) 0 0;
+  color: var(--rs-faint);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 .built__refusal {
   display: flex;
