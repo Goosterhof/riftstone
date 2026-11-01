@@ -9,14 +9,14 @@ import { defineComponent, h } from "vue";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import * as built from "../uno.config";
-import { setRiftBackend, type RiftBackend } from "@/services/rift";
+import { asRiftFailure, setRiftBackend, type RiftBackend } from "@/services/rift";
 import type { LaunchPlanView } from "@/types/rift";
 import { resetToasts } from "@/composables/useToasts";
 import { setWorkshopBackend } from "@/workshop/backend";
 import { createMockWorkshop, type MockWorkshop, type WorkshopScenario } from "@/workshop/mock";
 import { resetWorkshop, useWorkshop } from "@/workshop/useWorkshop";
 import { FOLDS_KEY, resetBenchFolds } from "@/workshop/benchFolds";
-import { MODE_CHOICES, NO_RECEIPT_TITLE, SESSION_LATER, TERMINAL_THEME } from "@/workshop/words";
+import { MODE_CHOICES, NO_RECEIPT_TITLE, SESSION_LATER, TERMINAL_THEME, swapRefusedLine } from "@/workshop/words";
 import WorkshopPage from "@/workshop/WorkshopPage.vue";
 
 /** The hollow without xterm: a fitted 80×24, a focus that does nothing. */
@@ -480,7 +480,7 @@ describe("Update in its place (0.8, #00015 §20.14)", () => {
     expect(w.findAll("button").some((b) => labelOf(b) === "Update…")).toBe(false);
   });
 
-  it("should show the swap and the put-away, and press with the digest and the earlier build it showed", async () => {
+  it("should show the swap and the put-away, and press with the digest and the plan it showed", async () => {
     const w = await room("update");
     await button(w, "Update…").trigger("click");
     await settle();
@@ -493,7 +493,7 @@ describe("Update in its place (0.8, #00015 §20.14)", () => {
     await button(w, "Update ▶").trigger("click");
     await settle();
     const pressed = mock.controls.calls.find((c) => c.cmd === "update_build");
-    expect(pressed?.args).toStrictEqual([BUILD, sha, "pkg-stride-010"]);
+    expect(pressed?.args).toStrictEqual([BUILD, sha, "mock-token-stride-010-to-020"]);
     expect(w.get(".update__state").text()).toBe("IN YOUR WORLD");
     expect(w.text()).toContain("Stride-Tuner-0.1.0.zip is put away in mods (older versions)");
   });
@@ -541,7 +541,7 @@ describe("SHE ASKS (0.8, R20.36, Q20.33 ruled A)", () => {
     expect(w.get('[data-ask="play"]').text()).toContain("Tamsin asks to start the game.");
   });
 
-  it("should pin both asks oldest first, and answer the update by its run, id and earlier build", async () => {
+  it("should pin both asks oldest first, and answer the update by its run, id and the plan it showed", async () => {
     const w = await room("update");
     await summoned(w);
     const id = mock.controls.holdUpdate(BUILD);
@@ -558,7 +558,7 @@ describe("SHE ASKS (0.8, R20.36, Q20.33 ruled A)", () => {
     await updateButton?.trigger("click");
     await settle();
     const answered = mock.controls.calls.find((c) => c.cmd === "answer_pawn_update");
-    expect(answered?.args).toStrictEqual(["run-mock-1", id, true, "pkg-stride-010"]);
+    expect(answered?.args).toStrictEqual(["run-mock-1", id, true, "mock-token-stride-010-to-020"]);
     expect(asks(w)).toStrictEqual(["play"]);
   });
 
@@ -583,6 +583,51 @@ describe("SHE ASKS (0.8, R20.36, Q20.33 ruled A)", () => {
     expect(mock.controls.calls.some((c) => c.cmd === "answer_pawn_update")).toBe(false);
   });
 
+  it("should keep the order she asked in when she asks again (the Heretic's U5)", async () => {
+    const w = await room("update");
+    await summoned(w);
+    mock.controls.holdUpdate(BUILD);
+    mock.controls.hold();
+    await settle();
+    // She asks for the update again: the stone answers held, naming the one waiting.
+    mock.controls.emitHand({
+      tool: "ask_update",
+      outcome: "held",
+      summary: `asks to update to ${BUILD}`,
+      installId: null,
+      refusal: null,
+    });
+    await settle();
+    expect(asks(w)).toStrictEqual(["update", "play"]);
+  });
+
+  it("should never show an earlier ask's refusal under her next one (the Heretic's U6)", async () => {
+    const w = await room("update");
+    await summoned(w);
+    mock.controls.holdUpdate(BUILD);
+    await settle();
+    let refuse: ((reason: unknown) => void) | null = null;
+    mock.answerPawnUpdate = () =>
+      new Promise((_resolve, reject: (reason: unknown) => void) => {
+        refuse = reject;
+      });
+    const updateButton = w
+      .get('[data-ask="update"]')
+      .findAll("button")
+      .find((b) => labelOf(b) === "Update");
+    await updateButton?.trigger("click");
+    await settle();
+    // Her first ask goes; she asks again before the stone's refusal of the first arrives.
+    mock.controls.emitRawState({ ...mock.controls.view().pawn, heldUpdate: null });
+    mock.controls.holdUpdate(BUILD);
+    await settle();
+    (refuse as unknown as (reason: unknown) => void)(
+      asRiftFailure({ kind: "refused", detail: { reason: "The old ask's own refusal." } }),
+    );
+    await settle();
+    expect(w.get('[data-ask="update"]').text()).not.toContain("The old ask's own refusal.");
+  });
+
   it("should answer Not now with no earlier build", async () => {
     const w = await room("update");
     await summoned(w);
@@ -597,5 +642,26 @@ describe("SHE ASKS (0.8, R20.36, Q20.33 ruled A)", () => {
     const answered = mock.controls.calls.find((c) => c.cmd === "answer_pawn_update");
     expect(answered?.args).toStrictEqual(["run-mock-1", id, false, null]);
     expect(w.find("#ws-she-asks").exists()).toBe(false);
+  });
+});
+
+describe("a refused swap says what was swapped (the Heretic's U3)", () => {
+  it("should say the game is as it was only when nothing was swapped", () => {
+    const none = swapRefusedLine("Stride-Tuner-0.2.0.zip", {
+      earlier: "Stride-Tuner-0.1.0.zip",
+      swapped: [],
+      failed: "Refused.",
+    });
+    expect(none).toContain("Your game folder is exactly as it was");
+    const one = swapRefusedLine("Stride-Tuner-0.2.0.zip", {
+      earlier: "Stride-Tuner-0.1.0.zip",
+      swapped: [{}],
+      failed: "Refused.",
+    });
+    expect(one).not.toContain("exactly as it was");
+    expect(one).toContain(
+      "1 option was swapped in place of Stride-Tuner-0.1.0.zip's; then a swap was refused: Refused.",
+    );
+    expect(one).toContain("What was not swapped is as it was, and Stride-Tuner-0.1.0.zip stays in your mods folder.");
   });
 });

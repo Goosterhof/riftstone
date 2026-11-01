@@ -14,7 +14,7 @@ import type { RiftFailure } from "@/services/rift";
 import { useToasts } from "@/composables/useToasts";
 import { useLaunch } from "@/composables/useLaunch";
 import { useWorkshop } from "./useWorkshop";
-import { quads, size, swapLine, updatedLine } from "./words";
+import { quads, size, swapLine, swapRefusedLine, updatedLine } from "./words";
 
 const { plan: opened } = defineProps<{ plan: BringThroughPlan }>();
 const emit = defineEmits<{ close: [] }>();
@@ -159,8 +159,7 @@ onMounted(async () => {
       </p>
     </template>
     <p v-else-if="phase === 'swapRefused' && done" class="update__note update__note--ember">
-      {{ plan.artifact }} is in your mods folder, but the swap didn't happen: {{ done.failed }} Your game folder is
-      exactly as it was: {{ done.earlier }} is still installed, and its zip stays in your mods folder.
+      {{ swapRefusedLine(plan.artifact, done) }}
     </p>
     <template v-else-if="phase === 'bytesChanged' || phase === 'planChanged'">
       <p class="update__note" :class="phase === 'bytesChanged' ? 'update__note--ember' : 'update__note--warn'">

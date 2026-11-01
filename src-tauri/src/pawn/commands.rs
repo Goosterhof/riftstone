@@ -428,7 +428,7 @@ pub fn bring_through_impl(
 }
 
 /// 0.8: the Arisen's press on Tamsin's held update ask, by its run and id,
-/// replacing the earlier build the window showed.
+/// carrying out the plan the window showed (`earlierToken`).
 #[tauri::command]
 pub async fn answer_pawn_update(
     spine: Spine<'_>,
@@ -436,7 +436,7 @@ pub async fn answer_pawn_update(
     run_id: String,
     held_request_id: String,
     accept: bool,
-    earlier_package_id: Option<String>,
+    earlier_token: Option<String>,
 ) -> Result<crate::pawn::desk::UpdateAnsweredView, RiftError> {
     with_desk(&spine, &desk, move |state, desk| {
         desk.answer_update(
@@ -444,30 +444,24 @@ pub async fn answer_pawn_update(
             &run_id,
             &held_request_id,
             accept,
-            earlier_package_id.as_deref(),
+            earlier_token.as_deref(),
         )
     })
     .await
 }
 
-/// 0.8: the Update press: `artifact` by the digest shown, replacing the
-/// earlier build shown (`earlierPackageId`, or none).
+/// 0.8: the Update press: `artifact` by the digest shown, carrying out the
+/// plan shown (`earlierToken`, the card's `earlier.token`, or none).
 #[tauri::command]
 pub async fn update_build(
     spine: Spine<'_>,
     desk: DeskState<'_>,
     artifact: String,
     sha256: String,
-    earlier_package_id: Option<String>,
+    earlier_token: Option<String>,
 ) -> Result<update::UpdateResult, RiftError> {
     with_desk(&spine, &desk, move |state, desk| {
-        update_build_impl(
-            state,
-            desk,
-            &artifact,
-            &sha256,
-            earlier_package_id.as_deref(),
-        )
+        update_build_impl(state, desk, &artifact, &sha256, earlier_token.as_deref())
     })
     .await
 }
@@ -477,7 +471,7 @@ pub fn update_build_impl(
     desk: &Desk,
     artifact: &str,
     sha256: &str,
-    earlier_package_id: Option<&str>,
+    earlier_token: Option<&str>,
 ) -> Result<update::UpdateResult, RiftError> {
     let workshop = workshop_of(state)?;
     update::apply(
@@ -487,7 +481,7 @@ pub fn update_build_impl(
         &workshop,
         artifact,
         sha256,
-        earlier_package_id,
+        earlier_token,
     )
 }
 

@@ -3304,16 +3304,23 @@ installs of the build's *earlier build* for the new build's, and put the earlier
 
 - **The record.** `pawn-brought.json` in the stone's app data keeps every build the stone brought
   through: `{ fileName, sha256, bytes, names, at }`, `names` the `modinfo.ini` `name=` values
-  inside it, lowercased and trimmed; the last 200. A plain bring-through records too.
+  inside it, lowercased and trimmed; the last 200. A plain bring-through records too. The order is
+  the order builds were **first** brought: the same file and bytes again keep their place.
 - **Reading a build.** What is inside a build is read from the stone's own copy:
   `bring::stage_build` copies it through the pinned `dist\` handle into
   `<cache>\workshop-staging\<id>\<artifact>`, hashes the copy, and `rift_catalog`'s
   `scan_package` reads it as the mods folder will (the same file name and size, so the same
-  package and option ids). The copy is removed; the package is cached by digest.
+  package and option ids). The copy is removed; the package is cached by file name **and** digest
+  (the same bytes under another name are another package; the Heretic's N1).
 - **The earlier build** of a build is the newest recorded one that (1) has another file name,
-  (2) shares a mod name with it, and (3) is in the mods folder now as an archive of the recorded
-  size and digest. A build with no `modinfo.ini` name has none. So only a build the stone
-  brought through can ever be replaced, never one of the player's own mods.
+  (2) was first brought **before** this build's own first record, when it has one, (3) shares a
+  mod name with it, and (4) is in the mods folder now as an archive of the recorded size and
+  digest. A build with no `modinfo.ini` name has none. So only a build the stone brought through
+  can ever be replaced, never one of the player's own mods, and an old build never updates to a
+  newer one (the Heretic's U4; Q20.32).
+- **The plan token.** `EarlierView.token` digests the plan whole: the earlier build's package id,
+  every swap's two option ids, every stay, and whether it is put away. The card carries it, and
+  the press refuses another (the Heretic's U2).
 - **A same-name rebuild** (other bytes under the name of a build in the mods folder) is
   bring-through's `nameTaken`: both builds must sit in the mods folder at once to swap. The
   persona says to put a new version in every build's name.
@@ -3321,11 +3328,16 @@ installs of the build's *earlier build* for the new build's, and put the earlier
 ### The press (`update::apply`)
 
 1. Re-read the build (staged): its digest must be the one shown, else `bring` `bytesChanged`.
-2. Find the earlier build now: it must be the one shown (or none where none was shown), else the
-   new `bring` reason **`earlierChanged`**.
+2. Plan again now: its token must be the one shown (or no plan where none was shown), else the new
+   `bring` reason **`earlierChanged`**. Another earlier build, none, or other swaps all refuse.
 3. Land the build (bring-through), record it, `rift://workshop-changed`.
 4. No earlier build: request a scan; done.
-5. Scan (or wait for the running one), find the new package on the shelf, and read the journal.
+5. Scan (or wait for the running one), and find the new package on the shelf by its name **and
+   the landed size**; read the journal; plan once more against both, and swap nothing unless the
+   token is still the one shown (the build landed, and the result says why; the Heretic's U2).
+   Each swap's install runs a check inside its own turn, with the library held: the archive's
+   digest is still the landed one, so a library zip replaced between landing and swap installs
+   nothing (the Heretic's U1; a race the player's own hands cause, not one of hers).
    For each install of the earlier build: the new build's same option (`family::matching_option`:
    the same root, else the same name, else the one installable option each side has) is
    installed **in place of** it, one journaled step each (`deploy::install_in_place`, a
@@ -3333,8 +3345,10 @@ installs of the build's *earlier build* for the new build's, and put the earlier
    option **stays**.
 6. The earlier zip is put away in the last swap's turn, once it has no install (`put_away_older`
    with its id); with nothing installed, alone, in one turn. A swap that is refused stops there:
-   the build stays landed, the earlier build stays installed and in the mods folder, and the
-   result carries the stone's sentence.
+   the build stays landed, the swaps already made stand (each was its own journaled step), what
+   was not swapped is as it was, the earlier zip stays in the mods folder, and the result carries
+   `swapped` and the stone's sentence: the window says "exactly as it was" only when nothing was
+   swapped (the Heretic's U3).
 
 ### Tamsin's ask (`mailbox.rs`)
 

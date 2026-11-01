@@ -284,6 +284,7 @@ export const MOCK_EARLIER: EarlierView = {
   ],
   stays: [],
   putsAway: true,
+  token: "mock-token-stride-010-to-020",
 };
 
 export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorkshop {
@@ -387,7 +388,7 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
         installId: null,
         refusal: null,
       });
-      setPawn({ heldUpdate: { heldRequestId: id, since: now(), artifact, sha256: a?.sha256 ?? "" } });
+      setPawn({ heldUpdate: { heldRequestId: id, since: now(), artifact, sha256: a?.sha256 ?? "", order: handSeq } });
       return id;
     },
     hold() {
@@ -399,7 +400,7 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
         installId: null,
         refusal: null,
       });
-      setPawn({ held: { heldRequestId: id, since: now() } });
+      setPawn({ held: { heldRequestId: id, since: now(), order: handSeq } });
       return id;
     },
     rebuild(name) {
@@ -413,7 +414,7 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
   };
 
   /** 0.8: the Update press as the spine answers it, on the mock's one earlier build. */
-  function updateOf(name: string, sha256: string, earlierPackageId: string | null): Promise<UpdateResult> {
+  function updateOf(name: string, sha256: string, earlierToken: string | null): Promise<UpdateResult> {
     const a = artifacts.find((x) => x.name === name);
     if (!a) return Promise.reject(bringRefused("notInDist", `${name} is not in the workshop's dist folder.`));
     if (a.sha256 !== sha256) {
@@ -425,7 +426,7 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
       );
     }
     const earlier = a.earlier ? MOCK_EARLIER : null;
-    if ((earlier?.packageId ?? null) !== earlierPackageId) {
+    if ((earlier?.token ?? null) !== earlierToken) {
       return Promise.reject(
         bringRefused(
           "earlierChanged",
@@ -662,12 +663,12 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
       };
       return Promise.resolve(plan);
     },
-    updateBuild: (name, sha256, earlierPackageId) => {
-      call("update_build", name, sha256, earlierPackageId);
-      return updateOf(name, sha256, earlierPackageId);
+    updateBuild: (name, sha256, earlierToken) => {
+      call("update_build", name, sha256, earlierToken);
+      return updateOf(name, sha256, earlierToken);
     },
-    answerPawnUpdate: (run, heldRequestId, accept, earlierPackageId) => {
-      call("answer_pawn_update", run, heldRequestId, accept, earlierPackageId);
+    answerPawnUpdate: (run, heldRequestId, accept, earlierToken) => {
+      call("answer_pawn_update", run, heldRequestId, accept, earlierToken);
       const waiting = pawn.heldUpdate;
       if (pawn.runId !== run || waiting?.heldRequestId !== heldRequestId) {
         return Promise.reject(pawnRefused("staleHeld", "That update ask is not the one waiting now."));
@@ -681,7 +682,7 @@ export function createMockWorkshop(options: MockWorkshopOptions = {}): MockWorks
           persisted: true,
         });
       }
-      return updateOf(waiting.artifact, waiting.sha256, earlierPackageId).then((result) => {
+      return updateOf(waiting.artifact, waiting.sha256, earlierToken).then((result) => {
         setPawn({ heldUpdate: null });
         return { decision: "updated", result, told: `added ${waiting.artifact}`, persisted: true };
       });

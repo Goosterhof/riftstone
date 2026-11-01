@@ -87,7 +87,8 @@ const held = computed(() => pawn.value?.held ?? null);
 const heldUpdate = computed(() => pawn.value?.heldUpdate ?? null);
 /** 0.8: the last press on her update ask, and its refusal while she waits. */
 const updateAnswered = ref<UpdateAnswered | null>(null);
-const updateRefusal = ref<string | null>(null);
+/** Keyed by the ask it answered, so a late refusal never shows under her next ask (the Heretic's U6). */
+const updateRefusal = ref<{ heldRequestId: string; text: string } | null>(null);
 const fence = computed<FenceView | null>(() => view.value?.fence ?? null);
 
 function decode(data: string): Uint8Array {
@@ -468,15 +469,15 @@ async function bring(plan: BringThroughPlan): Promise<"landed" | "alreadyHad" | 
 /** 0.8: the Update press, on the card's frozen digest and the earlier build it showed. */
 async function updateBuild(plan: BringThroughPlan): Promise<UpdateResult | null> {
   const result = await attempt(async () =>
-    (await workshop()).updateBuild(plan.artifact, plan.sha256, plan.earlier?.packageId ?? null),
+    (await workshop()).updateBuild(plan.artifact, plan.sha256, plan.earlier?.token ?? null),
   );
   if (result) await load();
   return result;
 }
 
 /** 0.8: the press on her update ask: the ask waiting now, by run and id, and
- *  the earlier build its card showed. A refusal leaves it waiting, shown. */
-async function answerUpdate(accept: boolean, earlierPackageId: string | null): Promise<UpdateAnswered | null> {
+ *  the plan its card showed (its token). A refusal leaves it waiting, shown. */
+async function answerUpdate(accept: boolean, earlierToken: string | null): Promise<UpdateAnswered | null> {
   const run = runId.value;
   const waiting = heldUpdate.value;
   if (!run || !waiting || answering.value) return null;
@@ -484,13 +485,16 @@ async function answerUpdate(accept: boolean, earlierPackageId: string | null): P
   updateRefusal.value = null;
   try {
     const result = await attempt(async () =>
-      (await workshop()).answerPawnUpdate(run, waiting.heldRequestId, accept, earlierPackageId),
+      (await workshop()).answerPawnUpdate(run, waiting.heldRequestId, accept, earlierToken),
     );
     if (result) {
       updateAnswered.value = result;
       await load();
     } else if (failure.value) {
-      updateRefusal.value = "detail" in failure.value.detail ? failure.value.detail.detail : failure.value.message;
+      updateRefusal.value = {
+        heldRequestId: waiting.heldRequestId,
+        text: "detail" in failure.value.detail ? failure.value.detail.detail : failure.value.message,
+      };
     }
     return result;
   } finally {

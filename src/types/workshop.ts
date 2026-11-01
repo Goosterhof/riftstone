@@ -31,6 +31,8 @@ export interface HostView {
 export interface HeldView {
   heldRequestId: string;
   since: string;
+  /** 0.8: where her ask stands in the run's ledger: the order she asked in. */
+  order: number;
 }
 
 /** 0.8: Tamsin's update ask waiting, with the digest frozen at her ask. */
@@ -39,6 +41,8 @@ export interface HeldUpdateView {
   since: string;
   artifact: string;
   sha256: string;
+  /** Where her ask stands in the run's ledger. */
+  order: number;
 }
 
 export interface PawnStateView {
@@ -187,6 +191,8 @@ export interface EarlierView {
   stays: StayView[];
   /** The earlier zip goes to the older-versions folder. */
   putsAway: boolean;
+  /** The whole plan as a digest: the press carries it, and the stone refuses another (the Heretic's U2). */
+  token: string;
 }
 
 /** 0.8: what an Update press did. */

@@ -192,6 +192,20 @@ export function swapLine(swap: { name: string; fromVersion: string | null; toVer
   return `${swap.name}${versions}`;
 }
 
+/** 0.8: a refused swap, saying what WAS swapped before it (the Heretic's U3):
+ *  "exactly as it was" only when nothing was. */
+export function swapRefusedLine(
+  artifact: string,
+  result: { earlier: string | null; swapped: unknown[]; failed: string | null },
+): string {
+  const earlier = result.earlier ?? "the earlier build";
+  if (!result.swapped.length) {
+    return `${artifact} is in your mods folder, but the swap didn't happen: ${result.failed ?? ""} Your game folder is exactly as it was: ${earlier} is still installed, and its zip stays in your mods folder.`;
+  }
+  const n = result.swapped.length;
+  return `${artifact} is in your mods folder, and ${n} ${n === 1 ? "option was" : "options were"} swapped in place of ${earlier}'s; then a swap was refused: ${result.failed ?? ""} What was not swapped is as it was, and ${earlier} stays in your mods folder.`;
+}
+
 /** 0.8: what an Update did, as the toast says it (#00015 R20.34). */
 export function updatedLine(artifact: string, result: { earlier: string | null; swapped: unknown[] }): string {
   if (!result.earlier) return `${artifact} is in your mods folder. Install it from the Rift.`;

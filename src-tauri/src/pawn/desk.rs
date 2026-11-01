@@ -67,6 +67,10 @@ pub struct HostView {
 pub struct HeldView {
     pub held_request_id: String,
     pub since: String,
+    /// 0.8: where her ask stands in the run's ledger: the order she asked in,
+    /// finer than `since` and the same however often she asks again (the
+    /// Heretic's U5).
+    pub order: u64,
 }
 
 /// 0.8: the update ask waiting for the Arisen, with the digest frozen at it.
@@ -77,6 +81,8 @@ pub struct HeldUpdateView {
     pub since: String,
     pub artifact: String,
     pub sha256: String,
+    /// Where her ask stands in the run's ledger (see `HeldView::order`).
+    pub order: u64,
 }
 
 /// `PawnStateView` (WINDOW-CONTRACT § v0.7, Types).
@@ -223,8 +229,8 @@ pub struct Desk {
     dist_watcher: Mutex<Option<DistWatch>>,
     /// 0.8: the builds the stone brought through (`pawn-brought.json`), the
     /// Update's lineage, and what is inside each build read so far.
-    pub(crate) brought: crate::pawn::update::BroughtRecord,
-    pub(crate) read_builds: crate::pawn::update::ReadBuilds,
+    pub brought: crate::pawn::update::BroughtRecord,
+    pub read_builds: crate::pawn::update::ReadBuilds,
     me: Weak<Desk>,
 }
 
@@ -650,15 +656,24 @@ impl Desk {
         match &desk.live {
             Some(live) => {
                 let ledger = live.summoning.broker().ledger();
-                let held = ledger.held.map(|held| HeldView {
-                    held_request_id: held.held_request_id,
-                    since: held.since,
+                let order = |id: &str| {
+                    ledger
+                        .ops
+                        .iter()
+                        .position(|op| op.id == id)
+                        .map_or(u64::MAX, |i| i as u64)
+                };
+                let held = ledger.held.as_ref().map(|held| HeldView {
+                    order: order(&held.held_request_id),
+                    held_request_id: held.held_request_id.clone(),
+                    since: held.since.clone(),
                 });
-                let held_update = ledger.held_update.map(|held| HeldUpdateView {
-                    held_request_id: held.held_request_id,
-                    since: held.since,
-                    artifact: held.artifact,
-                    sha256: held.sha256,
+                let held_update = ledger.held_update.as_ref().map(|held| HeldUpdateView {
+                    order: order(&held.held_request_id),
+                    held_request_id: held.held_request_id.clone(),
+                    since: held.since.clone(),
+                    artifact: held.artifact.clone(),
+                    sha256: held.sha256.clone(),
                 });
                 PawnStateView {
                     run_id: Some(live.summoning.run_id().to_string()),
@@ -1216,8 +1231,8 @@ impl Desk {
     }
 
     /// 0.8: the Arisen's press on Tamsin's held update ask: the Update press
-    /// on the digest frozen at her ask, replacing the earlier build the
-    /// window showed (`earlier_shown`). A refusal leaves the ask waiting.
+    /// on the digest frozen at her ask, carrying out the plan the window
+    /// showed (`earlier_shown`, its token). A refusal leaves the ask waiting.
     pub fn answer_update(
         &self,
         state: &Arc<AppState>,

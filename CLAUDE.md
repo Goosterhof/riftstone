@@ -522,6 +522,14 @@ carry it whole; design #00015 §20.14.
   `window.workshopMock` exposes the mock's controls in `npm run dev` (`holdUpdate`, `hold`,
   `rebuild`); the scenes `?workshop=update` and `updaterefused`.
 
+The Heretic's Assay of `08be360` (NEEDS WORK) is repaired: the press carries the plan's token, so
+other swaps refuse it before anything lands, and the plan is read again after landing (U2); the
+landed build is found by size and its digest checked inside each install's turn (U1); a refused
+swap says what was swapped (U3); an old build never updates to a newer one, the record keeping
+first-brought order (U4); SHE ASKS orders by each ask's place in her ledger (U5); a refusal shows
+only under the ask it answered (U6); the read cache keys on file name and digest (N1). Each has a
+spine test or a room spec, mutation-checked where a guard could be removed alone.
+
 Owed on the installed build: **re-run the fence probe** (the relay's ninth tool changes the ground,
 so the chip reads unprobed until it does), then one loop with Tamsin: a build, her ask, Update, and
 the game reading the new bytes.

@@ -13,7 +13,7 @@ import RiftButton from "@/components/RiftButton.vue";
 import { useToasts } from "@/composables/useToasts";
 import { launchWarningLine } from "@/services/ledger";
 import { useWorkshop } from "./useWorkshop";
-import { PAWN_NAME, clock, quads, swapLine, updatedLine } from "./words";
+import { PAWN_NAME, clock, quads, swapLine, swapRefusedLine, updatedLine } from "./words";
 
 const w = useWorkshop();
 const anyway = ref<InstanceType<typeof RiftButton> | null>(null);
@@ -21,20 +21,16 @@ const pressing = ref(false);
 
 interface Ask {
   kind: "play" | "update";
-  since: string;
-  /** Her held row's number: the order the stone answered her asks, finer than `since`'s seconds. */
-  seq: number;
-}
-/** The newest held row of `tool`, or none (a row the window has not heard yet). */
-function heldRow(tool: string): number {
-  return w.hands.value.find((h) => h.tool === tool && h.outcome === "held")?.seq ?? Number.MAX_SAFE_INTEGER;
+  /** Where her ask stands in the run's ledger, from the stone: the order she
+   *  asked in, unchanged however often she asks again (the Heretic's U5). */
+  order: number;
 }
 const asks = computed<Ask[]>(() => {
   const out: Ask[] = [];
-  if (w.held.value) out.push({ kind: "play", since: w.held.value.since, seq: heldRow("play") });
-  if (w.heldUpdate.value) out.push({ kind: "update", since: w.heldUpdate.value.since, seq: heldRow("ask_update") });
+  if (w.held.value) out.push({ kind: "play", order: w.held.value.order });
+  if (w.heldUpdate.value) out.push({ kind: "update", order: w.heldUpdate.value.order });
   // a fresh array of at most two: sorted in place, in the order she asked
-  out.sort((a, b) => a.seq - b.seq || a.since.localeCompare(b.since));
+  out.sort((a, b) => a.order - b.order);
   return out;
 });
 /** Her update waits above her Play: playing first loads it at the next launch. */
@@ -70,6 +66,11 @@ watch(
   },
   { immediate: true },
 );
+/** The stone's refusal of a press on THIS ask, never on an earlier one (the Heretic's U6). */
+const refusalNow = computed(() => {
+  const refusal = w.updateRefusal.value;
+  return refusal && refusal.heldRequestId === w.heldUpdate.value?.heldRequestId ? refusal.text : null;
+});
 /** The bytes on disk now are not the ones she asked about. */
 const changedSince = computed(
   () => !!updatePlan.value && !!w.heldUpdate.value && updatePlan.value.sha256 !== w.heldUpdate.value.sha256,
@@ -85,11 +86,11 @@ const updateAsks = computed(() => {
 async function answerUpdate(accept: boolean): Promise<void> {
   const ask = w.heldUpdate.value;
   if (!ask) return;
-  const answered = await w.answerUpdate(accept, accept ? (updatePlan.value?.earlier?.packageId ?? null) : null);
+  const answered = await w.answerUpdate(accept, accept ? (updatePlan.value?.earlier?.token ?? null) : null);
   const result = answered?.result;
   if (!result) return;
   if (result.failed) {
-    useToasts().push("ember", `${ask.artifact} is in your mods folder, but the swap didn't happen: ${result.failed}`);
+    useToasts().push("ember", swapRefusedLine(ask.artifact, result));
   } else {
     useToasts().push(result.swapped.length ? "world" : "rift", updatedLine(ask.artifact, result));
   }
@@ -164,7 +165,7 @@ async function answerUpdate(accept: boolean): Promise<void> {
           >
           <RiftButton size="sm" @click="answerUpdate(false)">Not now</RiftButton>
         </div>
-        <p v-if="w.updateRefusal.value" class="hand__refused" role="alert">{{ w.updateRefusal.value }}</p>
+        <p v-if="refusalNow" class="hand__refused" role="alert">{{ refusalNow }}</p>
       </div>
     </template>
   </section>

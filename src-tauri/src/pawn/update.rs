@@ -83,18 +83,18 @@ impl BroughtRecord {
         lock(&self.kept).clone()
     }
 
-    /// Record a build brought through: the same file and bytes again move
-    /// to the end, and the oldest beyond [`KEPT_BROUGHT`] go.
+    /// Record a build brought through, in the order builds were FIRST
+    /// brought: the same file and bytes again keep their place (an old build
+    /// brought back is still old; the Heretic's U4), and the oldest beyond
+    /// [`KEPT_BROUGHT`] go.
     pub fn record(&self, brought: Brought) -> Result<(), RiftError> {
         let mut kept = lock(&self.kept);
-        let mut next: Vec<Brought> = kept
-            .iter()
-            .filter(|b| {
-                !(b.file_name.eq_ignore_ascii_case(&brought.file_name)
-                    && b.sha256 == brought.sha256)
-            })
-            .cloned()
-            .collect();
+        if kept.iter().any(|b| {
+            b.file_name.eq_ignore_ascii_case(&brought.file_name) && b.sha256 == brought.sha256
+        }) {
+            return Ok(());
+        }
+        let mut next: Vec<Brought> = kept.clone();
         next.push(brought);
         let excess = next.len().saturating_sub(KEPT_BROUGHT);
         next.drain(..excess);
@@ -104,10 +104,13 @@ impl BroughtRecord {
     }
 }
 
-/// The builds read so far, by digest: what is inside each.
+/// The builds read so far, by file name and digest: what is inside each.
+/// The name is part of the key because the package and option ids are made
+/// from it (the Heretic's N1: the same bytes under another name are another
+/// package).
 #[derive(Default)]
 pub struct ReadBuilds {
-    by_sha: Mutex<HashMap<String, Arc<Package>>>,
+    by_build: Mutex<HashMap<(String, String), Arc<Package>>>,
 }
 
 /// The `modinfo.ini` names of a package's options, lowercased and trimmed:
@@ -138,7 +141,8 @@ pub fn read_build(
         .join(new_run_id());
     let staged = bring::stage_build(workshop, artifact, &staging);
     let result = staged.and_then(|(path, sha, _)| {
-        if let Some(known) = lock(&read.by_sha).get(&sha) {
+        let key = (artifact.to_lowercase(), sha.clone());
+        if let Some(known) = lock(&read.by_build).get(&key) {
             return Ok((sha, Arc::clone(known)));
         }
         let scanned = rift_catalog::scan::scan_package(&path).map_err(|err| BringRefusal {
@@ -146,7 +150,7 @@ pub fn read_build(
             detail: format!("The stone could not read inside {artifact}: {err}"),
         })?;
         let package = Arc::new(scanned.package);
-        lock(&read.by_sha).insert(sha.clone(), Arc::clone(&package));
+        lock(&read.by_build).insert(key, Arc::clone(&package));
         Ok((sha, package))
     });
     let _ = std::fs::remove_dir_all(&staging);
@@ -156,7 +160,9 @@ pub fn read_build(
 /// The earlier build of a build named `artifact` holding the mod `names`:
 /// the newest one the stone brought through that is still in the mods folder
 /// with the same bytes and shares a name. A build of the same file name is
-/// never its own earlier build.
+/// never its own earlier build, and only a build brought through BEFORE
+/// `artifact` was first brought can be its earlier one: an old build never
+/// updates to a newer one (the Heretic's U4; Q20.32's no-backward ruling).
 pub fn earlier_build<'s>(
     record: &[Brought],
     shelf: &'s Shelf,
@@ -166,7 +172,11 @@ pub fn earlier_build<'s>(
     if names.is_empty() {
         return None;
     }
-    record.iter().rev().find_map(|brought| {
+    let cutoff = record
+        .iter()
+        .position(|b| b.file_name.eq_ignore_ascii_case(artifact))
+        .unwrap_or(record.len());
+    record[..cutoff].iter().rev().find_map(|brought| {
         if brought.file_name.eq_ignore_ascii_case(artifact)
             || !brought.names.iter().any(|n| names.contains(n))
         {
@@ -213,6 +223,46 @@ pub struct EarlierView {
     /// The earlier zip goes to the older-versions folder (nothing of it
     /// stays installed).
     pub puts_away: bool,
+    /// The whole plan, as a digest: the earlier build, every swap, every stay
+    /// and the put-away. The press carries it, and the stone refuses one whose
+    /// plan is not the one it would carry out now (the Heretic's U2).
+    pub token: String,
+}
+
+impl EarlierView {
+    fn of(file_name: String, earlier: &Package, new: &Package, installed: &[OptionId]) -> Self {
+        let (swaps, stays) = swaps_of(earlier, new, installed);
+        let puts_away = stays.is_empty();
+        let token = plan_token(&earlier.id.0, &swaps, &stays, puts_away);
+        Self {
+            file_name,
+            package_id: earlier.id.0.clone(),
+            swaps,
+            stays,
+            puts_away,
+            token,
+        }
+    }
+}
+
+fn plan_token(package_id: &str, swaps: &[SwapView], stays: &[StayView], puts_away: bool) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    let mut part = |bytes: &[u8]| {
+        hash.update((bytes.len() as u64).to_le_bytes());
+        hash.update(bytes);
+    };
+    part(package_id.as_bytes());
+    for swap in swaps {
+        part(swap.from_option_id.as_bytes());
+        part(swap.to_option_id.as_bytes());
+    }
+    part(b"|stays");
+    for stay in stays {
+        part(stay.option_id.as_bytes());
+    }
+    part(&[u8::from(puts_away)]);
+    hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn version_of(option: &rift_core::ModOption) -> Option<String> {
@@ -276,14 +326,7 @@ pub fn plan_earlier(
     let installed = installed_now(state)?;
     let shelf = state.shelf();
     let (brought, earlier) = earlier_build(&record.all(), &shelf, &mod_names(new), artifact)?;
-    let (swaps, stays) = swaps_of(earlier, new, &installed);
-    Some(EarlierView {
-        file_name: brought.file_name,
-        package_id: earlier.id.0.clone(),
-        puts_away: stays.is_empty(),
-        swaps,
-        stays,
-    })
+    Some(EarlierView::of(brought.file_name, earlier, new, &installed))
 }
 
 /// What a press did.
@@ -328,10 +371,11 @@ pub fn remember(record: &BroughtRecord, artifact: &str, sha256: &str, package: &
     }
 }
 
-/// The press: `artifact` by the digest the player was shown, replacing the
-/// earlier build the player was shown (`earlier_shown`, a package id, or
-/// none). Refuses `bring` `earlierChanged` when the stone would now replace
-/// another (or none, or one where none was shown).
+/// The press: `artifact` by the digest the player was shown, carrying out
+/// the plan the player was shown (`shown_token`, [`EarlierView::token`], or
+/// none where no earlier build was shown). Refuses `bring` `earlierChanged`
+/// when the plan the stone would carry out now is another: another earlier
+/// build, or none, or other swaps (the Heretic's U2).
 pub fn apply(
     state: &Arc<AppState>,
     record: &BroughtRecord,
@@ -339,7 +383,7 @@ pub fn apply(
     workshop: &Path,
     artifact: &str,
     sha256: &str,
-    earlier_shown: Option<&str>,
+    shown_token: Option<&str>,
 ) -> Result<UpdateResult, RiftError> {
     let changed = |now: &str| {
         RiftError::bring(
@@ -355,15 +399,11 @@ pub fn apply(
     if read_sha != sha256 {
         return Err(changed(&read_sha));
     }
-    let earlier_now = {
-        let shelf = state.shelf();
-        earlier_build(&record.all(), &shelf, &mod_names(&new), artifact)
-            .map(|(_, package)| package.id.clone())
-    };
-    if earlier_now.as_ref().map(|id| id.0.as_str()) != earlier_shown {
+    let planned = plan_earlier(state, record, &new, artifact);
+    if planned.as_ref().map(|plan| plan.token.as_str()) != shown_token {
         return Err(RiftError::bring(
             BringReason::EarlierChanged,
-            "The earlier build changed since this was shown: the stone would now replace another. Open it again.",
+            "The plan changed since it was shown: the stone would now replace another build, or swap other installs. Open it again.",
         ));
     }
     let outcome = bring::bring_through(
@@ -384,44 +424,75 @@ pub fn apply(
         put_away: Vec::new(),
         put_away_failed: None,
     };
-    let Some(earlier_id) = earlier_now else {
+    let Some(planned) = planned else {
         state.request_scan();
         return Ok(result);
     };
     scan_now(state);
-    swap(state, artifact, &earlier_id, &mut result);
+    swap(state, artifact, sha256, new.size, &planned, &mut result);
     Ok(result)
 }
 
-/// The swaps and the put-away, once the new build is on the shelf.
-fn swap(state: &Arc<AppState>, artifact: &str, earlier_id: &PackageId, result: &mut UpdateResult) {
+/// The swaps and the put-away, once the new build is on the shelf: only the
+/// bytes that landed (by size on the shelf, and by digest inside each
+/// install's own turn; the Heretic's U1), and only the plan that was shown,
+/// read again against the game as it is now (U2).
+fn swap(
+    state: &Arc<AppState>,
+    artifact: &str,
+    sha256: &str,
+    bytes: u64,
+    planned: &EarlierView,
+    result: &mut UpdateResult,
+) {
     let shelf = state.shelf();
-    let Some(new) = shelf
-        .packages()
-        .iter()
-        .find(|p| p.format != PackageFormat::Folder && p.file_name.eq_ignore_ascii_case(artifact))
-    else {
+    result.earlier = Some(planned.file_name.clone());
+    let Some(new) = shelf.packages().iter().find(|p| {
+        p.format != PackageFormat::Folder
+            && p.file_name.eq_ignore_ascii_case(artifact)
+            && p.size == bytes
+    }) else {
         result.failed = Some(format!(
-            "{artifact} is in your mods folder, but the stone could not read it there, so nothing was swapped."
+            "{artifact} is in your mods folder, but not as the bytes that landed, so nothing was swapped."
         ));
         return;
     };
-    let Some(earlier) = shelf.package(earlier_id) else {
+    let Some(earlier) = shelf.package(&PackageId(planned.package_id.clone())) else {
         result.failed = Some(
             "The earlier build is no longer in your mods folder, so nothing was swapped.".into(),
         );
         return;
     };
-    result.earlier = Some(earlier.file_name.clone());
     let Some(installed) = installed_now(state) else {
         result.failed =
             Some("The stone could not read your game's installs, so nothing was swapped.".into());
         return;
     };
-    let (swaps, stays) = swaps_of(earlier, new, &installed);
-    result.stays = stays;
-    let last = swaps.len().saturating_sub(1);
-    for (i, swap) in swaps.into_iter().enumerate() {
+    let now = EarlierView::of(planned.file_name.clone(), earlier, new, &installed);
+    if now.token != planned.token {
+        result.failed = Some(format!(
+            "Your game's installs changed after {artifact} landed, so nothing was swapped. Open it again to see what an update would do now."
+        ));
+        return;
+    }
+    result.stays = now.stays.clone();
+    // Inside each install's own turn, with the library held: the archive is
+    // still the bytes that landed.
+    let path = new.path.clone();
+    let landed = |_: &crate::dto::InstallPlanView, _: &rift_deploy::Journal| {
+        let (sha, _) = bring::digest_file(&path)
+            .map_err(|err| RiftError::io("could not read the build that landed", err))?;
+        if sha == sha256 {
+            Ok(())
+        } else {
+            Err(RiftError::bring(
+                BringReason::BytesChanged,
+                format!("{artifact} in your mods folder changed after it landed, so the stone installed nothing from it."),
+            ))
+        }
+    };
+    let last = now.swaps.len().saturating_sub(1);
+    for (i, swap) in now.swaps.into_iter().enumerate() {
         let put_away = if i == last {
             vec![earlier.id.clone()]
         } else {
@@ -431,7 +502,7 @@ fn swap(state: &Arc<AppState>, artifact: &str, earlier_id: &PackageId, result: &
             state,
             &swap.to_option_id,
             &Actor::Player,
-            None,
+            Some(&landed),
             &[OptionId(swap.from_option_id.clone())],
             &put_away,
         ) {
@@ -496,6 +567,9 @@ pub fn told(artifact: &str, done: &UpdateResult) -> String {
     }
     if let Some(refusal) = &done.failed {
         said.push(format!("then a swap was refused: {refusal}"));
+        said.push(format!(
+            "{earlier} stays in the mods folder, and what was not swapped stays as it was"
+        ));
     }
     if !done.stays.is_empty() {
         said.push(format!(
