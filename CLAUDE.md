@@ -524,8 +524,9 @@ carry it whole; design #00015 §20.14.
 
 The Heretic's Assay of `08be360` (NEEDS WORK) is repaired: the press carries the plan's token, so
 other swaps refuse it before anything lands, and the plan is read again after landing (U2); the
-landed build is found by size and its digest checked inside each install's turn (U1); a refused
-swap says what was swapped (U3); an old build never updates to a newer one, the record keeping
+swaps extract the stone's own verified copy of the landed bytes, never the mods folder's file,
+and each swap's turn checks the earlier build's installs are still the ones left to swap (U1, U2
+and their residuals at `75b1dc9`); a refused swap says what was swapped (U3); an old build never updates to a newer one, the record keeping
 first-brought order (U4); SHE ASKS orders by each ask's place in her ledger (U5); a refusal shows
 only under the ask it answered (U6); the read cache keys on file name and digest (N1). Each has a
 spine test or a room spec, mutation-checked where a guard could be removed alone.

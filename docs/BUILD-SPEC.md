@@ -3335,9 +3335,14 @@ installs of the build's *earlier build* for the new build's, and put the earlier
 5. Scan (or wait for the running one), and find the new package on the shelf by its name **and
    the landed size**; read the journal; plan once more against both, and swap nothing unless the
    token is still the one shown (the build landed, and the result says why; the Heretic's U2).
-   Each swap's install runs a check inside its own turn, with the library held: the archive's
-   digest is still the landed one, so a library zip replaced between landing and swap installs
-   nothing (the Heretic's U1; a race the player's own hands cause, not one of hers).
+   The swaps extract the stone's **own copy** of the landed bytes: copied from the mods folder
+   into `<cache>\workshop-staging\<id>\`, hashed against the shown digest (other bytes: nothing
+   is swapped), and handed to each install as its source (`install_in_place`'s `from`), so a zip
+   in the mods folder replaced at any moment after can never be what is extracted (the Heretic's
+   U1 and its residual; a race the player's own hands cause, not one of hers). The copy is removed
+   after. Each swap's turn also checks the journal: the earlier build's installs are still
+   exactly the swaps not yet made and the stays, else that swap and the rest are refused and what
+   was swapped stands (the U2 residual).
    For each install of the earlier build: the new build's same option (`family::matching_option`:
    the same root, else the same name, else the one installable option each side has) is
    installed **in place of** it, one journaled step each (`deploy::install_in_place`, a

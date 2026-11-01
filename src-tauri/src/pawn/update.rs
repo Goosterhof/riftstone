@@ -476,21 +476,48 @@ fn swap(
         return;
     }
     result.stays = now.stays.clone();
-    // Inside each install's own turn, with the library held: the archive is
-    // still the bytes that landed.
-    let path = new.path.clone();
-    let landed = |_: &crate::dto::InstallPlanView, _: &rift_deploy::Journal| {
-        let (sha, _) = bring::digest_file(&path)
-            .map_err(|err| RiftError::io("could not read the build that landed", err))?;
-        if sha == sha256 {
-            Ok(())
-        } else {
-            Err(RiftError::bring(
-                BringReason::BytesChanged,
-                format!("{artifact} in your mods folder changed after it landed, so the stone installed nothing from it."),
-            ))
+    // The archive the swaps extract is the stone's own copy of the bytes that
+    // landed, verified once and never replaceable by anyone else: the mods
+    // folder's file can change between any check and any open (the Heretic's
+    // U1 residual).
+    let owned_dir = state
+        .config
+        .dirs
+        .cache
+        .join("workshop-staging")
+        .join(new_run_id());
+    let owned = owned_dir.join(artifact);
+    let copied = std::fs::create_dir_all(&owned_dir)
+        .and_then(|()| std::fs::copy(&new.path, &owned))
+        .and_then(|_| bring::digest_file(&owned));
+    match copied {
+        Ok((sha, _)) if sha == sha256 => {}
+        Ok(_) => {
+            let _ = std::fs::remove_dir_all(&owned_dir);
+            result.failed = Some(format!(
+                "{artifact} in your mods folder is not the bytes that landed, so nothing was swapped."
+            ));
+            return;
         }
-    };
+        Err(err) => {
+            let _ = std::fs::remove_dir_all(&owned_dir);
+            result.failed = Some(format!(
+                "The stone could not read {artifact} back from your mods folder ({err}), so nothing was swapped."
+            ));
+            return;
+        }
+    }
+    let earlier_id = earlier.id.clone();
+    let stays: BTreeSet<OptionId> = now
+        .stays
+        .iter()
+        .map(|stay| OptionId(stay.option_id.clone()))
+        .collect();
+    let froms: Vec<OptionId> = now
+        .swaps
+        .iter()
+        .map(|swap| OptionId(swap.from_option_id.clone()))
+        .collect();
     let last = now.swaps.len().saturating_sub(1);
     for (i, swap) in now.swaps.into_iter().enumerate() {
         let put_away = if i == last {
@@ -498,13 +525,39 @@ fn swap(
         } else {
             Vec::new()
         };
+        // Inside this swap's own turn: the earlier build's installs are still
+        // exactly the swaps not yet made and the ones that stay, so a change
+        // made while the update ran stops it before the next swap (the
+        // Heretic's U2 residual). What was swapped before stands.
+        let expected: BTreeSet<OptionId> = froms[i..]
+            .iter()
+            .cloned()
+            .chain(stays.iter().cloned())
+            .collect();
+        let earlier_file = earlier.file_name.clone();
+        let unchanged = |_: &crate::dto::InstallPlanView, journal: &rift_deploy::Journal| {
+            let installed: BTreeSet<OptionId> = journal
+                .installs
+                .iter()
+                .filter(|install| install.option_id.package() == earlier_id)
+                .map(|install| install.option_id.clone())
+                .collect();
+            if installed == expected {
+                Ok(())
+            } else {
+                Err(RiftError::refused(format!(
+                    "Your installs of {earlier_file} changed while the update ran, so the stone stopped before this swap."
+                )))
+            }
+        };
         match deploy::install_in_place(
             state,
             &swap.to_option_id,
             &Actor::Player,
-            Some(&landed),
+            Some(&unchanged),
             &[OptionId(swap.from_option_id.clone())],
             &put_away,
+            Some(&owned),
         ) {
             Ok(view) => {
                 result.put_away.extend(view.put_away);
@@ -513,10 +566,12 @@ fn swap(
             }
             Err(err) => {
                 result.failed = Some(sentence(&err));
+                let _ = std::fs::remove_dir_all(&owned_dir);
                 return;
             }
         }
     }
+    let _ = std::fs::remove_dir_all(&owned_dir);
     if result.swapped.is_empty() && result.stays.is_empty() {
         // Nothing of it was installed: the earlier zip goes away alone.
         let earlier_id = earlier.id.clone();

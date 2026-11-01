@@ -115,7 +115,7 @@ pub fn install_checked(
     actor: &Actor,
     check: Option<InstallCheck<'_>>,
 ) -> Result<InstallResultView, RiftError> {
-    install_in_place(state, option_id, actor, check, &[], &[])
+    install_in_place(state, option_id, actor, check, &[], &[], None)
 }
 
 /// [`install_checked`], also replacing the installs of `in_place_of` in the
@@ -123,7 +123,11 @@ pub fn install_checked(
 /// it committed, in the same turn, when they are left without an install
 /// (v0.8: THE WORKSHOP's Update, where the earlier build is no version Nexus
 /// knows, so the family rule cannot name it). An id in `in_place_of` that is
-/// not installed when the turn comes is passed over.
+/// not installed when the turn comes is passed over. `from` names the archive
+/// to extract instead of the package's own path: a copy the caller owns and
+/// has verified, which nothing else can replace during the extraction (the
+/// Heretic's U1 residual: the mods folder is the player's, and a file there
+/// can change between a check and the open).
 pub fn install_in_place(
     state: &Arc<AppState>,
     option_id: &str,
@@ -131,6 +135,7 @@ pub fn install_in_place(
     check: Option<InstallCheck<'_>>,
     in_place_of: &[OptionId],
     then_put_away: &[PackageId],
+    from: Option<&Path>,
 ) -> Result<InstallResultView, RiftError> {
     // Play waits while an install is under way, from here to its last byte.
     let _installing = state.begin_install();
@@ -177,7 +182,7 @@ pub fn install_in_place(
                 replacing.push(id.clone());
             }
         }
-        let mut source = rift_archive::open(&package.path)?;
+        let mut source = rift_archive::open(from.unwrap_or(&package.path))?;
         let report = rift_deploy::install_replacing(
             ctx,
             journal,
