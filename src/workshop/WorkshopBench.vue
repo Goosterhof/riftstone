@@ -16,6 +16,7 @@ import BenchDial from "./BenchDial.vue";
 import BenchSection from "./BenchSection.vue";
 import BuiltArtifact from "./BuiltArtifact.vue";
 import PawnHands from "./PawnHands.vue";
+import SheAsks from "./SheAsks.vue";
 import { useWorkshop } from "./useWorkshop";
 import { EFFORT_CHOICES, MODE_CHOICES, MODEL_CHOICES, PAWN_NAME, SESSION_LATER, SESSION_NOTE } from "./words";
 
@@ -159,8 +160,9 @@ async function addFolder(): Promise<void> {
       section="hands"
       title="THE PAWN'S HANDS"
       :summary="summaries.hands"
-      :held="w.held.value ? WAITING_HOLDS : null"
+      :held="w.held.value || w.heldUpdate.value ? WAITING_HOLDS : null"
     >
+      <SheAsks />
       <p v-if="!w.hands.value.length" class="bench__note">The stone has answered nothing for {{ PAWN_NAME }} yet.</p>
       <PawnHands v-else />
     </BenchSection>

@@ -27,7 +27,7 @@ const LOCAL_ORIGIN: &str = if cfg!(windows) {
 
 /// WINDOW-CONTRACT § v0.7's commands, by their invoke names: the oracle,
 /// written here from the contract, never read from the code under test.
-const WORKSHOP: [&str; 16] = [
+const WORKSHOP: [&str; 18] = [
     "get_workshop",
     "summon_pawn",
     "pawn_write",
@@ -44,6 +44,8 @@ const WORKSHOP: [&str; 16] = [
     "set_pawn_session",
     "set_pawn_inputs",
     "paste_to_pawn",
+    "update_build",
+    "answer_pawn_update",
 ];
 
 fn not_found(answer: &Result<Value, Value>, cmd: &str) -> bool {

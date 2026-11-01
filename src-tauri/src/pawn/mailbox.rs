@@ -71,6 +71,11 @@ pub enum Tool {
     ReadReframeworkLog {
         tail_lines: u64,
     },
+    /// 0.8: ask the Arisen to update to (or add) a build in `dist`: held,
+    /// like Play, until the Arisen presses Update or Not now.
+    AskUpdate {
+        artifact: String,
+    },
 }
 
 impl Tool {
@@ -84,6 +89,7 @@ impl Tool {
             Self::Uninstall { .. } => "uninstall",
             Self::Play => "play",
             Self::ReadReframeworkLog { .. } => "read_reframework_log",
+            Self::AskUpdate { .. } => "ask_update",
         }
     }
 
@@ -159,6 +165,12 @@ struct UninstallArgs {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct LogArgs {
     tail_lines: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ArtifactArgs {
+    artifact: String,
 }
 
 fn args<T: serde::de::DeserializeOwned>(
@@ -284,6 +296,24 @@ pub fn parse_request(name: &str, bytes: &[u8]) -> Result<Request, Malformed> {
             let _: NoArgs = args(id, envelope.args)?;
             Tool::Play
         }
+        "ask_update" => {
+            let a: ArtifactArgs = args(id, envelope.args)?;
+            let plain = !a.artifact.is_empty()
+                && a.artifact.len() <= 255
+                && !a.artifact.contains(['/', '\\', ':'])
+                && !a.artifact.starts_with('.')
+                && a.artifact.to_ascii_lowercase().ends_with(".zip")
+                && !a.artifact.chars().any(char::is_control);
+            if !plain {
+                return Err(malformed(
+                    Some(id),
+                    "The stone refused that ask: artifact is the file name of a .zip in the workshop's dist folder, and nothing else.",
+                ));
+            }
+            Tool::AskUpdate {
+                artifact: a.artifact,
+            }
+        }
         "read_reframework_log" => {
             let a: LogArgs = args(id, envelope.args)?;
             if !(1..=MAX_TAIL_LINES).contains(&a.tail_lines) {
@@ -385,6 +415,11 @@ pub trait Errands: Send + Sync {
     /// Drop `run_id`'s held Play, if one is held (the run retired).
     fn drop_held_play(&self, run_id: &str);
     fn read_reframework_log(&self, tail_lines: u64) -> Result<Value, String>;
+    /// 0.8: the digest of `artifact`, a build in `dist` with a receipt
+    /// naming these bytes, read now; the stone's sentence otherwise.
+    fn check_build(&self, artifact: &str) -> Result<String, String> {
+        Err(format!("The stone cannot read {artifact} here."))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -478,6 +513,64 @@ pub struct RunLedger {
     /// held Play's decision): never written into the held call's answer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub decisions: Vec<PlayDecision>,
+    /// 0.8: the update ask waiting for the Arisen, if one is (at most one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_update: Option<HeldUpdate>,
+    /// 0.8: the Arisen's answers to held update asks, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub update_decisions: Vec<UpdateDecision>,
+}
+
+/// 0.8: the update ask waiting for the Arisen, with the digest the stone
+/// froze when she asked: the press refers to those bytes and no others.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldUpdate {
+    pub held_request_id: String,
+    pub since: String,
+    pub artifact: String,
+    pub sha256: String,
+}
+
+/// 0.8: what the Arisen did with a held update ask. `updated` once the build
+/// landed (what was swapped is in `summary`), `declined` for Not now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UpdateDecisionKind {
+    Updated,
+    Declined,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateDecision {
+    pub held_request_id: String,
+    pub artifact: String,
+    pub decision: UpdateDecisionKind,
+    /// What the stone did, in the words Tamsin receives.
+    pub summary: String,
+    pub at: String,
+    pub delivered: bool,
+}
+
+/// Why the Arisen's press on a held update ask did nothing. `E` is the
+/// stone's refusal of the update itself; the ask stays waiting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateRefusal<E> {
+    NothingHeld,
+    StaleHeld,
+    /// An answer to it is already under way.
+    Answering,
+    LedgerDown,
+    Refused(E),
+}
+
+/// What the Arisen's press on a held update ask did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateAnswered {
+    pub decision: UpdateDecisionKind,
+    pub summary: String,
+    pub persisted: bool,
 }
 
 /// The Play request waiting for the Arisen.
@@ -555,6 +648,8 @@ struct BrokerState {
     joined: usize,
     /// The sink refused a write: no further mutation is started (WB2).
     ledger_down: bool,
+    /// 0.8: the Arisen's Update press is being carried out.
+    answering_update: bool,
 }
 
 /// A retired run: its closed ledger, and whether the sink kept every write.
@@ -599,6 +694,8 @@ impl Broker {
             ops: Vec::new(),
             held: None,
             decisions: Vec::new(),
+            held_update: None,
+            update_decisions: Vec::new(),
         };
         Self {
             run_id: run_id.to_string(),
@@ -612,6 +709,7 @@ impl Broker {
                 retiring: false,
                 joined: 0,
                 ledger_down: false,
+                answering_update: false,
             }),
             settled: Condvar::new(),
         }
@@ -693,6 +791,21 @@ impl Broker {
                 }
                 None => break,
             }
+        }
+        if let Tool::AskUpdate { artifact } = &request.tool {
+            // Taken one at a time, under the broker's lock, as Play is.
+            let answer = self.ask_update(&mut state, &request.id, artifact);
+            state
+                .slots
+                .insert(request.id.clone(), Slot::Recorded(answer.clone()));
+            drop(state);
+            self.settled.notify_all();
+            return Some(Handled {
+                answer,
+                tool: Some(request.tool.name().into()),
+                repeated: false,
+                install_id: None,
+            });
         }
         if request.tool == Tool::Play {
             // Play calls are taken one at a time, under the broker's lock: a
@@ -808,6 +921,7 @@ impl Broker {
                         other => serde_json::Map::from_iter([("installed".to_string(), other)]),
                     };
                     map.insert("play".into(), self.play_view());
+                    map.insert("update".into(), self.update_view());
                     answer.data = Value::Object(map);
                 }
                 (answer, None)
@@ -855,8 +969,8 @@ impl Broker {
                 (answer, Some(op))
             }
             // Answered under the broker's lock in `handle`.
-            Tool::Play => (
-                Answer::refused(id, "The stone answers Play under its own lock."),
+            Tool::Play | Tool::AskUpdate { .. } => (
+                Answer::refused(id, "The stone answers that under its own lock."),
                 None,
             ),
             Tool::ReadReframeworkLog { tail_lines } => (
@@ -1001,6 +1115,208 @@ impl Broker {
         answer
     }
 
+    /// 0.8: the update ask as `list_installed` shows it, read and never
+    /// consumed: `{ waiting: { heldRequestId, artifact } | null, lastDecision }`.
+    fn update_view(&self) -> Value {
+        let state = self.lock();
+        let last = state.ledger.update_decisions.last().map(|d| {
+            serde_json::json!({
+                "heldRequestId": d.held_request_id,
+                "artifact": d.artifact,
+                "decision": d.decision,
+                "summary": d.summary,
+                "at": d.at,
+            })
+        });
+        let waiting = state.ledger.held_update.as_ref().map(
+            |h| serde_json::json!({ "heldRequestId": h.held_request_id, "artifact": h.artifact }),
+        );
+        serde_json::json!({ "waiting": waiting, "lastDecision": last })
+    }
+
+    /// 0.8: a new `ask_update` call, Play's rule: an undelivered decision is
+    /// delivered and nothing new is held; an ask already waiting is named and
+    /// nothing new is held; else the stone reads the build now, freezes its
+    /// digest, and holds this call. Each changes the ledger in one write
+    /// with the answer.
+    fn ask_update(&self, state: &mut BrokerState, id: &str, artifact: &str) -> Answer {
+        if state.ledger_down {
+            return Answer::refused(id, LEDGER_DOWN);
+        }
+        if let Some(index) = state
+            .ledger
+            .update_decisions
+            .iter()
+            .position(|d| !d.delivered)
+        {
+            let decision = state.ledger.update_decisions[index].clone();
+            let text = match decision.decision {
+                UpdateDecisionKind::Updated => {
+                    format!("updated at {}: {}", decision.at, decision.summary)
+                }
+                UpdateDecisionKind::Declined => {
+                    format!("declined: the Arisen said not now to {}", decision.artifact)
+                }
+            };
+            let answer = Answer {
+                id: id.to_string(),
+                outcome: Outcome::Done,
+                text,
+                data: serde_json::json!({
+                    "heldRequestId": decision.held_request_id,
+                    "artifact": decision.artifact,
+                    "decision": decision.decision,
+                    "summary": decision.summary,
+                    "at": decision.at,
+                }),
+            };
+            state.ledger.update_decisions[index].delivered = true;
+            state
+                .ledger
+                .ops
+                .push(self.held_op("ask_update", id, &answer));
+            if self.sink.record(&state.ledger).is_err() {
+                state.ledger.update_decisions[index].delivered = false;
+                state.ledger.ops.pop();
+                state.ledger_down = true;
+                return Answer::refused(id, LEDGER_DOWN);
+            }
+            return answer;
+        }
+        if let Some(held) = &state.ledger.held_update {
+            return Answer {
+                id: id.to_string(),
+                outcome: Outcome::Held,
+                text: format!(
+                    "held: an update to {} is already waiting for the Arisen",
+                    held.artifact
+                ),
+                data: serde_json::json!({ "heldRequestId": held.held_request_id, "artifact": held.artifact }),
+            };
+        }
+        let sha256 = match self.errands.check_build(artifact) {
+            Ok(sha) => sha,
+            Err(sentence) => return Answer::refused(id, sentence),
+        };
+        let answer = Answer {
+            id: id.to_string(),
+            outcome: Outcome::Held,
+            text: "held: waiting for the Arisen".into(),
+            data: serde_json::json!({ "heldRequestId": id, "artifact": artifact, "sha256": sha256 }),
+        };
+        state.ledger.held_update = Some(HeldUpdate {
+            held_request_id: id.to_string(),
+            since: (self.clock)(),
+            artifact: artifact.to_string(),
+            sha256,
+        });
+        state
+            .ledger
+            .ops
+            .push(self.held_op("ask_update", id, &answer));
+        if self.sink.record(&state.ledger).is_err() {
+            state.ledger.held_update = None;
+            state.ledger.ops.pop();
+            state.ledger_down = true;
+            return Answer::refused(id, LEDGER_DOWN);
+        }
+        answer
+    }
+
+    fn held_op(&self, tool: &str, id: &str, answer: &Answer) -> LedgerOp {
+        LedgerOp {
+            id: id.to_string(),
+            tool: tool.into(),
+            install_id: None,
+            option_id: None,
+            outcome: answer.outcome,
+            at: (self.clock)(),
+            answer: answer.clone(),
+            removed: None,
+        }
+    }
+
+    /// 0.8: the Arisen's press on a held update ask (`answer_pawn_update`).
+    /// It acts only when `run_id` and `held_request_id` are this live run and
+    /// its waiting ask. Unlike Play it does not hold the broker's lock while
+    /// `apply` runs, because the update takes the game folder's turn, which a
+    /// call of hers in flight may hold while it waits to record: it marks the
+    /// answer under way (counted in flight, so retirement waits for it), runs
+    /// `apply` with the held ask, and records the decision after. `apply`
+    /// answers what Tamsin is told, or refuses, and then nothing is recorded
+    /// and the ask stays waiting.
+    pub fn answer_update<E>(
+        &self,
+        run_id: &str,
+        held_request_id: &str,
+        accept: bool,
+        apply: impl FnOnce(&HeldUpdate) -> Result<String, E>,
+    ) -> Result<UpdateAnswered, UpdateRefusal<E>> {
+        let held = {
+            let mut state = self.lock();
+            if run_id != self.run_id || state.retiring {
+                return Err(UpdateRefusal::StaleHeld);
+            }
+            let held = match &state.ledger.held_update {
+                None => return Err(UpdateRefusal::NothingHeld),
+                Some(held) if held.held_request_id != held_request_id => {
+                    return Err(UpdateRefusal::StaleHeld)
+                }
+                Some(held) => held.clone(),
+            };
+            if state.ledger_down {
+                return Err(UpdateRefusal::LedgerDown);
+            }
+            if state.answering_update {
+                return Err(UpdateRefusal::Answering);
+            }
+            state.answering_update = true;
+            state.in_flight += 1;
+            held
+        };
+        let outcome = if accept {
+            apply(&held).map(|summary| (UpdateDecisionKind::Updated, summary))
+        } else {
+            Ok((
+                UpdateDecisionKind::Declined,
+                "the Arisen said not now".to_string(),
+            ))
+        };
+        let mut state = self.lock();
+        state.answering_update = false;
+        state.in_flight -= 1;
+        let answered = match outcome {
+            Err(refusal) => Err(UpdateRefusal::Refused(refusal)),
+            Ok((decision, summary)) => {
+                state.ledger.held_update = None;
+                state.ledger.update_decisions.push(UpdateDecision {
+                    held_request_id: held.held_request_id.clone(),
+                    artifact: held.artifact.clone(),
+                    decision,
+                    summary: summary.clone(),
+                    at: (self.clock)(),
+                    delivered: false,
+                });
+                let persisted = match self.sink.record(&state.ledger) {
+                    Ok(()) => true,
+                    Err(err) => {
+                        log::warn!("the pawn's run ledger could not record the Arisen's update answer: {err}");
+                        state.ledger_down = true;
+                        false
+                    }
+                };
+                Ok(UpdateAnswered {
+                    decision,
+                    summary,
+                    persisted,
+                })
+            }
+        };
+        drop(state);
+        self.settled.notify_all();
+        answered
+    }
+
     fn play_op(&self, id: &str, answer: &Answer) -> LedgerOp {
         LedgerOp {
             id: id.to_string(),
@@ -1085,6 +1401,7 @@ impl Broker {
         }
         // A held Play dies with its run, unanswered; its decisions stay.
         state.ledger.held = None;
+        state.ledger.held_update = None;
         self.errands.drop_held_play(&self.run_id);
         state.ledger.ended_at = Some((self.clock)());
         if let Err(err) = self.sink.record(&state.ledger) {
@@ -1260,6 +1577,13 @@ mod tests {
         }
         fn read_reframework_log(&self, tail_lines: u64) -> Result<Value, String> {
             Ok(serde_json::json!({ "lines": [], "count": 0, "asked": tail_lines }))
+        }
+        fn check_build(&self, artifact: &str) -> Result<String, String> {
+            if artifact == "Stride Tuner-0.1.1.zip" {
+                Ok("1b7e".repeat(16))
+            } else {
+                Err(format!("{artifact} has no readable receipt beside it."))
+            }
         }
     }
 
@@ -2032,6 +2356,8 @@ mod tests {
                     ops: Vec::new(),
                     held: None,
                     decisions: Vec::new(),
+                    held_update: None,
+                    update_decisions: Vec::new(),
                 },
             );
         }
@@ -2056,6 +2382,217 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({ "id": ID, "outcome": "held", "text": "held: waiting for the Arisen", "data": null })
+        );
+    }
+
+    fn ask(broker: &Broker, id: &str, artifact: &str) -> Answer {
+        broker
+            .handle(
+                &name(id),
+                &body(serde_json::json!({ "id": id, "tool": "ask_update", "args": { "artifact": artifact } })),
+            )
+            .unwrap()
+            .answer
+    }
+
+    const BUILD: &str = "Stride Tuner-0.1.1.zip";
+
+    #[test]
+    fn an_update_ask_is_held_with_the_digest_frozen_and_one_waits_per_run() {
+        let stone = Arc::new(Stone::default());
+        let sink = Arc::new(Sink::default());
+        let broker = Broker::new(RUN, stone, sink.clone(), clock);
+        let first = ask(&broker, H1, BUILD);
+        assert_eq!(first.outcome, Outcome::Held);
+        assert_eq!(first.data["sha256"], "1b7e".repeat(16));
+        let held = broker.ledger().held_update.unwrap();
+        assert_eq!((held.artifact.as_str(), held.sha256.len()), (BUILD, 64));
+        let second = ask(&broker, H2, "Other-1.0.0.zip");
+        assert_eq!(second.outcome, Outcome::Held);
+        assert_eq!(second.data["heldRequestId"], H1, "names the one waiting");
+        // Held in the same write as its answer, and a Play can wait beside it.
+        assert_eq!(
+            sink.0
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .held_update
+                .as_ref()
+                .unwrap()
+                .held_request_id,
+            H1
+        );
+        assert_eq!(play(&broker, H3).outcome, Outcome::Held);
+        assert!(broker.ledger().held.is_some() && broker.ledger().held_update.is_some());
+    }
+
+    #[test]
+    fn an_ask_for_a_build_the_stone_cannot_read_is_refused_and_holds_nothing() {
+        let broker = Broker::new(
+            RUN,
+            Arc::new(Stone::default()),
+            Arc::new(Sink::default()),
+            clock,
+        );
+        let refused = ask(&broker, H1, "Missing-0.1.0.zip");
+        assert_eq!(refused.outcome, Outcome::Refused);
+        assert_eq!(
+            refused.text,
+            "Missing-0.1.0.zip has no readable receipt beside it."
+        );
+        assert!(broker.ledger().held_update.is_none());
+    }
+
+    #[test]
+    fn an_ask_naming_anything_but_a_zip_in_dist_is_refused_before_any_work() {
+        for artifact in [
+            "../x.zip",
+            "dist/x.zip",
+            "C:x.zip",
+            ".hidden.zip",
+            "x.txt",
+            "",
+            "a\nb.zip",
+        ] {
+            let bytes = body(
+                serde_json::json!({ "id": ID, "tool": "ask_update", "args": { "artifact": artifact } }),
+            );
+            let bad = parse_request(&name(ID), &bytes).unwrap_err();
+            assert!(
+                bad.sentence.contains("artifact is the file name"),
+                "{artifact}: {}",
+                bad.sentence
+            );
+        }
+        let extra = body(
+            serde_json::json!({ "id": ID, "tool": "ask_update", "args": { "artifact": BUILD, "sha256": "x" } }),
+        );
+        assert!(
+            parse_request(&name(ID), &extra).is_err(),
+            "no other argument"
+        );
+    }
+
+    #[test]
+    fn a_declined_ask_is_read_by_list_installed_and_delivered_once_by_a_new_ask() {
+        let stone = Arc::new(Stone::default());
+        let broker = Broker::new(RUN, stone, Arc::new(Sink::default()), clock);
+        ask(&broker, H1, BUILD);
+        assert_eq!(
+            list(&broker, L1)["update"]["waiting"],
+            serde_json::json!({ "heldRequestId": H1, "artifact": BUILD })
+        );
+        let answered = broker
+            .answer_update(RUN, H1, false, |_| -> Result<String, String> {
+                unreachable!()
+            })
+            .unwrap();
+        assert_eq!(answered.decision, UpdateDecisionKind::Declined);
+        let read = list(&broker, L2)["update"].clone();
+        assert_eq!(read["waiting"], Value::Null);
+        assert_eq!(read["lastDecision"]["decision"], "declined");
+        assert_eq!(list(&broker, L2)["update"], read, "read, never consumed");
+        let delivered = ask(&broker, H2, BUILD);
+        assert_eq!(delivered.outcome, Outcome::Done);
+        assert_eq!(
+            delivered.text,
+            format!("declined: the Arisen said not now to {BUILD}")
+        );
+        assert_eq!(
+            ask(&broker, H3, BUILD).outcome,
+            Outcome::Held,
+            "asking again holds"
+        );
+    }
+
+    #[test]
+    fn an_update_is_recorded_with_what_she_is_told_and_a_refused_one_keeps_waiting() {
+        let broker = Broker::new(
+            RUN,
+            Arc::new(Stone::default()),
+            Arc::new(Sink::default()),
+            clock,
+        );
+        ask(&broker, H1, BUILD);
+        let refused = broker.answer_update(RUN, H1, true, |_| Err("the bytes changed"));
+        assert_eq!(refused, Err(UpdateRefusal::Refused("the bytes changed")));
+        assert!(broker.ledger().held_update.is_some(), "still waiting");
+        assert!(
+            broker.ledger().update_decisions.is_empty(),
+            "nothing recorded"
+        );
+        let done = broker
+            .answer_update(RUN, H1, true, |held| -> Result<String, String> {
+                assert_eq!(
+                    held.sha256,
+                    "1b7e".repeat(16),
+                    "the digest frozen at her ask"
+                );
+                Ok("added it".into())
+            })
+            .unwrap();
+        assert_eq!(
+            (done.decision, done.summary.as_str(), done.persisted),
+            (UpdateDecisionKind::Updated, "added it", true)
+        );
+        let delivered = ask(&broker, H2, BUILD);
+        assert_eq!(delivered.text, "updated at 2026-10-28T12:00:00Z: added it");
+    }
+
+    #[test]
+    fn the_update_runs_without_the_brokers_lock_and_answers_only_the_live_ask() {
+        let broker = Arc::new(Broker::new(
+            RUN,
+            Arc::new(Stone::default()),
+            Arc::new(Sink::default()),
+            clock,
+        ));
+        ask(&broker, H1, BUILD);
+        assert_eq!(
+            broker.answer_update("another-run", H1, true, |_| -> Result<String, String> {
+                unreachable!()
+            }),
+            Err(UpdateRefusal::StaleHeld)
+        );
+        assert_eq!(
+            broker.answer_update(RUN, H2, true, |_| -> Result<String, String> {
+                unreachable!()
+            }),
+            Err(UpdateRefusal::StaleHeld)
+        );
+        let inner = Arc::clone(&broker);
+        let done = broker.answer_update(RUN, H1, true, move |_| -> Result<String, String> {
+            // Her calls still reach the broker while the update runs; a second
+            // press on the same ask is told one is under way.
+            assert_eq!(list(&inner, L1)["update"]["waiting"]["heldRequestId"], H1);
+            assert_eq!(
+                inner.answer_update(RUN, H1, false, |_| -> Result<String, String> {
+                    unreachable!()
+                }),
+                Err(UpdateRefusal::Answering)
+            );
+            Ok("added it".into())
+        });
+        assert!(done.is_ok());
+    }
+
+    #[test]
+    fn departure_drops_a_held_update_ask() {
+        let broker = Broker::new(
+            RUN,
+            Arc::new(Stone::default()),
+            Arc::new(Sink::default()),
+            clock,
+        );
+        ask(&broker, H1, BUILD);
+        let retired = broker.retire();
+        assert!(retired.ledger.held_update.is_none());
+        assert_eq!(
+            broker.answer_update(RUN, H1, true, |_| -> Result<String, String> {
+                unreachable!()
+            }),
+            Err(UpdateRefusal::StaleHeld)
         );
     }
 }

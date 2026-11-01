@@ -173,6 +173,7 @@ const GLYPH: Record<string, string> = {
   read_reframework_log: "≡",
   list_installed: "≡",
   play: "▶",
+  ask_update: "↻",
 };
 
 const TOOL_WORD: Record<string, string> = {
@@ -182,11 +183,39 @@ const TOOL_WORD: Record<string, string> = {
   read_reframework_log: "read the REFramework log",
   list_installed: "list what is installed",
   play: "start the game",
+  ask_update: "update a build",
 };
+
+/** 0.8: a swap row, `Stature — Main 0.2.0 → 0.2.1`, versions when the builds name them. */
+export function swapLine(swap: { name: string; fromVersion: string | null; toVersion: string | null }): string {
+  const versions = swap.fromVersion || swap.toVersion ? `  ${swap.fromVersion ?? "?"} → ${swap.toVersion ?? "?"}` : "";
+  return `${swap.name}${versions}`;
+}
+
+/** 0.8: a refused swap, saying what WAS swapped before it (the Heretic's U3):
+ *  "exactly as it was" only when nothing was. */
+export function swapRefusedLine(
+  artifact: string,
+  result: { earlier: string | null; swapped: unknown[]; failed: string | null },
+): string {
+  const earlier = result.earlier ?? "the earlier build";
+  if (!result.swapped.length) {
+    return `${artifact} is in your mods folder, but the swap didn't happen: ${result.failed ?? ""} Your game folder is exactly as it was: ${earlier} is still installed, and its zip stays in your mods folder.`;
+  }
+  const n = result.swapped.length;
+  return `${artifact} is in your mods folder, and ${n} ${n === 1 ? "option was" : "options were"} swapped in place of ${earlier}'s; then a swap was refused: ${result.failed ?? ""} What was not swapped is as it was, and ${earlier} stays in your mods folder.`;
+}
+
+/** 0.8: what an Update did, as the toast says it (#00015 R20.34). */
+export function updatedLine(artifact: string, result: { earlier: string | null; swapped: unknown[] }): string {
+  if (!result.earlier) return `${artifact} is in your mods folder. Install it from the Rift.`;
+  if (!result.swapped.length) return `${artifact} is in your mods folder, and ${result.earlier} is put away.`;
+  return `${artifact} is in your world, in ${result.earlier}'s place.`;
+}
 
 function quiet(hand: PawnHand): HandTone {
   if (hand.tool === "install" && hand.outcome === "done") return "world";
-  if (hand.tool === "play" && hand.outcome === "held") return "warn";
+  if ((hand.tool === "play" || hand.tool === "ask_update") && hand.outcome === "held") return "warn";
   return "muted";
 }
 

@@ -136,6 +136,7 @@ describe("a picture pasted on the hollow (0.7.5)", () => {
         exitCode: null,
         host: null,
         held: null,
+        heldUpdate: null,
       }),
     );
     await flushPromises();

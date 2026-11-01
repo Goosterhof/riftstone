@@ -1189,3 +1189,51 @@ the stone did not send. The terminal stays mounted while the investor visits oth
 It never opens anything from her screen but an `https` link the player Ctrl+clicked, and never
 a plain click. It does not honour OSC 52: her `c to copy` writes nothing, because honouring it
 would let her set the player's clipboard without a press of theirs.
+
+## v0.8 — Update in its place (investor build only)
+
+BUILD-SPEC § v0.8 is the behaviour; this is the wire. Design #00015 §20.14.
+
+### Commands
+
+| Command (invoke name) | Args (JS, camelCase) | Returns | Notes |
+|---|---|---|---|
+| `plan_bring_through` | `artifact: string` | `BringThroughPlan` | Unchanged, and now carries `earlier: EarlierView \| null` (only when `conflict` is `none`). |
+| `update_build` | `artifact: string, sha256: string, earlierToken: string \| null` | `UpdateResult` | The press: by the digest and the plan (`earlier.token`) the card showed. Refuses `bring` `bytesChanged`, `earlierChanged` (the stone would now carry out another plan: another earlier build, none, or other swaps), `nameTaken`, and bring-through's own. A refused swap is not an error: the result's `swapped` and `failed` say how far it went. |
+| `answer_pawn_update` | `runId: string, heldRequestId: string, accept: boolean, earlierToken: string \| null` | `UpdateAnswered` | The press on her held ask, by run and id, on the digest frozen at her ask. Refuses `pawn` `nothingHeld`, `staleHeld` (another run or ask, or one already being answered), `ledgerDown`, and the update's own refusals, after which the ask still waits. |
+
+`get_workshop`'s `ArtifactView` gains `earlier: string | null`, the earlier build's file name.
+`PawnStateView` gains `heldUpdate: { heldRequestId, since, artifact, sha256, order } | null`, and
+`HeldView` gains `order`: where the ask stands in the run's ledger, the order she asked in.
+
+### Types (`src/types/workshop.ts`)
+
+- `EarlierView`: `{ fileName, packageId, swaps: SwapView[], stays: StayView[], putsAway, token }`;
+  `token` digests the plan whole, and the press carries it.
+- `SwapView`: `{ fromOptionId, toOptionId, name, fromVersion, toVersion }` (versions from
+  `modinfo.ini`, null when unnamed). `StayView`: `{ optionId, name }`.
+- `UpdateResult`: `{ outcome: "landed" | "alreadyHad", earlier: string | null, swapped,
+  stays, failed: string | null, putAway: PutAwayView[], putAwayFailed: string | null }`.
+- `UpdateAnswered`: `{ decision: "updated" | "declined", result: UpdateResult | null, told,
+  persisted }`; `told` is what Tamsin is told.
+- `RiftError` `bring` gains the reason `earlierChanged`.
+
+### The room as built
+
+- **The built row** (R20.30): with an earlier build it reads `replaces <file>` and offers
+  `Update…` (Primary) before `Add to library…` (Secondary).
+- **The card** (`UpdateCard.vue`, R20.32–R20.34): `IN ITS PLACE`; the new zip on mist, the swaps
+  (`↻ name from → to`) and stays on hearthhi, the put-away on void. `Update ▶` is World gold when
+  it swaps, Primary when it only lands and puts away. States: `IN YOUR WORLD` / `IN THE RIFT`
+  (updated), `IN THE RIFT` with the stone's sentence (landed, swap refused; "exactly as it was"
+  only when nothing was swapped, else how many were, U3), `THE BYTES CHANGED`,
+  `THE PLAN CHANGED` (`earlierChanged`), each changed state with `Review it again`.
+- **SHE ASKS** (`SheAsks.vue`, R20.36, Q20.33 = A): every waiting ask, a lone Play included, is
+  pinned above the hands under the carved head, in the order she asked: by each ask's `order` in
+  the run's ledger, which a repeated ask does not move (the Heretic's U5). A refusal of a press is
+  kept against the ask it answered and shown only under that ask (U6). Play's block is R20.10's, moved. The update's block
+  reads the plan when the ask appears and shows its rows compactly with the frozen digest; a
+  build whose bytes changed since she asked holds `Update` back and says so. A Play below a
+  waiting update says it loads at the next launch.
+- **The nav** (R20.37): `Tamsin asks to update`, `Tamsin asks to play`, or `Tamsin asks 2 things`.
+- THE PAWN'S HANDS stays open while either ask waits (0.7.4's rule, widened).
